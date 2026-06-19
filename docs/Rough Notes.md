@@ -1,0 +1,13 @@
+- Basic Web app
+- Web app can pull repos from github for config
+- Define bare metal instances via YML
+- Use IncusOS (7.0 lts)
+- Create USB installers per bare metal instance)
+- Generate client certificate
+- Basic IPAM (Define networks, assign static IPs to nodes, etc.)
+- Remote logging to Grafana (or tailscale accessible endpoint?)
+- Single disk, single nic (but this should be configurable)
+- Disable TPM, but allow secureboot
+- Tailscale
+- Use flasher tool https://linuxcontainers.org/incus-os/docs/main/getting-started/download/
+	- To create ISOs to download

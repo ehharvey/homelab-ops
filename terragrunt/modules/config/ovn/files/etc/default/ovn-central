@@ -1,0 +1,14 @@
+# This is a POSIX shell fragment                -*- sh -*-
+
+# OVN_CTL_OPTS: Extra options to pass to ovs-ctl.  This is, for example,
+# a suitable place to specify --ovn-northd-wrapper=valgrind.
+# OVN_CTL_OPTS=
+OVN_CTL_OPTS=" \
+     --db-nb-addr=${modules.ovn.ipAddress} \
+     --db-nb-create-insecure-remote=yes \
+     --db-sb-addr=${modules.ovn.ipAddress} \
+     --db-sb-create-insecure-remote=yes \
+     --db-nb-cluster-local-addr=${modules.ovn.ipAddress}:6641 \
+     --db-sb-cluster-local-addr=${modules.ovn.ipAddress}:6642 \
+     --ovn-northd-nb-db=tcp:${local.derived.ovn-northd-nb-db} \
+     --ovn-northd-sb-db=tcp:${local.derived.ovn-northd-sb-db}"

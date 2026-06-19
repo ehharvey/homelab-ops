@@ -1,0 +1,40 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/debian
+{
+	"name": "Debian",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": "."
+	},
+	"features": {
+		"ghcr.io/devcontainers-extra/features/opentofu:1": {},
+		// "ghcr.io/devcontainers/features/python:1": {},
+		"ghcr.io/devcontainers/features/docker-in-docker:3": {},
+		"ghcr.io/devcontainers/features/github-cli:1": {}
+	},
+	"runArgs": [
+		"--add-host=host.docker.internal:host-gateway"
+	],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"anthropic.claude-code",
+				"GitHub.vscode-pull-request-github",
+				"GitHub.vscode-github-actions"
+			]
+		}
+	}
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Configure tool-specific properties.
+	// "customizations": {},
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}
