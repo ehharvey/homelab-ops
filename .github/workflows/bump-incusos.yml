@@ -1,0 +1,82 @@
+name: Bump incus-os submodule
+
+# Checks lxc/incus-os for new tags and opens a PR bumping third_party/incus-os
+# (and re-vendoring internal/incusos) when one is found. The submodule is the
+# git-tracked pointer to the exact upstream commit our seed structs match
+# (see Development Conventions § Vendoring upstream IncusOS seed structs).
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, off the hour to avoid GH Actions scheduling pile-ups
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init sparse incus-os submodule
+        run: |
+          git submodule update --init -- third_party/incus-os
+          git -C third_party/incus-os sparse-checkout init --cone
+          git -C third_party/incus-os sparse-checkout set incus-osd/api
+
+      - name: Check for a new tag
+        id: check
+        run: |
+          cd third_party/incus-os
+          git fetch --tags origin
+          current_sha=$(git rev-parse HEAD)
+          latest_tag=$(git tag -l | sort | tail -1)
+          latest_sha=$(git rev-list -n1 "$latest_tag")
+          echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          if [ "$current_sha" = "$latest_sha" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump submodule and re-vendor
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          git -C third_party/incus-os checkout "${{ steps.check.outputs.latest_tag }}"
+          git -C third_party/incus-os sparse-checkout set incus-osd/api
+          ./scripts/vendor-incusos.sh
+
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.up_to_date == 'false'
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build and test against the new vendored structs
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          go build ./...
+          go test ./...
+
+      - uses: peter-evans/create-pull-request@v8.1.1
+        if: steps.check.outputs.up_to_date == 'false'
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/bump-incus-os
+          delete-branch: true
+          title: "Bump lxc/incus-os to ${{ steps.check.outputs.latest_tag }}"
+          commit-message: "Bump lxc/incus-os submodule to ${{ steps.check.outputs.latest_tag }}"
+          body: |
+            Bumps the `third_party/incus-os` submodule to tag
+            `${{ steps.check.outputs.latest_tag }}` and re-vendors
+            `internal/incusos` via `scripts/vendor-incusos.sh`.
+
+            Review the diff in `internal/incusos/` for any struct changes
+            before merging — `go build`/`go test` passed in this workflow,
+            but that only catches breakage, not silent field-mapping drift
+            in `internal/seed`.
+          labels: dependencies
