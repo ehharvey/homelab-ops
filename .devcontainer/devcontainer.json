@@ -24,7 +24,9 @@
 				"GitHub.vscode-github-actions"
 			]
 		}
-	}
+	},
+
+	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r scripts/* $TEMPDIR && chmod +x $TEMPDIR/*.sh && $TEMPDIR/*.sh && rm -rf $TEMPDIR",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
