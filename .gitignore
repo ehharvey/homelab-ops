@@ -6,3 +6,9 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 .devcontainer/host-setup/.trust-token
+
+# Go build artifacts
+bin/
+
+# Bootstrap CLI generated artifacts (certs, seeds, images) — never commit private keys
+bootstrap-output/
