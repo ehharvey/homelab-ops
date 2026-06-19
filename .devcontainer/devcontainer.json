@@ -11,22 +11,28 @@
 		"ghcr.io/devcontainers-extra/features/opentofu:1": {},
 		// "ghcr.io/devcontainers/features/python:1": {},
 		"ghcr.io/devcontainers/features/docker-in-docker:3": {},
-		"ghcr.io/devcontainers/features/github-cli:1": {}
+		"ghcr.io/devcontainers/features/github-cli:1": {},
+		"ghcr.io/devcontainers/features/go:1": {}
 	},
 	"runArgs": [
 		"--add-host=host.docker.internal:host-gateway"
 	],
+	"mounts": [
+		"source=homelab-ops-incus-config,target=/home/vscode/.config/incus,type=volume"
+	],
+	"initializeCommand": ".devcontainer/host-setup/setup-incus-trust.sh",
 	"customizations": {
 		"vscode": {
 			"extensions": [
 				"anthropic.claude-code",
 				"GitHub.vscode-pull-request-github",
-				"GitHub.vscode-github-actions"
+				"GitHub.vscode-github-actions",
+				"golang.go"
 			]
 		}
 	},
 
-	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r scripts/* $TEMPDIR && chmod +x $TEMPDIR/*.sh && $TEMPDIR/*.sh && rm -rf $TEMPDIR",
+	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r .devcontainer/scripts/* $TEMPDIR/ && chmod +x $TEMPDIR/*.sh && for f in $TEMPDIR/*.sh; do $f; done && rm -rf $TEMPDIR",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
