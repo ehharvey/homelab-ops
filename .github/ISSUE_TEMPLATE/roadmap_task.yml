@@ -1,0 +1,44 @@
+name: Roadmap task
+description: A scoped build item from docs/Roadmap.md (sprint/phase work)
+title: "[Task]: "
+labels:
+  - task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for a concrete, scoped piece of build work tracked against a Roadmap phase. For an unresolved design question, use the **Design decision** template instead.
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Roadmap phase
+      description: Which phase in docs/Roadmap.md does this belong to?
+      options:
+        - "Phase 0 — Node #0 bootstrap tool"
+        - "Phase 1 — Web app skeleton + config sync"
+        - "Phase 2 — IPAM + app-driven installer generation"
+        - "Phase 3 — Tailscale + logging"
+        - "Deferred / post-v1"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs to be built
+      description: Scope this to one checklist item or a small group of related items.
+    validations:
+      required: true
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: Concrete, checkable completion criteria.
+    validations:
+      required: true
+  - type: input
+    id: doc-refs
+    attributes:
+      label: Doc references
+      description: Relevant file(s)/section(s) in docs/, e.g. `docs/Architecture.md § Bootstrap CLI`.
+    validations:
+      required: false
