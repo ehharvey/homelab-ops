@@ -1,0 +1,9 @@
+[submodule "third_party/incus-os"]
+	path = third_party/incus-os
+	url = https://github.com/lxc/incus-os
+	# Sparse: only incus-osd/api (+ repo-root files, e.g. COPYING) is checked
+	# out. After `git submodule update --init`, run:
+	#   git -C third_party/incus-os sparse-checkout init --cone
+	#   git -C third_party/incus-os sparse-checkout set incus-osd/api
+	# See scripts/vendor-incusos.sh, which copies the structs this project
+	# actually uses into internal/incusos/.
