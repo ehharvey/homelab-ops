@@ -6,4 +6,4 @@
 	#   git -C third_party/incus-os sparse-checkout init --cone
 	#   git -C third_party/incus-os sparse-checkout set incus-osd/api
 	# See scripts/vendor-incusos.sh, which copies the structs this project
-	# actually uses into internal/incusos/.
+	# actually uses into internal/third_party/incusos/.

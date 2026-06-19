@@ -1,8 +1,8 @@
 // Package seed renders an IncusOS install seed bundle (install.yaml,
 // network.yaml, applications.yaml) from a parsed config.Network/
-// config.Instance pair. The seed types themselves live in internal/incusos
-// (vendored from IncusOS upstream) so the rendered YAML matches IncusOS's
-// own reference format by construction.
+// config.Instance pair. The seed types themselves live in
+// internal/third_party/incusos (vendored from IncusOS upstream) so the
+// rendered YAML matches IncusOS's own reference format by construction.
 package seed
 
 import (
@@ -13,8 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	incusapi "github.com/ehharvey/homelab-ops/internal/incusos/api"
-	incusseed "github.com/ehharvey/homelab-ops/internal/incusos/api/seed"
+	incusapi "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api"
+	incusseed "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api/seed"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
 )

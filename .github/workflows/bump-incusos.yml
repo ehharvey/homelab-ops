@@ -1,7 +1,7 @@
 name: Bump incus-os submodule
 
 # Checks lxc/incus-os for new tags and opens a PR bumping third_party/incus-os
-# (and re-vendoring internal/incusos) when one is found. The submodule is the
+# (and re-vendoring internal/third_party/incusos) when one is found. The submodule is the
 # git-tracked pointer to the exact upstream commit our seed structs match
 # (see Development Conventions § Vendoring upstream IncusOS seed structs).
 
@@ -73,9 +73,9 @@ jobs:
           body: |
             Bumps the `third_party/incus-os` submodule to tag
             `${{ steps.check.outputs.latest_tag }}` and re-vendors
-            `internal/incusos` via `scripts/vendor-incusos.sh`.
+            `internal/third_party/incusos` via `scripts/vendor-incusos.sh`.
 
-            Review the diff in `internal/incusos/` for any struct changes
+            Review the diff in `internal/third_party/incusos/` for any struct changes
             before merging — `go build`/`go test` passed in this workflow,
             but that only catches breakage, not silent field-mapping drift
             in `internal/seed`.

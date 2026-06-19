@@ -1,12 +1,17 @@
 #!/bin/bash
-# Regenerates internal/incusos/ from the third_party/incus-os submodule.
+# Regenerates internal/third_party/incusos/ from the third_party/incus-os
+# submodule.
 #
-# internal/incusos holds plain copies of the upstream IncusOS seed structs
-# (install.yaml/network.yaml/applications.yaml field definitions) so our
-# Go build never depends on incus-osd's module graph (tailscale.com, the
-# full incus/v7 tree, etc.) for four small leaf files. The submodule is
-# the git-tracked pointer to the exact upstream commit; this script is how
-# that commit's structs make their way into our own module.
+# internal/third_party/incusos holds plain copies of the upstream IncusOS
+# seed structs (install.yaml/network.yaml/applications.yaml field
+# definitions) so our Go build never depends on incus-osd's module graph
+# (tailscale.com, the full incus/v7 tree, etc.) for four small leaf files.
+# It lives under internal/ (not top-level third_party/) so Go's import
+# boundary stops it from becoming a stable dependency surface outside this
+# module, while the third_party/ segment flags that the code itself isn't
+# ours. The submodule is the git-tracked pointer to the exact upstream
+# commit; this script is how that commit's structs make their way into our
+# own module.
 #
 # Run after bumping the submodule (`git -C third_party/incus-os checkout
 # <new-sha>`) to pick up the new commit's struct definitions.
@@ -16,7 +21,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 SUBMODULE_DIR="third_party/incus-os"
 SRC_API="$SUBMODULE_DIR/incus-osd/api"
-DST="internal/incusos"
+DST="internal/third_party/incusos"
 
 if [ ! -f "$SRC_API/system_network.go" ]; then
   echo "error: $SRC_API/system_network.go not found." >&2
@@ -68,11 +73,11 @@ EOF
 
 {
   header "incus-osd/api/seed/network.go" "Modified: import path rewritten to this module's vendored api package."
-  sed 's#github.com/lxc/incus-os/incus-osd/api#github.com/ehharvey/homelab-ops/internal/incusos/api#' "$SRC_API/seed/network.go"
+  sed 's#github.com/lxc/incus-os/incus-osd/api#github.com/ehharvey/homelab-ops/internal/third_party/incusos/api#' "$SRC_API/seed/network.go"
 } > "$DST/api/seed/network.go"
 
 cp "$SUBMODULE_DIR/COPYING" "$DST/LICENSE"
 
 gofmt -w "$DST"
 
-echo "Vendored internal/incusos from incus-os @ $COMMIT"
+echo "Vendored $DST from incus-os @ $COMMIT"

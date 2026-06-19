@@ -7,7 +7,7 @@
 package seed
 
 import (
-	"github.com/ehharvey/homelab-ops/internal/incusos/api"
+	"github.com/ehharvey/homelab-ops/internal/third_party/incusos/api"
 )
 
 // Network represents the network seed.
