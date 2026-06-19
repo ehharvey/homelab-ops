@@ -1,6 +1,0 @@
----
-packages:
-  - name: incus
-    version: 6.23
-  - name: btrfs-progs
-    version: latest
