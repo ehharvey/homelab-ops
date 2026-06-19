@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose new functionality not yet in docs/Roadmap.md
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For work already scoped in `docs/Roadmap.md`, use **Roadmap task** instead. This template is for net-new ideas not yet reflected in the docs.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should be added, and why.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Is this in scope for v1?
+      description: Check the "Out of scope for v1" list in docs/Architecture.md and docs/Roadmap.md first.
+      options:
+        - "Yes — fits current v1 scope"
+        - "No — should be deferred"
+        - "Unsure — needs a design decision first"
+    validations:
+      required: true

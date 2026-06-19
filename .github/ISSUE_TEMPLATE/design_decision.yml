@@ -1,0 +1,46 @@
+name: Design decision
+description: An open question that needs a decision before related work can proceed
+title: "[Decision]: "
+labels:
+  - design-decision
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Mirrors the format in `docs/Open Questions.md`. Use this when a design ambiguity blocks a roadmap task — once resolved, fold the answer back into the relevant doc and close this issue.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: State the ambiguity or decision point precisely.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this is open, what's already been ruled out, and what it affects downstream.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options considered
+      description: List the realistic options, if known.
+    validations:
+      required: false
+  - type: textarea
+    id: answer
+    attributes:
+      label: Answer
+      description: Fill in once decided. Copy this back into docs/Open Questions.md or docs/Architecture.md.
+    validations:
+      required: false
+  - type: input
+    id: doc-refs
+    attributes:
+      label: Doc references
+      description: Relevant file(s)/section(s), e.g. `docs/Open Questions.md §6`.
+    validations:
+      required: false
