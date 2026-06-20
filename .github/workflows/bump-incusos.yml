@@ -43,18 +43,18 @@ jobs:
             echo "up_to_date=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.up_to_date == 'false'
+        with:
+          go-version: "1.26"
+          cache: true
+
       - name: Bump submodule and re-vendor
         if: steps.check.outputs.up_to_date == 'false'
         run: |
           git -C third_party/incus-os checkout "${{ steps.check.outputs.latest_tag }}"
           git -C third_party/incus-os sparse-checkout set incus-osd/api
           ./scripts/vendor-incusos.sh
-
-      - uses: actions/setup-go@v5
-        if: steps.check.outputs.up_to_date == 'false'
-        with:
-          go-version: "1.26"
-          cache: true
 
       - name: Build and test against the new vendored structs
         if: steps.check.outputs.up_to_date == 'false'
