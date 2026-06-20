@@ -9,7 +9,6 @@
 	},
 	"features": {
 		"ghcr.io/devcontainers-extra/features/opentofu:1": {},
-		// "ghcr.io/devcontainers/features/python:1": {},
 		"ghcr.io/devcontainers/features/docker-in-docker:3": {},
 		"ghcr.io/devcontainers/features/github-cli:1": {},
 		"ghcr.io/devcontainers/features/go:1": {}

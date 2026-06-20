@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt tidy clean
+.PHONY: build test lint fmt tidy clean vendor-incusos
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -22,3 +22,6 @@ tidy:
 
 clean:
 	rm -rf bin/ bootstrap-output/
+
+vendor-incusos:
+	./scripts/vendor-incusos.sh
