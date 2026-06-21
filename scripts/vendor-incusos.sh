@@ -76,8 +76,25 @@ EOF
   sed 's#github.com/lxc/incus-os/incus-osd/api#github.com/ehharvey/homelab-ops/internal/third_party/incusos/api#' "$SRC_API/seed/network.go"
 } > "$DST/api/seed/network.go"
 
+{
+  header "incus-osd/api/seed/incus.go" "Unmodified — this one genuinely needs the real github.com/lxc/incus/v7/shared/api types (Incus's own InitPreseed/CertificatesPost), so its import is left as upstream wrote it rather than rewritten to our vendored package."
+  cat "$SRC_API/seed/incus.go"
+} > "$DST/api/seed/incus.go"
+
 cp "$SUBMODULE_DIR/COPYING" "$DST/LICENSE"
 
 gofmt -w "$DST"
 
-echo "Vendored $DST from incus-os @ $COMMIT"
+# incus.go pulls in github.com/lxc/incus/v7/shared/api directly. Keep our
+# go.mod pinned to the exact version incus-osd itself depends on, so our
+# constructed InitPreseed/CertificatesPost values never drift from what a
+# real incus-osd build expects.
+incus_v7_version=$(grep -oP '^\s*github\.com/lxc/incus/v7 \K\S+' "$SUBMODULE_DIR/incus-osd/go.mod")
+if [ -z "$incus_v7_version" ]; then
+  echo "error: could not find github.com/lxc/incus/v7 version in $SUBMODULE_DIR/incus-osd/go.mod" >&2
+  exit 1
+fi
+go get "github.com/lxc/incus/v7@$incus_v7_version"
+go mod tidy
+
+echo "Vendored $DST from incus-os @ $COMMIT (lxc/incus/v7 pinned to $incus_v7_version)"

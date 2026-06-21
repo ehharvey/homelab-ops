@@ -28,7 +28,7 @@ The result is a .img ready to dd onto a USB stick.`,
 }
 
 func init() {
-	buildImageCmd.Flags().StringVar(&buildImageSeedDir, "seed-dir", "./bootstrap-output/seed", "directory containing install.yaml, network.yaml, and applications.yaml (render-seed's output)")
+	buildImageCmd.Flags().StringVar(&buildImageSeedDir, "seed-dir", "./bootstrap-output/seed", "directory containing install.yaml, network.yaml, applications.yaml, and incus.yaml (render-seed's output)")
 	buildImageCmd.Flags().StringVar(&buildImageBaseImage, "image", "", "path to a base IncusOS raw image (required)")
 	buildImageCmd.Flags().StringVar(&buildImageOutput, "output", "./bootstrap-output/img/incusos.img", "path to write the seeded .img to")
 	buildImageCmd.Flags().BoolVar(&buildImageForce, "force", false, "overwrite an existing file at --output")

@@ -20,7 +20,8 @@ if ! incus network list "$REMOTE:" --project "$PROJECT" -f csv | cut -d, -f1 | g
   incus network create "$REMOTE:$NETWORK" --project "$PROJECT" \
     ipv4.address=192.168.1.1/24 \
     ipv4.nat=true \
-    ipv4.dhcp.ranges=192.168.1.2-192.168.1.199
+    ipv4.dhcp.ranges=192.168.1.2-192.168.1.199 \
+    ipv6.address=none
 fi
 
 echo "Dev network '$NETWORK' ready in project '$PROJECT' on remote '$REMOTE'."
