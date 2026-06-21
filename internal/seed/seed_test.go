@@ -1,6 +1,8 @@
 package seed
 
 import (
+	"encoding/base64"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +10,20 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ehharvey/homelab-ops/internal/cert"
 	"github.com/ehharvey/homelab-ops/internal/config"
 )
+
+func sampleClientCertPEM(t *testing.T) []byte {
+	t.Helper()
+
+	pair, err := cert.Generate(cert.Options{CommonName: "node0", ValidityDays: 1})
+	if err != nil {
+		t.Fatalf("cert.Generate: %v", err)
+	}
+
+	return pair.CertPEM
+}
 
 func sampleNetwork() config.Network {
 	return config.Network{
@@ -34,7 +48,7 @@ func sampleInstance() config.Instance {
 }
 
 func TestRenderHappyPath(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -72,7 +86,7 @@ func TestRenderDHCP(t *testing.T) {
 	inst := sampleInstance()
 	inst.StaticIP = ""
 
-	b, err := Render(sampleNetwork(), inst, Options{})
+	b, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -86,7 +100,7 @@ func TestRenderRejectsNetworkMismatch(t *testing.T) {
 	inst := sampleInstance()
 	inst.Network = "other-lan"
 
-	if _, err := Render(sampleNetwork(), inst, Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
 		t.Fatalf("expected error for mismatched network, got nil")
 	}
 }
@@ -95,7 +109,7 @@ func TestRenderRejectsUnsupportedDisk(t *testing.T) {
 	inst := sampleInstance()
 	inst.Disk = "raid1"
 
-	if _, err := Render(sampleNetwork(), inst, Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
 		t.Fatalf("expected error for unsupported disk, got nil")
 	}
 }
@@ -104,7 +118,7 @@ func TestRenderRejectsUnsupportedNIC(t *testing.T) {
 	inst := sampleInstance()
 	inst.NIC = "bond0"
 
-	if _, err := Render(sampleNetwork(), inst, Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
 		t.Fatalf("expected error for unsupported nic, got nil")
 	}
 }
@@ -113,13 +127,13 @@ func TestRenderRejectsUnsupportedApplication(t *testing.T) {
 	inst := sampleInstance()
 	inst.Applications = []string{"incus", "operations-center"}
 
-	if _, err := Render(sampleNetwork(), inst, Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
 		t.Fatalf("expected error for unsupported application, got nil")
 	}
 }
 
 func TestRenderOptionsForwarded(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), Options{ForceInstall: true, ForceReboot: true})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{ForceInstall: true, ForceReboot: true})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -128,8 +142,53 @@ func TestRenderOptionsForwarded(t *testing.T) {
 	}
 }
 
+func TestRenderIncusPreseedTrustsClientCert(t *testing.T) {
+	certPEM := sampleClientCertPEM(t)
+
+	b, err := Render(sampleNetwork(), sampleInstance(), certPEM, Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	if !b.Incus.ApplyDefaults {
+		t.Errorf("Incus.ApplyDefaults = false, want true")
+	}
+	if b.Incus.Preseed == nil {
+		t.Fatalf("Incus.Preseed = nil, want non-nil")
+	}
+
+	certs := b.Incus.Preseed.Certificates
+	if len(certs) != 1 {
+		t.Fatalf("len(Preseed.Certificates) = %d, want 1", len(certs))
+	}
+	if certs[0].Name != "node0" {
+		t.Errorf("Certificates[0].Name = %q, want %q", certs[0].Name, "node0")
+	}
+	if certs[0].Type != "client" {
+		t.Errorf("Certificates[0].Type = %q, want %q", certs[0].Type, "client")
+	}
+
+	gotDER, err := base64.StdEncoding.DecodeString(certs[0].Certificate)
+	if err != nil {
+		t.Fatalf("Certificates[0].Certificate is not valid base64: %v", err)
+	}
+	wantBlock, _ := pem.Decode(certPEM)
+	if wantBlock == nil {
+		t.Fatalf("sampleClientCertPEM did not produce a decodable PEM block")
+	}
+	if string(gotDER) != string(wantBlock.Bytes) {
+		t.Errorf("Certificates[0].Certificate does not match the base64(DER) of the original client cert")
+	}
+}
+
+func TestRenderRejectsInvalidCertPEM(t *testing.T) {
+	if _, err := Render(sampleNetwork(), sampleInstance(), []byte("not a cert"), Options{}); err == nil {
+		t.Fatal("expected error for invalid client cert PEM, got nil")
+	}
+}
+
 func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -163,10 +222,20 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 			t.Errorf("applications.yaml missing %q, got:\n%s", want, appsYAML)
 		}
 	}
+
+	incusYAML, err := yaml.Marshal(b.Incus)
+	if err != nil {
+		t.Fatalf("marshal incus: %v", err)
+	}
+	for _, want := range []string{"apply_defaults:", "preseed:", "certificates:", "type: client"} {
+		if !strings.Contains(string(incusYAML), want) {
+			t.Errorf("incus.yaml missing %q, got:\n%s", want, incusYAML)
+		}
+	}
 }
 
-func TestWriteCreatesAllThreeFiles(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), Options{})
+func TestWriteCreatesAllFourFiles(t *testing.T) {
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -176,7 +245,7 @@ func TestWriteCreatesAllThreeFiles(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	for _, name := range []string{"install.yaml", "network.yaml", "applications.yaml"} {
+	for _, name := range []string{"install.yaml", "network.yaml", "applications.yaml", "incus.yaml"} {
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -190,7 +259,7 @@ func TestWriteCreatesAllThreeFiles(t *testing.T) {
 }
 
 func TestWriteRefusesOverwriteWithoutForce(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -205,7 +274,7 @@ func TestWriteRefusesOverwriteWithoutForce(t *testing.T) {
 }
 
 func TestWriteOverwritesWithForce(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
