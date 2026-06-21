@@ -41,18 +41,3 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 - [ ] Alloy → Grafana Cloud forwarding confirmed end-to-end
 
 **Done when:** a freshly provisioned node is reachable over Tailscale and its logs show up in Grafana Cloud.
-
-## Deferred — not v1
-
-Tracked here so they don't get lost, not because they're scheduled:
-
-- Multi-node clusters; revisit wrapping Operations Center once that's real
-- GitOps auto-apply + rollback (today: diff-and-warn only)
-- Private repos, repo-sharing across environments
-- IPv6, DHCP/DNS write-back
-- Cert rotation/revocation, moving off self-signed to a real CA
-- Multi-disk / multi-NIC instance overrides
-- Commit-hash-per-node tracking
-- Phone-home / hardware-manifest reporting over Tailscale
-- Migrating the web app's own runtime off the dev k8s cluster and into the IncusOS fleet
-- Standardized schema output for the fleet-definition format and/or the future web app API: JSON Schema generated from `internal/config`'s structs (editor autocomplete, CI validation of fleet YAML) and/or OpenAPI for the web app's REST API once Phase 1+ has handlers to annotate. No GraphQL — the app's scope is simple CRUD-ish config management, not query-heavy enough to justify a schema-first GraphQL layer.

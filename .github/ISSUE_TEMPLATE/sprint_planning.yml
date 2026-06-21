@@ -1,0 +1,68 @@
+name: Sprint planning
+description: Kick off a sprint — scope the Roadmap phase work, attach the milestone, and list the tasks to file
+title: "[Sprint]: "
+labels:
+  - sprint-planning
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One of these per sprint. Use it to scope a `docs/Roadmap.md` phase into a milestone before filing individual **Roadmap task** issues against it. Close this issue once the listed tasks are filed and attached to the milestone.
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Roadmap phase
+      description: Which phase in docs/Roadmap.md is this sprint scoping?
+      options:
+        - "Phase 0 — Node #0 bootstrap tool"
+        - "Phase 1 — Web app skeleton + config sync"
+        - "Phase 2 — IPAM + app-driven installer generation"
+        - "Phase 3 — Tailscale + logging"
+        - "Deferred / post-v1"
+    validations:
+      required: true
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      description: "Name of the GitHub milestone this sprint maps to, e.g. `Sprint 2 — Phase 1: Web app skeleton + config sync`. Create it first if it doesn't exist."
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Sprint goal
+      description: What should be runnable/demonstrable at the end. Should match or narrow the phase's "Done when" in docs/Roadmap.md.
+    validations:
+      required: true
+  - type: textarea
+    id: scoped-items
+    attributes:
+      label: Scoped checklist items
+      description: Copy the relevant unchecked items from docs/Roadmap.md. Each one becomes its own Roadmap task issue, attached to the milestone above.
+      placeholder: |
+        - [ ] Go service scaffold, deployed to the local dev k8s cluster
+        - [ ] GitHub config sync: pull one public repo, parse k8s-style multi-doc YAML
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Explicitly out of scope this sprint
+      description: Anything that could be mistaken for in-scope but isn't. Check docs/Out of Scope.md first; add anything new there too.
+    validations:
+      required: false
+  - type: textarea
+    id: open-questions
+    attributes:
+      label: Open questions / risks
+      description: Unresolved design questions that could block this sprint's work. File a Design decision issue for each.
+    validations:
+      required: false
+  - type: input
+    id: doc-refs
+    attributes:
+      label: Doc references
+      description: Relevant file(s)/section(s) in docs/, e.g. `docs/Architecture.md § Web app`.
+    validations:
+      required: false
