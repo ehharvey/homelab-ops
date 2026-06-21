@@ -13,13 +13,13 @@ VS Code → "Reopen in Container". This automatically:
 
     make build && make test && make lint
 
-Should pass clean on a fresh checkout. See [Development Conventions](Development%20Conventions.md)
+Should pass clean on a fresh checkout. See [Development Conventions](Development%20Conventions)
 for the full `make` target list.
 
 ## 3. Run the bootstrap pipeline
 
 You need a `fleet.yaml` with exactly one `kind: Network` and one
-`kind: Instance` document — see [Architecture](Architecture.md) § Data model for the
+`kind: Instance` document — see [Architecture](Architecture) § Data model for the
 shape.
 
     ./bin/bootstrap gen-cert --output-dir ./bootstrap-output/cert
@@ -50,7 +50,7 @@ Run any subcommand with `--help` for the full flag list.
 
 ## What's next
 
-- [Architecture](Architecture.md) — what this app is and how the pieces fit
-- [Roadmap](Roadmap.md) — current phase/status
-- [Development Conventions](Development%20Conventions.md) — branching, PR format, Go layout, vendoring rules
-- [Open Questions](Open%20Questions.md) — resolved design decisions with rationale
+- [Architecture](Architecture) — what this app is and how the pieces fit
+- [Roadmap](Roadmap) — current phase/status
+- [Development Conventions](Development%20Conventions) — branching, PR format, Go layout, vendoring rules
+- [Open Questions](Open%20Questions) — resolved design decisions with rationale
