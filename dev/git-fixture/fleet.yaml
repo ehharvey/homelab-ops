@@ -1,0 +1,18 @@
+kind: Network
+name: dev-lan
+cidr: 10.0.0.0/24
+gateway: 10.0.0.1
+dhcp_excluded_range: 10.0.0.200-10.0.0.250
+dns: [10.0.0.1]
+---
+kind: Instance
+name: devnode0
+mac: aa:bb:cc:dd:ee:00
+network: dev-lan
+static_ip: 10.0.0.10
+disk: single
+nic: single
+security:
+  tpm: false
+  secure_boot: true
+applications: [incus]

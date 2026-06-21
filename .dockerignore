@@ -2,4 +2,5 @@
 bin/
 bootstrap-output/
 third_party/incus-os
+dev/
 *.img

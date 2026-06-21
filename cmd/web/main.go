@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/server"
 )
 
@@ -26,10 +27,21 @@ func main() {
 func run() error {
 	addr := ":" + port()
 
+	syncer := newSyncer()
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(),
+		Handler:           server.New(syncer),
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if syncer != nil {
+		if interval, ok := syncInterval(); ok {
+			go pollSync(ctx, syncer, interval)
+		}
 	}
 
 	errCh := make(chan error, 1)
@@ -40,9 +52,6 @@ func run() error {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	select {
 	case err := <-errCh:
 		return err
@@ -52,6 +61,53 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// newSyncer builds the config-sync client from the environment, or nil if
+// CONFIG_REPO_URL is unset (sync stays disabled).
+func newSyncer() *configsync.Syncer {
+	repoURL := os.Getenv("CONFIG_REPO_URL")
+	if repoURL == "" {
+		return nil
+	}
+	return &configsync.Syncer{
+		RepoURL: repoURL,
+		Ref:     os.Getenv("CONFIG_REPO_REF"),
+	}
+}
+
+// syncInterval reports the configured background poll interval from
+// CONFIG_SYNC_INTERVAL (e.g. "5m"), or ok=false if unset/invalid.
+func syncInterval() (time.Duration, bool) {
+	raw := os.Getenv("CONFIG_SYNC_INTERVAL")
+	if raw == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("invalid CONFIG_SYNC_INTERVAL %q: %v", raw, err) //nolint:gosec // raw is operator-supplied via the CONFIG_SYNC_INTERVAL env var, not untrusted external input
+		return 0, false
+	}
+	return d, true
+}
+
+func pollSync(ctx context.Context, syncer *configsync.Syncer, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cfg, sha, err := syncer.Sync(ctx)
+			if err != nil {
+				log.Printf("sync failed: %v", err)
+				continue
+			}
+			log.Printf("synced commit %s: %d networks, %d instances", sha, len(cfg.Networks), len(cfg.Instances))
+		}
+	}
 }
 
 func port() string {
