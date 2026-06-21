@@ -3,8 +3,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
@@ -44,15 +46,28 @@ func handleSync(syncer Syncer) http.HandlerFunc {
 
 		cfg, sha, err := syncer.Sync(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			// Avoid returning raw internal errors to clients; keep the
+			// detail in the server log instead.
+			log.Printf("sync failed: %v", err)
+			http.Error(w, "sync failed", http.StatusBadGateway)
+			return
+		}
+
+		// Encode into a buffer first so a (very unlikely) encoding error
+		// can still produce a clean error response instead of a partially
+		// written body followed by a superfluous WriteHeader call.
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(syncResponse{
+			Commit:    sha,
+			Networks:  len(cfg.Networks),
+			Instances: len(cfg.Instances),
+		}); err != nil {
+			log.Printf("encode sync response: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(syncResponse{
-			Commit:    sha,
-			Networks:  len(cfg.Networks),
-			Instances: len(cfg.Instances),
-		})
+		_, _ = w.Write(buf.Bytes())
 	}
 }

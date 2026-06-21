@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
@@ -72,7 +73,7 @@ func TestSyncSuccess(t *testing.T) {
 }
 
 func TestSyncFailure(t *testing.T) {
-	syncer := fakeSyncer{err: errors.New("clone failed")}
+	syncer := fakeSyncer{err: errors.New("clone failed: secret-bearing-url")}
 
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
@@ -81,5 +82,29 @@ func TestSyncFailure(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("POST /sync with failing syncer = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if strings.Contains(rec.Body.String(), "secret-bearing-url") {
+		t.Errorf("response body leaked internal error detail: %q", rec.Body.String())
+	}
+}
+
+func TestMethodNotAllowed(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/healthz"},
+		{http.MethodGet, "/sync"},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+
+		New(nil).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, http.StatusMethodNotAllowed)
+		}
 	}
 }
