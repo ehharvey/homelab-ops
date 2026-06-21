@@ -78,7 +78,11 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 
 	iface := incusapi.SystemNetworkInterface{
 		Hwaddr: inst.MAC,
-		Roles:  []string{incusapi.SystemNetworkInterfaceRoleManagement},
+		// Name is required by IncusOS (omitting it leaves the interface
+		// unconfigured at boot — confirmed by booting a real seeded image).
+		// v1 only supports a single NIC, so one fixed name is enough.
+		Name:  "eth0",
+		Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
 	}
 	if inst.StaticIP != "" {
 		prefix, err := cidrPrefixLen(net.CIDR)
@@ -86,6 +90,15 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 			return Bundle{}, fmt.Errorf("network %q: %w", net.Name, err)
 		}
 		iface.Addresses = []string{fmt.Sprintf("%s/%d", inst.StaticIP, prefix)}
+
+		// A static address with no default route leaves the node unable to
+		// reach anything outside its own subnet — confirmed by booting a
+		// real seeded image (IncusOS's update/Secure-Boot-key checks failed
+		// with "network is unreachable" until a route was added).
+		if net.Gateway == "" {
+			return Bundle{}, fmt.Errorf("network %q: gateway is required when an instance has a static_ip", net.Name)
+		}
+		iface.Routes = []incusapi.SystemNetworkRoute{{To: "0.0.0.0/0", Via: net.Gateway}}
 	}
 
 	netConfig := incusapi.SystemNetworkConfig{

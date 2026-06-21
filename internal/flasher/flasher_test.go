@@ -18,6 +18,7 @@ func writeSeedDir(t *testing.T, dir string) {
 		"install.yaml":      "force_install: false\n",
 		"network.yaml":      "interfaces: []\n",
 		"applications.yaml": "applications: []\n",
+		"incus.yaml":        "apply_defaults: true\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)

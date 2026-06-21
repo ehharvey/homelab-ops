@@ -29,6 +29,7 @@ const renderSeedFixture = `
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
+gateway: 192.168.1.1
 dns: [192.168.1.1]
 ---
 kind: Instance

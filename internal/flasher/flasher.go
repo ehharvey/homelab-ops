@@ -24,12 +24,13 @@ import (
 
 // seedFiles are the exact entry names flasher-tool's --seed tar expects,
 // matching what internal/seed.Write produces in a seed directory.
-var seedFiles = []string{"install.yaml", "network.yaml", "applications.yaml"}
+var seedFiles = []string{"install.yaml", "network.yaml", "applications.yaml", "incus.yaml"}
 
 // Options configures a Run invocation.
 type Options struct {
-	// SeedDir is a directory containing install.yaml, network.yaml, and
-	// applications.yaml (the output of the render-seed command).
+	// SeedDir is a directory containing install.yaml, network.yaml,
+	// applications.yaml, and incus.yaml (the output of the render-seed
+	// command).
 	SeedDir string
 	// BaseImage is a path to a pre-obtained base IncusOS raw image.
 	BaseImage string
@@ -48,9 +49,9 @@ type Options struct {
 	Stderr io.Writer
 }
 
-// BuildSeedTar reads install.yaml, network.yaml, and applications.yaml from
-// dir and returns an in-memory tar archive with exactly those three
-// entries, matching the layout flasher-tool's --seed flag expects.
+// BuildSeedTar reads install.yaml, network.yaml, applications.yaml, and
+// incus.yaml from dir and returns an in-memory tar archive with exactly
+// those entries, matching the layout flasher-tool's --seed flag expects.
 func BuildSeedTar(dir string) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)

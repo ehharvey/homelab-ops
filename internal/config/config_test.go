@@ -9,6 +9,7 @@ const sampleFleet = `
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
+gateway: 192.168.1.1
 dhcp_excluded_range: 192.168.1.200-192.168.1.250
 dns: [192.168.1.1]
 ---
@@ -37,6 +38,7 @@ func TestParseSampleFleet(t *testing.T) {
 	wantNetwork := Network{
 		Name:              "home-lan",
 		CIDR:              "192.168.1.0/24",
+		Gateway:           "192.168.1.1",
 		DHCPExcludedRange: "192.168.1.200-192.168.1.250",
 		DNS:               []string{"192.168.1.1"},
 	}
@@ -63,7 +65,7 @@ func TestParseSampleFleet(t *testing.T) {
 }
 
 func networksEqual(a, b Network) bool {
-	if a.Name != b.Name || a.CIDR != b.CIDR || a.DHCPExcludedRange != b.DHCPExcludedRange {
+	if a.Name != b.Name || a.CIDR != b.CIDR || a.Gateway != b.Gateway || a.DHCPExcludedRange != b.DHCPExcludedRange {
 		return false
 	}
 	return stringSlicesEqual(a.DNS, b.DNS)

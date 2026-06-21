@@ -29,6 +29,7 @@ func sampleNetwork() config.Network {
 	return config.Network{
 		Name:              "home-lan",
 		CIDR:              "192.168.1.0/24",
+		Gateway:           "192.168.1.1",
 		DHCPExcludedRange: "192.168.1.200-192.168.1.250",
 		DNS:               []string{"192.168.1.1"},
 	}
@@ -70,8 +71,14 @@ func TestRenderHappyPath(t *testing.T) {
 	if iface.Hwaddr != "aa:bb:cc:dd:ee:ff" {
 		t.Errorf("Interfaces[0].Hwaddr = %q, want %q", iface.Hwaddr, "aa:bb:cc:dd:ee:ff")
 	}
+	if iface.Name == "" {
+		t.Errorf("Interfaces[0].Name is empty; IncusOS leaves the interface unconfigured without a name")
+	}
 	if len(iface.Addresses) != 1 || iface.Addresses[0] != "192.168.1.201/24" {
 		t.Errorf("Interfaces[0].Addresses = %v, want [192.168.1.201/24]", iface.Addresses)
+	}
+	if len(iface.Routes) != 1 || iface.Routes[0].To != "0.0.0.0/0" || iface.Routes[0].Via != "192.168.1.1" {
+		t.Errorf("Interfaces[0].Routes = %+v, want default route via 192.168.1.1", iface.Routes)
 	}
 	if b.Network.DNS == nil || len(b.Network.DNS.Nameservers) != 1 || b.Network.DNS.Nameservers[0] != "192.168.1.1" {
 		t.Errorf("Network.DNS = %+v, want Nameservers [192.168.1.1]", b.Network.DNS)
@@ -93,6 +100,18 @@ func TestRenderDHCP(t *testing.T) {
 
 	if len(b.Network.Interfaces[0].Addresses) != 0 {
 		t.Errorf("Addresses = %v, want empty (DHCP fallback)", b.Network.Interfaces[0].Addresses)
+	}
+	if len(b.Network.Interfaces[0].Routes) != 0 {
+		t.Errorf("Routes = %+v, want empty (DHCP provides its own default route)", b.Network.Interfaces[0].Routes)
+	}
+}
+
+func TestRenderRejectsStaticIPWithoutGateway(t *testing.T) {
+	net := sampleNetwork()
+	net.Gateway = ""
+
+	if _, err := Render(net, sampleInstance(), sampleClientCertPEM(t), Options{}); err == nil {
+		t.Fatal("expected error for static_ip without a network gateway, got nil")
 	}
 }
 
@@ -207,7 +226,7 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal network: %v", err)
 	}
-	for _, want := range []string{"hwaddr:", "addresses:", "nameservers:"} {
+	for _, want := range []string{"hwaddr:", "addresses:", "nameservers:", "name: eth0", "routes:", "via: 192.168.1.1"} {
 		if !strings.Contains(string(networkYAML), want) {
 			t.Errorf("network.yaml missing %q, got:\n%s", want, networkYAML)
 		}

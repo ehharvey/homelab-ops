@@ -46,10 +46,13 @@ fi
 
 echo
 echo "== 2. render-seed produces a seed bundle =="
+check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$WORK_DIR/cert"
+
 cat >"$WORK_DIR/fleet.yaml" <<'EOF'
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
+gateway: 192.168.1.1
 dns: [192.168.1.1]
 ---
 kind: Instance
@@ -65,10 +68,14 @@ security:
 applications: [incus]
 EOF
 
-check "render-seed exits 0" "$BOOTSTRAP_BIN" render-seed --file "$WORK_DIR/fleet.yaml" --output-dir "$WORK_DIR/seed"
+check "render-seed exits 0" "$BOOTSTRAP_BIN" render-seed \
+  --file "$WORK_DIR/fleet.yaml" \
+  --cert "$WORK_DIR/cert/client.crt" \
+  --output-dir "$WORK_DIR/seed"
 check "install.yaml rendered" test -f "$WORK_DIR/seed/install.yaml"
 check "network.yaml rendered" test -f "$WORK_DIR/seed/network.yaml"
 check "applications.yaml rendered" test -f "$WORK_DIR/seed/applications.yaml"
+check "incus.yaml rendered" test -f "$WORK_DIR/seed/incus.yaml"
 
 echo
 echo "== 3. build-image injects the seed into a .img =="
