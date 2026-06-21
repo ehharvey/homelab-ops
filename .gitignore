@@ -12,3 +12,6 @@ bin/
 
 # Bootstrap CLI generated artifacts (certs, seeds, images) — never commit private keys
 bootstrap-output/
+
+# Locally downloaded base IncusOS images, used with scripts/validate-issue-5.sh
+*.img

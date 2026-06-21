@@ -20,11 +20,14 @@ to authenticate against node #0's Incus API.
 
 Run `./bin/bootstrap gen-cert --help` for all flags.
 
-    ./bin/bootstrap render-seed --file fleet.yaml --output-dir ./bootstrap-output/seed
+    ./bin/bootstrap render-seed --file fleet.yaml --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed
 
 Reads a fleet definition YAML file (exactly one `kind: Network` and one
-`kind: Instance` document) and renders the three IncusOS install seed files
-— `install.yaml`, `network.yaml`, `applications.yaml`.
+`kind: Instance` document) and renders the four IncusOS install seed files
+— `install.yaml`, `network.yaml`, `applications.yaml`, `incus.yaml`.
+`incus.yaml` preseeds Incus to trust `--cert` (`gen-cert`'s output) as a
+client certificate, so run `gen-cert` before `render-seed`. Without this,
+Incus never trusts the bootstrap cert on first boot.
 
     ./bin/bootstrap build-image --image ./incusos-base.img --output ./bootstrap-output/img/node0.img
 

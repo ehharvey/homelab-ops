@@ -28,7 +28,7 @@ func writeFakeFlasherToolBin(t *testing.T, dir string) string {
 
 func writeSeedFiles(t *testing.T, dir string) {
 	t.Helper()
-	for _, name := range []string{"install.yaml", "network.yaml", "applications.yaml"} {
+	for _, name := range []string{"install.yaml", "network.yaml", "applications.yaml", "incus.yaml"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("k: v\n"), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}

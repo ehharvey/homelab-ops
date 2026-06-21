@@ -17,6 +17,7 @@ import (
 type Network struct {
 	Name              string   `yaml:"name"`
 	CIDR              string   `yaml:"cidr"`
+	Gateway           string   `yaml:"gateway"`
 	DHCPExcludedRange string   `yaml:"dhcp_excluded_range"`
 	DNS               []string `yaml:"dns"`
 }
