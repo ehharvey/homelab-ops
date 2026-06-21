@@ -25,7 +25,7 @@ Once node #0 is up and reachable, this tool's job is done; steady-state provisio
 
 ### 2. Web app (Go)
 
-Runs on the local dev k8s cluster for now (per §9); migrating it to run inside the IncusOS-managed fleet itself is a later, explicit migration step, not a v1 concern.
+No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; deployment targets are a Docker image and a plain binary. Migrating it to run inside the IncusOS-managed fleet itself is a later, explicit migration step, not a v1 concern.
 
 Modules:
 
