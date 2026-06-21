@@ -8,7 +8,11 @@ name: Sync docs to wiki
 #
 # Filenames in docs/ are kept identical to the wiki's page filenames (including
 # spaces, e.g. "Development Conventions.md") on purpose, so this workflow can be a
-# straight file copy with no name-mapping table to maintain.
+# straight file copy with no name-mapping table to maintain. The wiki only ever
+# holds flat *.md files (no subdirectories), so plain `rm`/`cp` is enough — avoids
+# depending on `rsync`, which isn't guaranteed present on every runner image (it's
+# missing from the image `act` uses locally, even though GitHub's hosted
+# ubuntu-latest ships it).
 #
 # NOTE: pushing to the wiki repo with the default GITHUB_TOKEN is a known-but-
 # slightly-fragile pattern. Don't trust this purely from reading the YAML — use
@@ -44,7 +48,8 @@ jobs:
 
       - name: Copy docs into wiki checkout
         run: |
-          rsync -av --delete --exclude='.git' main/docs/ wiki/
+          find wiki -maxdepth 1 -name '*.md' -delete
+          cp main/docs/*.md wiki/
 
       - name: Configure bot git identity
         working-directory: wiki
