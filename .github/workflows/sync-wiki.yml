@@ -1,0 +1,69 @@
+name: Sync docs to wiki
+
+# Mirrors docs/*.md into the GitHub wiki (ehharvey/homelab-ops.wiki.git) on every
+# push to main that touches docs/. The wiki is a read-only mirror of docs/ in this
+# repo — see "Docs live in-repo, synced to the wiki" in
+# docs/Development Conventions.md. Never hand-edit wiki pages; edit docs/ and let
+# this workflow push the result.
+#
+# Filenames in docs/ are kept identical to the wiki's page filenames (including
+# spaces, e.g. "Development Conventions.md") on purpose, so this workflow can be a
+# straight file copy with no name-mapping table to maintain. The wiki only ever
+# holds flat *.md files (no subdirectories), so plain `rm`/`cp` is enough — avoids
+# depending on `rsync`, which isn't guaranteed present on every runner image (it's
+# missing from the image `act` uses locally, even though GitHub's hosted
+# ubuntu-latest ships it).
+#
+# NOTE: pushing to the wiki repo with the default GITHUB_TOKEN is a known-but-
+# slightly-fragile pattern. Don't trust this purely from reading the YAML — use
+# workflow_dispatch to test before merging, and watch the first real push-triggered
+# run after merge to confirm the wiki page actually updates, not just that the job
+# reports green.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v4
+        with:
+          path: main
+
+      - name: Checkout wiki repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy docs into wiki checkout
+        run: |
+          find wiki -maxdepth 1 -name '*.md' -delete
+          cp main/docs/*.md wiki/
+
+      - name: Configure bot git identity
+        working-directory: wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push if docs changed
+        working-directory: wiki
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to sync, skipping commit."
+            exit 0
+          fi
+          git commit -m "Sync wiki from docs/ (${{ github.sha }})"
+          git push origin HEAD:master
