@@ -17,7 +17,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 ## Phase 1 — Web app skeleton + config sync
 
-- [ ] Go service scaffold, deployed to the local dev k8s cluster
+- [ ] Go service scaffold, deployed via Docker Compose in dev (no k8s — see #18); deployment targets: Docker image + plain binary
 - [ ] GitHub config sync: pull one public repo, parse k8s-style multi-doc YAML (`kind: Network`, `kind: Instance`)
 - [ ] In-memory/local store for parsed objects
 - [ ] Diff against last-synced state; surface warnings (no auto-apply)

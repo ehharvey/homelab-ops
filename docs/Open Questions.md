@@ -132,7 +132,7 @@ IncusOS binds **disk encryption** to measured boot via TPM PCRs, and Secure Boot
 - This also interacts with §0: if Operations Center is the bootstrapper, does *this* app only need to exist after the first node is already up?
 
 ### Answers
-1. Dev environment on local K8s cluster
+1. ~~Dev environment on local K8s cluster~~ — superseded by #18: no k8s dependency. Dev uses Docker Compose; deployment targets are a Docker image and a plain binary.
 2. Later, we will want a migration path to IncusOS cluster (inside a k8s cluster there)
 
 ## 10. Single disk / single NIC default, configurable (note 9)
