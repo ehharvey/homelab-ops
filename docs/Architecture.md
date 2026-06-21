@@ -81,14 +81,18 @@ IncusOS node syslog → Alloy Incus instance → Grafana Cloud.
 **Flow D — Remote access:**
 Operator supplies a Tailscale authkey per node → baked into seed → node joins tailnet via IncusOS's Tailscale service.
 
-## Out of scope for v1 (explicitly deferred)
+## Networking
+We want to avoid putting Incus nodes on the public internet, so we need to figure out a way to nodes to interact with the Web app.
 
-- Multi-node clusters; revisiting Operations Center wrapping for them
-- GitOps auto-apply and rollback (v1 is diff-and-warn only)
-- Private GitHub repos / auth, repo-sharing across environments
-- IPv6, DHCP/DNS write-back integration
-- Cert rotation/revocation, CA-backed (vs. self-signed) certs
-- Multi-disk / multi-NIC instance definitions
-- Commit-hash-per-node tracking
-- Phone-home / hardware-manifest reporting over Tailscale
-- Migrating the web app's own runtime from the dev k8s cluster into the IncusOS fleet
+This is all out-of-scope for Phase 1.
+
+### Nodes connect to Web app.
+Proposition: Incus nodes run a management container. This container polls the Web App for updates.
+
+To make this more efficient, nodes could connect and then upgrade to a websocket connection for subscriptions.
+
+### Tailscale on Web App
+An alternative is if the WebApp also has Tailscale in order to connect to nodes.
+
+### WireGuard on both Web App and Nodes
+A 3rd alternative is if the Web app and Nodes connect via Wireguard.
