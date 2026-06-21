@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/server"
+	"github.com/ehharvey/homelab-ops/internal/store"
 )
 
 func main() {
@@ -29,18 +31,24 @@ func run() error {
 
 	syncer := newSyncer()
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           server.New(syncer),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	st, err := store.Open(ctx, storePath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close() //nolint:errcheck // best-effort cleanup on shutdown
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           server.New(syncer, st),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	if syncer != nil {
 		if interval, ok := syncInterval(); ok {
-			go pollSync(ctx, syncer, interval)
+			go pollSync(ctx, syncer, st, interval)
 		}
 	}
 
@@ -91,7 +99,7 @@ func syncInterval() (time.Duration, bool) {
 	return d, true
 }
 
-func pollSync(ctx context.Context, syncer *configsync.Syncer, interval time.Duration) {
+func pollSync(ctx context.Context, syncer *configsync.Syncer, st *store.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -105,6 +113,10 @@ func pollSync(ctx context.Context, syncer *configsync.Syncer, interval time.Dura
 				log.Printf("sync failed: %v", err)
 				continue
 			}
+			if err := st.Replace(ctx, cfg, sha, time.Now()); err != nil {
+				log.Printf("store sync result: %v", err)
+				continue
+			}
 			log.Printf("synced commit %s: %d networks, %d instances", sha, len(cfg.Networks), len(cfg.Instances))
 		}
 	}
@@ -115,4 +127,13 @@ func port() string {
 		return p
 	}
 	return "8080"
+}
+
+// storePath reports the local store's location from STORE_PATH, or
+// ":memory:" (non-persistent, scoped to this process) if unset.
+func storePath() string {
+	if p := os.Getenv("STORE_PATH"); p != "" {
+		return p
+	}
+	return ":memory:"
 }
