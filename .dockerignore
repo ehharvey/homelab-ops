@@ -1,0 +1,5 @@
+.git
+bin/
+bootstrap-output/
+third_party/incus-os
+*.img
