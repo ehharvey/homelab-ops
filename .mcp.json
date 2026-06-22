@@ -1,0 +1,9 @@
+{
+	"mcpServers": {
+		"lsp": {
+			"url": "http://localhost:37140",
+			"type": "http"
+		}
+	},
+	"inputs": []
+}

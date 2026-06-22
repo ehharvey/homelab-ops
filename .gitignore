@@ -15,3 +15,6 @@ bootstrap-output/
 
 # Locally downloaded base IncusOS images, used with scripts/validate-issue-5.sh
 *.img
+
+# Local LSP MCP port file, which contains the port number of the MCP server started by the bootstrap CLI. This file is used by the test suite to connect to the MCP server, and should not be committed to version control.
+.lsp_mcp.port
