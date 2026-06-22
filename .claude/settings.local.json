@@ -8,5 +8,8 @@
       "Bash(git fetch *)",
       "Bash(gh pr *)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "lsp"
+  ]
 }
