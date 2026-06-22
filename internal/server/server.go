@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
 )
@@ -18,12 +19,25 @@ type Syncer interface {
 	Sync(ctx context.Context) (config.Config, string, error)
 }
 
-// New builds the web app's HTTP handler. syncer may be nil, in which case
-// POST /sync reports itself as unconfigured rather than failing /healthz.
-func New(syncer Syncer) http.Handler {
+// Store persists the synced Config snapshot so it survives across sync
+// runs. Implemented by internal/store.Store.
+type Store interface {
+	Replace(ctx context.Context, cfg config.Config, commit string, now time.Time) error
+	LastSync(ctx context.Context) (commit string, syncedAt time.Time, ok bool, err error)
+	Networks(ctx context.Context) ([]config.Network, error)
+	Instances(ctx context.Context) ([]config.Instance, error)
+}
+
+// New builds the web app's HTTP handler. syncer and store may be nil, in
+// which case POST /sync and the read endpoints report themselves as
+// unconfigured rather than failing /healthz.
+func New(syncer Syncer, store Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("POST /sync", handleSync(syncer))
+	mux.HandleFunc("POST /sync", handleSync(syncer, store))
+	mux.HandleFunc("GET /status", handleStatus(store))
+	mux.HandleFunc("GET /networks", handleNetworks(store))
+	mux.HandleFunc("GET /instances", handleInstances(store))
 	return mux
 }
 
@@ -37,7 +51,7 @@ type syncResponse struct {
 	Instances int    `json:"instances"`
 }
 
-func handleSync(syncer Syncer) http.HandlerFunc {
+func handleSync(syncer Syncer, store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if syncer == nil {
 			http.Error(w, "sync not configured", http.StatusServiceUnavailable)
@@ -53,21 +67,91 @@ func handleSync(syncer Syncer) http.HandlerFunc {
 			return
 		}
 
-		// Encode into a buffer first so a (very unlikely) encoding error
-		// can still produce a clean error response instead of a partially
-		// written body followed by a superfluous WriteHeader call.
-		var buf bytes.Buffer
-		if err := json.NewEncoder(&buf).Encode(syncResponse{
+		if store != nil {
+			if err := store.Replace(r.Context(), cfg, sha, time.Now()); err != nil {
+				log.Printf("store sync result: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		writeJSON(w, syncResponse{
 			Commit:    sha,
 			Networks:  len(cfg.Networks),
 			Instances: len(cfg.Instances),
-		}); err != nil {
-			log.Printf("encode sync response: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+		})
+	}
+}
+
+type statusResponse struct {
+	Synced   bool   `json:"synced"`
+	Commit   string `json:"commit,omitempty"`
+	SyncedAt string `json:"synced_at,omitempty"`
+}
+
+func handleStatus(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			http.Error(w, "store not configured", http.StatusServiceUnavailable)
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(buf.Bytes())
+		commit, syncedAt, ok, err := store.LastSync(r.Context())
+		if err != nil {
+			log.Printf("query last sync: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			writeJSON(w, statusResponse{Synced: false})
+			return
+		}
+		writeJSON(w, statusResponse{Synced: true, Commit: commit, SyncedAt: syncedAt.Format(time.RFC3339)})
 	}
+}
+
+func handleNetworks(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			http.Error(w, "store not configured", http.StatusServiceUnavailable)
+			return
+		}
+		networks, err := store.Networks(r.Context())
+		if err != nil {
+			log.Printf("query networks: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, networks)
+	}
+}
+
+func handleInstances(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			http.Error(w, "store not configured", http.StatusServiceUnavailable)
+			return
+		}
+		instances, err := store.Instances(r.Context())
+		if err != nil {
+			log.Printf("query instances: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, instances)
+	}
+}
+
+// writeJSON encodes v into a buffer first so a (very unlikely) encoding
+// error can still produce a clean error response instead of a partially
+// written body followed by a superfluous WriteHeader call.
+func writeJSON(w http.ResponseWriter, v any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		log.Printf("encode response: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(buf.Bytes())
 }
