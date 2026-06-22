@@ -49,6 +49,7 @@ K8s-style: multiple YAML documents in one or more files, each discriminated by `
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
+gateway: 192.168.1.1                                # required once any instance has a static_ip
 dhcp_excluded_range: 192.168.1.200-192.168.1.250   # static IPs come from here
 dns: [192.168.1.1]
 ---

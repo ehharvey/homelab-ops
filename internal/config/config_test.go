@@ -147,6 +147,35 @@ name: whatever
 	}
 }
 
+func TestParseRejectsUnknownField(t *testing.T) {
+	// A misspelled field must be a hard error, not a silently dropped value:
+	// "statc_ip" instead of "static_ip" would otherwise leave the node on
+	// DHCP with no warning.
+	const fleet = `
+kind: Instance
+name: node0
+network: home-lan
+statc_ip: 192.168.1.201
+`
+	if _, err := Parse(strings.NewReader(fleet)); err == nil {
+		t.Fatalf("expected error for unknown field, got nil")
+	}
+}
+
+func TestParseRejectsUnknownNestedField(t *testing.T) {
+	// Strictness must reach into nested mappings too (security.*).
+	const fleet = `
+kind: Instance
+name: node0
+security:
+  tpm: false
+  secur_boot: true
+`
+	if _, err := Parse(strings.NewReader(fleet)); err == nil {
+		t.Fatalf("expected error for unknown nested field, got nil")
+	}
+}
+
 func TestParseMalformedYAML(t *testing.T) {
 	const fleet = `
 kind: Network

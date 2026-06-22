@@ -217,9 +217,9 @@ func staticIPPrefix(cidr, staticIP string, excludedStart, excludedEnd net.IP) (i
 	return size, nil
 }
 
-// Write marshals b's three documents to YAML and writes install.yaml,
-// network.yaml, and applications.yaml into dir. It refuses to overwrite
-// existing files unless force is true.
+// Write marshals b's four documents to YAML and writes install.yaml,
+// network.yaml, applications.yaml, and incus.yaml into dir. It refuses to
+// overwrite existing files unless force is true.
 func Write(dir string, b Bundle, force bool) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create output dir: %w", err)

@@ -40,15 +40,19 @@ func run() error {
 	}
 	defer st.Close() //nolint:errcheck // best-effort cleanup on shutdown
 
+	// One Service shared between the HTTP handler and the background poller so
+	// their syncs serialize through a single lock.
+	svc := server.NewService(syncer, st)
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(syncer, st),
+		Handler:           server.NewFromService(svc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	if syncer != nil {
 		if interval, ok := syncInterval(); ok {
-			go pollSync(ctx, syncer, st, interval)
+			go pollSync(ctx, svc, interval)
 		}
 	}
 
@@ -71,9 +75,12 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// newSyncer builds the config-sync client from the environment, or nil if
-// CONFIG_REPO_URL is unset (sync stays disabled).
-func newSyncer() *configsync.Syncer {
+// newSyncer builds the config-sync client from the environment, or a nil
+// server.Syncer if CONFIG_REPO_URL is unset (sync stays disabled). The return
+// type is the interface, not *configsync.Syncer, so an unconfigured result is
+// a true nil interface — boxing a nil *configsync.Syncer would defeat the
+// nil-check in handleSync and panic on the first request.
+func newSyncer() server.Syncer {
 	repoURL := os.Getenv("CONFIG_REPO_URL")
 	if repoURL == "" {
 		return nil
@@ -93,31 +100,32 @@ func syncInterval() (time.Duration, bool) {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		log.Printf("invalid CONFIG_SYNC_INTERVAL %q: %v", raw, err) //nolint:gosec // raw is operator-supplied via the CONFIG_SYNC_INTERVAL env var, not untrusted external input
+		//nolint:gosec // G706: raw is an operator-supplied env var (not untrusted input) and %q quotes it
+		log.Printf("invalid CONFIG_SYNC_INTERVAL %q: %v", raw, err)
 		return 0, false
 	}
 	return d, true
 }
 
-func pollSync(ctx context.Context, syncer *configsync.Syncer, st *store.Store, interval time.Duration) {
+func pollSync(ctx context.Context, svc *server.Service, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
+		// Sync once up front so a fresh process serves current state before
+		// the first interval elapses, then again on every tick. Going through
+		// svc.Sync (the same path POST /sync drives) surfaces diff warnings
+		// against the prior snapshot rather than silently replacing it.
+		if res, err := svc.Sync(ctx, time.Now()); err != nil {
+			log.Printf("background sync: %v", err)
+		} else {
+			log.Printf("synced commit %s: %d networks, %d instances", res.Commit, len(res.Config.Networks), len(res.Config.Instances))
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cfg, sha, err := syncer.Sync(ctx)
-			if err != nil {
-				log.Printf("sync failed: %v", err)
-				continue
-			}
-			if err := st.Replace(ctx, cfg, sha, time.Now()); err != nil {
-				log.Printf("store sync result: %v", err)
-				continue
-			}
-			log.Printf("synced commit %s: %d networks, %d instances", sha, len(cfg.Networks), len(cfg.Instances))
 		}
 	}
 }
