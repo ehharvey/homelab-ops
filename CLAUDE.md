@@ -11,7 +11,7 @@ Guidance for Claude Code working in this repo. Full context lives in
 
 ## Commands
 
-    make build   # go build -o bin/bootstrap ./cmd/bootstrap
+    make build   # builds both binaries: bin/bootstrap (CLI) and bin/web (web app)
     make test    # go test ./... -race -cover
     make lint    # golangci-lint via Docker — slow; run before declaring done
     make fmt     # gofmt + goimports
@@ -30,12 +30,24 @@ Guidance for Claude Code working in this repo. Full context lives in
   number.
 - Generated artifacts (certs, keys, seeds, images) are gitignored under
   `bootstrap-output/` and `*.img` — never commit them.
+- `//nolint:gosec` directives here suppress *real* findings (e.g. G304 file
+  paths, G306 `0644` perms, G706 log injection on operator-supplied input),
+  not noise — don't strip them assuming they're spurious; `make lint` is the
+  arbiter.
 
 ## Validating changes for real
 
 Unit tests don't catch everything here — issue #5 shipped with a passing
 test suite but a silently dropped seed file that only surfaced when
-booting a real Incus VM. `scripts/validate-issue-N.sh` scripts each drive a
-real pipeline (real Incus remote `homelab-host`, sometimes a real VM boot)
-proving one issue's "done when" criteria — run the relevant one before
-calling related work done, not just `make test`.
+booting a real Incus VM. `scripts/validate-*.sh` each drive a real pipeline
+end-to-end, proving a "done when" criterion `make test` can't — run the
+relevant one before calling related work done. Two families:
+
+- **Bootstrap/Phase-0** (e.g. `validate-issue-5.sh`): drive the real Incus
+  remote `homelab-host`, sometimes booting a real VM off the produced `.img`.
+- **Web app** (e.g. `validate-issue-22.sh`, `validate-config-sync-poll.sh`):
+  bring up the real `docker compose` stack (web + a throwaway git remote in
+  `dev/git-fixture`) and assert against its HTTP API and logs — needs Docker.
+
+Not every script is named `validate-issue-N.sh`; a fix without its own issue
+can take a descriptive name (`validate-config-sync-poll.sh`).
