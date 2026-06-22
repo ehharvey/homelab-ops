@@ -48,6 +48,23 @@ install + cert trust end-to-end without real hardware.
 
 Run any subcommand with `--help` for the full flag list.
 
+## 4. Run the web app (dev)
+
+    make dev
+
+Builds the web app's Docker image and starts it via `docker-compose.yml`,
+alongside a throwaway git remote (`dev/git-fixture`) seeded with a sample
+`fleet.yaml` — no real GitHub repo needed for local dev. The app syncs from
+that fixture on `PORT=8080`.
+
+    curl localhost:8080/healthz
+    curl -X POST localhost:8080/sync
+    curl localhost:8080/status
+    curl localhost:8080/networks
+    curl localhost:8080/instances
+
+See [Architecture](Architecture) § HTTP API for what each route returns.
+
 ## What's next
 
 - [Architecture](Architecture) — what this app is and how the pieces fit

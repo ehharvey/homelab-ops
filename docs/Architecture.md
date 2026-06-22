@@ -29,7 +29,7 @@ No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; dep
 
 Modules:
 
-- **Config sync** — pulls one GitHub repo (public, per environment) on a poll/manual trigger, parses the k8s-style multi-doc YAML, diffs against last-known state, and **warns only** — no auto-apply, no rollback logic in v1.
+- **Config sync** — pulls one git repo (public, per environment; any `go-git`-supported transport, not GitHub-API-specific) on a poll/manual trigger, parses the k8s-style multi-doc YAML, diffs against last-known state, and **warns only** — no auto-apply, no rollback logic in v1.
 - **Instance/network store** — holds the parsed `Instance` and `Network` objects, queryable by kind/name. Backed by sqlite (`modernc.org/sqlite`, pure Go, no cgo — keeps the single-binary/distroless deployment goal from #18), in `:memory:` mode by default. Each sync fully replaces the prior snapshot rather than merging into it, matching config sync's full-`Config`-per-sync output (see #21).
 - **IPAM** — tracks `Network` definitions (CIDR + DHCP exclusion ranges), assigns static IPv4s to instances, basic duplicate detection. App is the sole source of truth; no DHCP/DNS write-back in v1.
 - **Seed/installer generation** — same seed-rendering logic as the bootstrap CLI, generalized to any instance: builds `install.yaml`/`network.yaml`/`applications.yaml`/`incus.yaml`, calls `flasher-tool`, and either serves the resulting `.img` for download or flashes it directly — whichever is easiest to implement first.
@@ -81,18 +81,18 @@ IncusOS node syslog → Alloy Incus instance → Grafana Cloud.
 **Flow D — Remote access:**
 Operator supplies a Tailscale authkey per node → baked into seed → node joins tailnet via IncusOS's Tailscale service.
 
-## Networking
-We want to avoid putting Incus nodes on the public internet, so we need to figure out a way to nodes to interact with the Web app.
+## HTTP API
 
-This is all out-of-scope for Phase 1.
+The web app (`internal/server`) currently exposes:
 
-### Nodes connect to Web app.
-Proposition: Incus nodes run a management container. This container polls the Web App for updates.
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/healthz` | GET | Liveness check |
+| `/sync` | POST | Trigger a config-sync run; returns the synced commit, network/instance counts, and diff counts against the prior snapshot |
+| `/status` | GET | Last-synced commit SHA and sync time, if any |
+| `/networks` | GET | All stored `Network` objects |
+| `/instances` | GET | All stored `Instance` objects |
 
-To make this more efficient, nodes could connect and then upgrade to a websocket connection for subscriptions.
+Full diff detail (human-readable added/changed/removed lines) is server-log-only, not part of the JSON response — keeps the API from committing to a long-form string contract before a UI exists to consume it. No OpenAPI spec yet (see `Out of Scope.md`).
 
-### Tailscale on Web App
-An alternative is if the WebApp also has Tailscale in order to connect to nodes.
-
-### WireGuard on both Web App and Nodes
-A 3rd alternative is if the Web app and Nodes connect via Wireguard.
+Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is unresolved — see `Open Questions.md` § Networking. Out of scope for Phase 1.
