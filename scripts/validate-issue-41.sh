@@ -1,14 +1,16 @@
 #! /bin/bash
-# Validates GH issue #41: seed.Render should reject an Instance.static_ip that's
-# not contained within the declared Network.CIDR. The current codebase does not
-# perform this validation, so this script is expected to fail until the fix is
-# implemented.
+# Validates GH issue #41: seed.Render should reject network addressing that
+# doesn't add up. Three cases, each its own fleet.yaml + render-seed run:
+#   1. Instance.static_ip not contained within the declared Network.CIDR.
+#   2. Network.dhcp_excluded_range not contained within Network.CIDR.
+#   3. Instance.static_ip inside the CIDR but outside dhcp_excluded_range
+#      (per docs/Architecture.md, static IPs are meant to be drawn from the
+#      excluded range so DHCP never hands one out from under a node).
 #
 # The script builds the bootstrap CLI binary, generates a client cert (via
-# bootstrap gen-cert), writes a small fleet.yaml where the instance's
-# static_ip is outside the network's CIDR, and then runs
+# bootstrap gen-cert), then for each case writes a fleet.yaml and runs
 # `bootstrap render-seed --file <fleet>` expecting it to return non-zero.
-# If render-seed succeeds (current behavior), the validation fails.
+# If render-seed succeeds for any case, the validation fails.
 
 set -uo pipefail
 
@@ -17,6 +19,7 @@ cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
+CERT_DIR="$WORK_DIR/cert"
 
 pass=0
 fail=0
@@ -38,6 +41,26 @@ check() {
   fi
 }
 
+# expect_render_seed_failure writes fleet_yaml to a temp file and runs
+# render-seed against it, expecting a non-zero exit (the fleet is invalid).
+# Since the validations under test may not exist yet, render-seed will
+# probably succeed instead — which is the desired failure mode until the
+# fix is applied.
+expect_render_seed_failure() {
+  local desc="$1" fleet_yaml="$2"
+  local fleet_file
+  fleet_file="$(mktemp "$WORK_DIR/fleet.XXXXXX.yaml")"
+  printf '%s\n' "$fleet_yaml" >"$fleet_file"
+
+  if ! "$BOOTSTRAP_BIN" render-seed --file "$fleet_file" --cert "$CERT_DIR/client.crt" --output-dir "$WORK_DIR/seed-$$-$RANDOM" >/dev/null 2>&1; then
+    echo "PASS: $desc"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: $desc" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # Start
 
 echo "== 1. Prerequisites: go tool and build bootstrap binary =="
@@ -50,10 +73,12 @@ if [ ! -x "$BOOTSTRAP_BIN" ]; then
 fi
 
 echo
-echo "== 2. Generate cert and create an out-of-range fleet.yaml =="
-check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$WORK_DIR/cert"
+echo "== 2. Generate cert =="
+check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR"
 
-cat >"$WORK_DIR/fleet.yaml" <<EOF
+echo
+echo "== 3. render-seed must reject static_ip outside the network's cidr =="
+expect_render_seed_failure "render-seed rejects static_ip outside cidr" "$(cat <<'EOF'
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
@@ -72,19 +97,55 @@ security:
   secure_boot: true
 applications: [incus]
 EOF
-
-# Run render-seed and EXPECT it to fail because static_ip is outside the CIDR.
-# Since the current code does NOT validate this, the command will probably
-# succeed and cause this validation script to fail — which is the desired
-# outcome until the fix is applied.
+)"
 
 echo
-echo "== 3. Run render-seed and expect failure (static_ip outside CIDR) =="
-if ! "$BOOTSTRAP_BIN" render-seed --file "$WORK_DIR/fleet.yaml" --cert "$WORK_DIR/cert/client.crt" --output-dir "$WORK_DIR/seed" >/dev/null 2>&1; then
-  echo "PASS: render-seed returned non-zero as expected (validation present)"
-  exit 0
-else
-  echo "FAIL: render-seed succeeded but should have rejected the out-of-range static_ip" >&2
-  echo "(This means the repository currently lacks the IP-in-CIDR validation.)" >&2
-  exit 1
-fi
+echo "== 4. render-seed must reject dhcp_excluded_range outside the network's cidr =="
+expect_render_seed_failure "render-seed rejects dhcp_excluded_range outside cidr" "$(cat <<'EOF'
+kind: Network
+name: home-lan
+cidr: 192.168.1.0/24
+gateway: 192.168.1.1
+dhcp_excluded_range: 10.0.0.200-10.0.0.250
+dns: [192.168.1.1]
+---
+kind: Instance
+name: node0
+mac: aa:bb:cc:dd:ee:ff
+network: home-lan
+disk: single
+nic: single
+security:
+  tpm: false
+  secure_boot: true
+applications: [incus]
+EOF
+)"
+
+echo
+echo "== 5. render-seed must reject static_ip inside cidr but outside dhcp_excluded_range =="
+expect_render_seed_failure "render-seed rejects static_ip outside dhcp_excluded_range" "$(cat <<'EOF'
+kind: Network
+name: home-lan
+cidr: 192.168.1.0/24
+gateway: 192.168.1.1
+dhcp_excluded_range: 192.168.1.200-192.168.1.250
+dns: [192.168.1.1]
+---
+kind: Instance
+name: node0
+mac: aa:bb:cc:dd:ee:ff
+network: home-lan
+static_ip: 192.168.1.50
+disk: single
+nic: single
+security:
+  tpm: false
+  secure_boot: true
+applications: [incus]
+EOF
+)"
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
