@@ -6,12 +6,14 @@
 package seed
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	lxcapi "github.com/lxc/incus/v7/shared/api"
 	"gopkg.in/yaml.v3"
@@ -84,10 +86,15 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 		Name:  "eth0",
 		Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
 	}
+	excludedStart, excludedEnd, err := excludedRangeBounds(net)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("network %q: %w", net.Name, err)
+	}
+
 	if inst.StaticIP != "" {
-		prefix, err := cidrPrefixLen(net.CIDR)
+		prefix, err := staticIPPrefix(net.CIDR, inst.StaticIP, excludedStart, excludedEnd)
 		if err != nil {
-			return Bundle{}, fmt.Errorf("network %q: %w", net.Name, err)
+			return Bundle{}, fmt.Errorf("instance %q: %w", inst.Name, err)
 		}
 		iface.Addresses = []string{fmt.Sprintf("%s/%d", inst.StaticIP, prefix)}
 
@@ -154,12 +161,57 @@ func renderIncusPreseed(certName string, clientCertPEM []byte) (incusseed.Incus,
 	}, nil
 }
 
-// cidrPrefixLen returns the prefix length (e.g. 24 for a /24) of a CIDR
-// string such as "192.168.1.0/24".
-func cidrPrefixLen(cidr string) (int, error) {
+// excludedRangeBounds parses netCfg.DHCPExcludedRange (format
+// "<start>-<end>", e.g. "192.168.1.200-192.168.1.250") if set, and
+// validates it lies within netCfg.CIDR. It returns nil bounds and no error
+// if DHCPExcludedRange is unset — the range is optional.
+func excludedRangeBounds(netCfg config.Network) (start, end net.IP, err error) {
+	if netCfg.DHCPExcludedRange == "" {
+		return nil, nil, nil
+	}
+
+	parts := strings.SplitN(netCfg.DHCPExcludedRange, "-", 2)
+	if len(parts) != 2 {
+		return nil, nil, fmt.Errorf("dhcp_excluded_range %q: want \"<start>-<end>\"", netCfg.DHCPExcludedRange)
+	}
+	start, end = net.ParseIP(strings.TrimSpace(parts[0])), net.ParseIP(strings.TrimSpace(parts[1]))
+	if start == nil || end == nil {
+		return nil, nil, fmt.Errorf("dhcp_excluded_range %q: not two valid IP addresses", netCfg.DHCPExcludedRange)
+	}
+	if bytes.Compare(start.To16(), end.To16()) > 0 {
+		return nil, nil, fmt.Errorf("dhcp_excluded_range %q: start is after end", netCfg.DHCPExcludedRange)
+	}
+
+	_, ipNet, err := net.ParseCIDR(netCfg.CIDR)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse cidr %q: %w", netCfg.CIDR, err)
+	}
+	if !ipNet.Contains(start) || !ipNet.Contains(end) {
+		return nil, nil, fmt.Errorf("dhcp_excluded_range %q is not contained in cidr %q", netCfg.DHCPExcludedRange, netCfg.CIDR)
+	}
+	return start, end, nil
+}
+
+// staticIPPrefix validates that staticIP is a syntactically valid address
+// contained in cidr — and, if excludedStart/excludedEnd are non-nil,
+// within that dhcp_excluded_range too (per Architecture.md: static
+// addresses are meant to be drawn from the excluded range, so DHCP never
+// hands one out from under a node). It returns cidr's prefix length (e.g.
+// 24 for a /24) for building the rendered address ("192.168.1.201/24").
+func staticIPPrefix(cidr, staticIP string, excludedStart, excludedEnd net.IP) (int, error) {
+	ip := net.ParseIP(staticIP)
+	if ip == nil {
+		return 0, fmt.Errorf("static_ip %q is not a valid IP address", staticIP)
+	}
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return 0, fmt.Errorf("parse cidr %q: %w", cidr, err)
+	}
+	if !ipNet.Contains(ip) {
+		return 0, fmt.Errorf("static_ip %q is not contained in cidr %q", staticIP, cidr)
+	}
+	if excludedStart != nil && (bytes.Compare(ip.To16(), excludedStart.To16()) < 0 || bytes.Compare(ip.To16(), excludedEnd.To16()) > 0) {
+		return 0, fmt.Errorf("static_ip %q is outside dhcp_excluded_range %s-%s", staticIP, excludedStart, excludedEnd)
 	}
 	size, _ := ipNet.Mask.Size()
 	return size, nil
