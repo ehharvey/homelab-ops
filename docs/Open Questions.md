@@ -130,6 +130,18 @@ We want to avoid putting Incus nodes on the public internet, so nodes need some 
 ### Answer
 Not yet decided — revisit when Phase 2/3 needs nodes to talk back to the app.
 
+#### Considered and rejected for v1: an end-to-end-encrypted command bus
+
+A more ambitious version of option 1 came up: make the internet-facing web app a *zero-knowledge relay* — nodes poll it, browser clients push encrypted commands, the server only ever stores ciphertext (per-node keypairs, signed payloads, replay windows, browser-held keys, ciphertext in Postgres). Rejected for v1:
+
+- **It's a control plane; v1 deliberately isn't one.** Config sync is diff-and-warn only — no apply, no reconciliation (§1). An encrypted command queue is the opposite of that decision.
+- **E2EE's value proposition is moot here.** v1 is single-user with no auth (see `Out of Scope.md`). Zero-knowledge encryption protects data from an untrusted server operator across multiple clients; with one user running their own server, it encrypts data from yourself.
+- **The transport story already covers it.** The decided posture is keeping nodes off the public internet and reaching them over Tailscale/WireGuard (§8, options 2–3 above), which already gives confidentiality + node identity without a bespoke crypto protocol.
+- **Wrong stack / against conventions.** It assumes Postgres and a custom Ed25519/AES-GCM protocol; the app is pure-Go sqlite, single-binary, distroless (§9), and conventions favour stdlib over a bespoke security-critical subsystem.
+- **The real "command a node" path already exists.** The app issues each node a client cert and talks to its Incus API directly (§4) — authenticated by Incus itself. A second, parallel encrypted command bus would duplicate that and reintroduce the trusted control plane v1 avoids.
+
+Worth keeping from the discussion: prefer node-initiated outbound (option 1), and if a node ever does send actions, send *structured actions*, not shell commands. Revisit the whole idea only if multi-user or an untrusted-relay requirement ever materialises.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
