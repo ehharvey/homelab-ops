@@ -96,3 +96,19 @@ The web app (`internal/server`) currently exposes:
 Full diff detail (human-readable added/changed/removed lines) is server-log-only, not part of the JSON response — keeps the API from committing to a long-form string contract before a UI exists to consume it. No OpenAPI spec yet (see `Out of Scope.md`).
 
 Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is unresolved — see `Open Questions.md` § Networking. Out of scope for Phase 1.
+
+## Incus Node networking to Web App
+We want to avoid putting Incus nodes on the public internet, so we need to figure out a way for nodes to interact with the Web app.
+
+This is all out-of-scope for Phase 1. We need to visit after v1.
+
+### Nodes connect to Web app.
+Proposition: Incus nodes run a management container. This container polls the Web App for updates.
+
+To make this more efficient, nodes could connect and then upgrade to a websocket connection for subscriptions.
+
+### Tailscale on Web App
+An alternative is if the WebApp also has Tailscale in order to connect to nodes.
+
+### WireGuard on both Web App and Nodes
+A 3rd alternative is if the Web app and Nodes connect via Wireguard.
