@@ -30,7 +30,7 @@ No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; dep
 Modules:
 
 - **Config sync** — pulls one GitHub repo (public, per environment) on a poll/manual trigger, parses the k8s-style multi-doc YAML, diffs against last-known state, and **warns only** — no auto-apply, no rollback logic in v1.
-- **Instance/network store** — holds the parsed `Instance` and `Network` objects (in-memory or a simple local DB; not yet specified — flag for the roadmap).
+- **Instance/network store** — holds the parsed `Instance` and `Network` objects, queryable by kind/name. Backed by sqlite (`modernc.org/sqlite`, pure Go, no cgo — keeps the single-binary/distroless deployment goal from #18), in `:memory:` mode by default. Each sync fully replaces the prior snapshot rather than merging into it, matching config sync's full-`Config`-per-sync output (see #21).
 - **IPAM** — tracks `Network` definitions (CIDR + DHCP exclusion ranges), assigns static IPv4s to instances, basic duplicate detection. App is the sole source of truth; no DHCP/DNS write-back in v1.
 - **Seed/installer generation** — same seed-rendering logic as the bootstrap CLI, generalized to any instance: builds `install.yaml`/`network.yaml`/`applications.yaml`/`incus.yaml`, calls `flasher-tool`, and either serves the resulting `.img` for download or flashes it directly — whichever is easiest to implement first.
 - **Cert issuance** — self-signed cert per node, for direct Incus client authentication (not Operations Center auth — that question is shelved with the OC-wrapping decision), preseeded into the node's `incus.yaml` so Incus trusts it before first boot. Storage/rotation/revocation explicitly deferred.
