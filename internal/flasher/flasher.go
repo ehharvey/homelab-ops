@@ -139,8 +139,9 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// copyFile copies src to dst, refusing to follow symlinks for dst and
-// creating dst's parent directory if needed.
+// copyFile copies src to dst, creating dst's parent directory if needed and
+// truncating dst if it already exists (Run gates overwrites via Options.Force
+// before reaching this point).
 func copyFile(src, dst string) (err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return fmt.Errorf("create output dir: %w", err)

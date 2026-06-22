@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
@@ -31,16 +33,48 @@ type Store interface {
 	Instances(ctx context.Context) ([]config.Instance, error)
 }
 
+// Service coordinates config syncs from one syncer into one store. It exists
+// so a manual POST /sync and cmd/web's background poller share a single
+// serialization point: the mutex below means their read-prior-then-replace
+// sequences can't interleave (which would mis-attribute a diff warning) and
+// two clones never run at once. syncer and store may be nil — see New.
+type Service struct {
+	syncer Syncer
+	store  Store
+	mu     sync.Mutex
+}
+
+// NewService builds a Service over syncer and store, either of which may be
+// nil (POST /sync and the read endpoints then report themselves unconfigured).
+func NewService(syncer Syncer, store Store) *Service {
+	return &Service{syncer: syncer, store: store}
+}
+
+// Sync runs one serialized sync cycle at time now; see SyncOnce for the
+// per-stage semantics and error classification.
+func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SyncOnce(ctx, s.syncer, s.store, now)
+}
+
 // New builds the web app's HTTP handler. syncer and store may be nil, in
 // which case POST /sync and the read endpoints report themselves as
 // unconfigured rather than failing /healthz.
 func New(syncer Syncer, store Store) http.Handler {
+	return NewFromService(NewService(syncer, store))
+}
+
+// NewFromService builds the handler around an existing Service, so a caller
+// (cmd/web) can share one sync serialization point between the HTTP handler
+// and a background poller.
+func NewFromService(svc *Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("POST /sync", handleSync(syncer, store))
-	mux.HandleFunc("GET /status", handleStatus(store))
-	mux.HandleFunc("GET /networks", handleNetworks(store))
-	mux.HandleFunc("GET /instances", handleInstances(store))
+	mux.HandleFunc("POST /sync", handleSync(svc))
+	mux.HandleFunc("GET /status", handleStatus(svc.store))
+	mux.HandleFunc("GET /networks", handleNetworks(svc.store))
+	mux.HandleFunc("GET /instances", handleInstances(svc.store))
 	return mux
 }
 
@@ -82,52 +116,87 @@ func newDiffCounts(d configdiff.Result) diffCounts {
 	}
 }
 
-func handleSync(syncer Syncer, store Store) http.HandlerFunc {
+// ErrSync and ErrStore classify a SyncOnce failure by stage: a pull/parse
+// failure (upstream's fault, maps to 502) versus a persistence failure
+// (ours, maps to 500). Callers use errors.Is to tell them apart.
+var (
+	ErrSync  = errors.New("sync failed")
+	ErrStore = errors.New("store failed")
+)
+
+// SyncResult is the outcome of one successful SyncOnce: the synced commit,
+// the parsed Config, and its diff against the prior stored snapshot.
+type SyncResult struct {
+	Commit string
+	Config config.Config
+	Diff   configdiff.Result
+}
+
+// SyncOnce runs one config-sync cycle, shared by POST /sync and cmd/web's
+// background poller so both surface the same diff warnings: pull from syncer,
+// diff the result against store's prior snapshot (logging warnings — the only
+// place warnings are surfaced today, per Roadmap Phase 1), then replace the
+// stored snapshot at time now. A failure reading prior state for the diff is
+// logged and swallowed, never failing the sync — the diff is informational.
+// A nil store skips both the diff and the replace (sync-only mode). Errors
+// wrap ErrSync (pull/parse) or ErrStore (persistence).
+func SyncOnce(ctx context.Context, syncer Syncer, store Store, now time.Time) (SyncResult, error) {
+	cfg, sha, err := syncer.Sync(ctx)
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("%w: %w", ErrSync, err)
+	}
+
+	var diff configdiff.Result
+	if store != nil {
+		// Read prior state before Replace overwrites it. A failure here must
+		// never fail the sync itself — diff is informational only.
+		if oldCfg, firstSync, err := readSnapshot(ctx, store); err != nil {
+			log.Printf("configdiff: read prior state: %v", err)
+		} else if firstSync {
+			log.Printf("configdiff: first sync, %d networks / %d instances baseline", len(cfg.Networks), len(cfg.Instances))
+		} else {
+			diff = configdiff.Diff(oldCfg, cfg)
+			if !diff.Empty() {
+				log.Printf("configdiff: %d/%d/%d networks added/changed/removed, %d/%d/%d instances added/changed/removed:\n%s",
+					len(diff.AddedNetworks), len(diff.ChangedNetworks), len(diff.RemovedNetworks),
+					len(diff.AddedInstances), len(diff.ChangedInstances), len(diff.RemovedInstances),
+					strings.Join(diff.Lines(), "\n"))
+			}
+		}
+
+		if err := store.Replace(ctx, cfg, sha, now); err != nil {
+			return SyncResult{}, fmt.Errorf("%w: %w", ErrStore, err)
+		}
+	}
+
+	return SyncResult{Commit: sha, Config: cfg, Diff: diff}, nil
+}
+
+func handleSync(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if syncer == nil {
+		if svc.syncer == nil {
 			http.Error(w, "sync not configured", http.StatusServiceUnavailable)
 			return
 		}
 
-		cfg, sha, err := syncer.Sync(r.Context())
+		res, err := svc.Sync(r.Context(), time.Now())
 		if err != nil {
 			// Avoid returning raw internal errors to clients; keep the
 			// detail in the server log instead.
 			log.Printf("sync failed: %v", err)
+			if errors.Is(err, ErrStore) {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
 			http.Error(w, "sync failed", http.StatusBadGateway)
 			return
 		}
 
-		var diff configdiff.Result
-		if store != nil {
-			// Read prior state before Replace overwrites it. A failure here
-			// must never fail the sync itself — diff is informational only.
-			if oldCfg, firstSync, err := readSnapshot(r.Context(), store); err != nil {
-				log.Printf("configdiff: read prior state: %v", err)
-			} else if firstSync {
-				log.Printf("configdiff: first sync, %d networks / %d instances baseline", len(cfg.Networks), len(cfg.Instances))
-			} else {
-				diff = configdiff.Diff(oldCfg, cfg)
-				if !diff.Empty() {
-					log.Printf("configdiff: %d/%d/%d networks added/changed/removed, %d/%d/%d instances added/changed/removed:\n%s",
-						len(diff.AddedNetworks), len(diff.ChangedNetworks), len(diff.RemovedNetworks),
-						len(diff.AddedInstances), len(diff.ChangedInstances), len(diff.RemovedInstances),
-						strings.Join(diff.Lines(), "\n"))
-				}
-			}
-
-			if err := store.Replace(r.Context(), cfg, sha, time.Now()); err != nil {
-				log.Printf("store sync result: %v", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-		}
-
 		writeJSON(w, syncResponse{
-			Commit:    sha,
-			Networks:  len(cfg.Networks),
-			Instances: len(cfg.Instances),
-			Diff:      newDiffCounts(diff),
+			Commit:    res.Commit,
+			Networks:  len(res.Config.Networks),
+			Instances: len(res.Config.Instances),
+			Diff:      newDiffCounts(res.Diff),
 		})
 	}
 }
@@ -193,6 +262,11 @@ func handleNetworks(store Store) http.HandlerFunc {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		// Serve [] rather than null on an empty store so clients get a stable
+		// array contract.
+		if networks == nil {
+			networks = []config.Network{}
+		}
 		writeJSON(w, networks)
 	}
 }
@@ -208,6 +282,9 @@ func handleInstances(store Store) http.HandlerFunc {
 			log.Printf("query instances: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
+		}
+		if instances == nil {
+			instances = []config.Instance{}
 		}
 		writeJSON(w, instances)
 	}
