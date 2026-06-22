@@ -6,11 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/configdiff"
 )
 
 // Syncer pulls fleet config from its source and reports the resulting
@@ -46,9 +49,37 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 type syncResponse struct {
-	Commit    string `json:"commit"`
-	Networks  int    `json:"networks"`
-	Instances int    `json:"instances"`
+	Commit    string     `json:"commit"`
+	Networks  int        `json:"networks"`
+	Instances int        `json:"instances"`
+	Diff      diffCounts `json:"diff"`
+}
+
+// diffCounts summarizes a configdiff.Result for the sync response — counts
+// only, not the full human-readable warning text (see Lines, which is
+// log-only). The issue's done-when criterion ("visible diff/warning") is
+// satisfied by the server log; the JSON response only needs to tell a
+// caller that something changed, without committing the API to a
+// long-form string contract this'll likely want to redesign once a UI
+// exists.
+type diffCounts struct {
+	NetworksAdded    int `json:"networks_added"`
+	NetworksChanged  int `json:"networks_changed"`
+	NetworksRemoved  int `json:"networks_removed"`
+	InstancesAdded   int `json:"instances_added"`
+	InstancesChanged int `json:"instances_changed"`
+	InstancesRemoved int `json:"instances_removed"`
+}
+
+func newDiffCounts(d configdiff.Result) diffCounts {
+	return diffCounts{
+		NetworksAdded:    len(d.AddedNetworks),
+		NetworksChanged:  len(d.ChangedNetworks),
+		NetworksRemoved:  len(d.RemovedNetworks),
+		InstancesAdded:   len(d.AddedInstances),
+		InstancesChanged: len(d.ChangedInstances),
+		InstancesRemoved: len(d.RemovedInstances),
+	}
 }
 
 func handleSync(syncer Syncer, store Store) http.HandlerFunc {
@@ -67,7 +98,24 @@ func handleSync(syncer Syncer, store Store) http.HandlerFunc {
 			return
 		}
 
+		var diff configdiff.Result
 		if store != nil {
+			// Read prior state before Replace overwrites it. A failure here
+			// must never fail the sync itself — diff is informational only.
+			if oldCfg, firstSync, err := readSnapshot(r.Context(), store); err != nil {
+				log.Printf("configdiff: read prior state: %v", err)
+			} else if firstSync {
+				log.Printf("configdiff: first sync, %d networks / %d instances baseline", len(cfg.Networks), len(cfg.Instances))
+			} else {
+				diff = configdiff.Diff(oldCfg, cfg)
+				if !diff.Empty() {
+					log.Printf("configdiff: %d/%d/%d networks added/changed/removed, %d/%d/%d instances added/changed/removed:\n%s",
+						len(diff.AddedNetworks), len(diff.ChangedNetworks), len(diff.RemovedNetworks),
+						len(diff.AddedInstances), len(diff.ChangedInstances), len(diff.RemovedInstances),
+						strings.Join(diff.Lines(), "\n"))
+				}
+			}
+
 			if err := store.Replace(r.Context(), cfg, sha, time.Now()); err != nil {
 				log.Printf("store sync result: %v", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -79,8 +127,31 @@ func handleSync(syncer Syncer, store Store) http.HandlerFunc {
 			Commit:    sha,
 			Networks:  len(cfg.Networks),
 			Instances: len(cfg.Instances),
+			Diff:      newDiffCounts(diff),
 		})
 	}
+}
+
+// readSnapshot reads the store's current Networks/Instances (the
+// last-synced snapshot, before the caller applies a new one via Replace)
+// and reports whether no sync has happened yet (per LastSync's ok), so
+// callers can skip a noisy "everything added" diff on first sync.
+func readSnapshot(ctx context.Context, store Store) (cfg config.Config, firstSync bool, err error) {
+	if _, _, ok, err := store.LastSync(ctx); err != nil {
+		return config.Config{}, false, fmt.Errorf("query last sync: %w", err)
+	} else if !ok {
+		return config.Config{}, true, nil
+	}
+
+	networks, err := store.Networks(ctx)
+	if err != nil {
+		return config.Config{}, false, fmt.Errorf("query networks: %w", err)
+	}
+	instances, err := store.Instances(ctx)
+	if err != nil {
+		return config.Config{}, false, fmt.Errorf("query instances: %w", err)
+	}
+	return config.Config{Networks: networks, Instances: instances}, false, nil
 }
 
 type statusResponse struct {
