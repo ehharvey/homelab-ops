@@ -103,6 +103,8 @@ func TestSyncSuccess(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+	// fakeStore{} has never synced (LastSync.ok == false), so this is a
+	// first sync: no prior state to diff against, no warnings expected.
 	want := syncResponse{Commit: "deadbeef", Networks: 1, Instances: 1}
 	if got != want {
 		t.Errorf("response = %+v, want %+v", got, want)
@@ -113,6 +115,70 @@ func TestSyncSuccess(t *testing.T) {
 	}
 	if store.replaceCommit != "deadbeef" || !reflect.DeepEqual(store.replaceCfg, cfg) {
 		t.Errorf("Replace called with (%+v, %q), want (%+v, %q)", store.replaceCfg, store.replaceCommit, cfg, "deadbeef")
+	}
+}
+
+func TestSyncWithDiff(t *testing.T) {
+	store := &fakeStore{
+		synced:    true, // a prior sync happened, so this is not a "first sync"
+		networks:  []config.Network{{Name: "dev-lan", CIDR: "10.0.0.0/24"}},
+		instances: []config.Instance{{Name: "devnode0"}},
+	}
+	cfg := config.Config{
+		Networks: []config.Network{
+			{Name: "dev-lan", CIDR: "10.0.1.0/24"}, // changed
+			{Name: "new-lan", CIDR: "10.0.2.0/24"}, // added
+		},
+		// devnode0 removed, no instances in the new sync
+	}
+	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
+
+	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
+	rec := httptest.NewRecorder()
+
+	New(syncer, store).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var got syncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	want := diffCounts{NetworksAdded: 1, NetworksChanged: 1, InstancesRemoved: 1}
+	if got.Diff != want {
+		t.Errorf("Diff = %+v, want %+v", got.Diff, want)
+	}
+	if !store.replaced {
+		t.Fatalf("POST /sync did not call Store.Replace despite a diff read")
+	}
+}
+
+func TestSyncDiffReadFailure(t *testing.T) {
+	store := &fakeStore{synced: true, networksErr: errors.New("disk full")}
+	cfg := config.Config{Networks: []config.Network{{Name: "dev-lan"}}}
+	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
+
+	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
+	rec := httptest.NewRecorder()
+
+	New(syncer, store).ServeHTTP(rec, req)
+
+	// A failure reading prior state for the diff must not fail the sync.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync with failing diff read = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !store.replaced {
+		t.Fatalf("POST /sync did not call Store.Replace despite a failed diff read")
+	}
+
+	var got syncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Diff != (diffCounts{}) {
+		t.Errorf("Diff = %+v, want zero value", got.Diff)
 	}
 }
 
