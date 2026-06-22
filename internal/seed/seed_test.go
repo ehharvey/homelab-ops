@@ -115,6 +115,53 @@ func TestRenderRejectsStaticIPWithoutGateway(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsStaticIPOutsideCIDR(t *testing.T) {
+	inst := sampleInstance()
+	inst.StaticIP = "10.0.0.5"
+
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+		t.Fatal("expected error for static_ip outside the network's cidr, got nil")
+	}
+}
+
+func TestRenderRejectsInvalidStaticIP(t *testing.T) {
+	inst := sampleInstance()
+	inst.StaticIP = "not-an-ip"
+
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+		t.Fatal("expected error for malformed static_ip, got nil")
+	}
+}
+
+func TestRenderRejectsExcludedRangeOutsideCIDR(t *testing.T) {
+	net := sampleNetwork()
+	net.DHCPExcludedRange = "10.0.0.200-10.0.0.250"
+	inst := sampleInstance()
+	inst.StaticIP = ""
+
+	if _, err := Render(net, inst, sampleClientCertPEM(t), Options{}); err == nil {
+		t.Fatal("expected error for dhcp_excluded_range outside the network's cidr, got nil")
+	}
+}
+
+func TestRenderRejectsMalformedExcludedRange(t *testing.T) {
+	net := sampleNetwork()
+	net.DHCPExcludedRange = "not-a-range"
+
+	if _, err := Render(net, sampleInstance(), sampleClientCertPEM(t), Options{}); err == nil {
+		t.Fatal("expected error for malformed dhcp_excluded_range, got nil")
+	}
+}
+
+func TestRenderRejectsStaticIPOutsideExcludedRange(t *testing.T) {
+	inst := sampleInstance()
+	inst.StaticIP = "192.168.1.50"
+
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+		t.Fatal("expected error for static_ip outside dhcp_excluded_range, got nil")
+	}
+}
+
 func TestRenderRejectsNetworkMismatch(t *testing.T) {
 	inst := sampleInstance()
 	inst.Network = "other-lan"
