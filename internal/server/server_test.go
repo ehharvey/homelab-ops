@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,6 +213,121 @@ func TestSyncStoreFailure(t *testing.T) {
 	}
 }
 
+// SyncOnce is the routine shared by POST /sync and cmd/web's background
+// poller. The handler tests above exercise it indirectly; these cover it
+// directly, including the diff it returns to the poller (which the HTTP
+// response only ever exposes as counts) and its error classification.
+
+func TestSyncOnceReturnsDiffToCaller(t *testing.T) {
+	store := &fakeStore{
+		synced:   true, // prior sync happened, so this is a real diff
+		networks: []config.Network{{Name: "dev-lan", CIDR: "10.0.0.0/24"}},
+	}
+	cfg := config.Config{Networks: []config.Network{
+		{Name: "dev-lan", CIDR: "10.0.1.0/24"}, // changed
+		{Name: "new-lan", CIDR: "10.0.2.0/24"}, // added
+	}}
+
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+	if err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+	if res.Commit != "deadbeef" {
+		t.Errorf("Commit = %q, want deadbeef", res.Commit)
+	}
+	// The poller relies on this diff being populated — it's the whole reason
+	// SyncOnce exists rather than each caller re-deriving it.
+	if len(res.Diff.AddedNetworks) != 1 || len(res.Diff.ChangedNetworks) != 1 {
+		t.Errorf("Diff = %+v, want 1 added / 1 changed network", res.Diff)
+	}
+	if !store.replaced {
+		t.Error("SyncOnce did not call Store.Replace")
+	}
+}
+
+func TestSyncOnceClassifiesErrors(t *testing.T) {
+	t.Run("sync failure wraps ErrSync", func(t *testing.T) {
+		_, err := SyncOnce(context.Background(), fakeSyncer{err: errors.New("clone failed")}, &fakeStore{}, time.Now())
+		if !errors.Is(err, ErrSync) {
+			t.Errorf("err = %v, want it to wrap ErrSync", err)
+		}
+		if errors.Is(err, ErrStore) {
+			t.Errorf("err = %v, should not wrap ErrStore", err)
+		}
+	})
+
+	t.Run("store failure wraps ErrStore", func(t *testing.T) {
+		syncer := fakeSyncer{cfg: config.Config{}, sha: "deadbeef"}
+		_, err := SyncOnce(context.Background(), syncer, &fakeStore{replaceErr: errors.New("disk full")}, time.Now())
+		if !errors.Is(err, ErrStore) {
+			t.Errorf("err = %v, want it to wrap ErrStore", err)
+		}
+		if errors.Is(err, ErrSync) {
+			t.Errorf("err = %v, should not wrap ErrSync", err)
+		}
+	})
+}
+
+// concurrencyProbe is a Syncer that records the peak number of Sync calls
+// running at once, so a test can assert Service.Sync serializes them.
+type concurrencyProbe struct {
+	mu      sync.Mutex
+	active  int
+	maxSeen int
+}
+
+func (p *concurrencyProbe) Sync(context.Context) (config.Config, string, error) {
+	p.mu.Lock()
+	p.active++
+	if p.active > p.maxSeen {
+		p.maxSeen = p.active
+	}
+	p.mu.Unlock()
+
+	time.Sleep(2 * time.Millisecond) // widen the window an interleave would show in
+
+	p.mu.Lock()
+	p.active--
+	p.mu.Unlock()
+	return config.Config{}, "sha", nil
+}
+
+func TestServiceSyncSerializesCalls(t *testing.T) {
+	probe := &concurrencyProbe{}
+	svc := NewService(probe, nil) // nil store: exercise the lock without persistence
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.Sync(context.Background(), time.Now()); err != nil {
+				t.Errorf("Sync: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if probe.maxSeen != 1 {
+		t.Errorf("max concurrent syncs = %d, want 1 (Service.Sync should serialize)", probe.maxSeen)
+	}
+}
+
+func TestSyncOnceNilStoreSkipsReplace(t *testing.T) {
+	cfg := config.Config{Networks: []config.Network{{Name: "dev-lan"}}}
+
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, nil, time.Now())
+	if err != nil {
+		t.Fatalf("SyncOnce with nil store: %v", err)
+	}
+	if res.Commit != "deadbeef" || len(res.Config.Networks) != 1 {
+		t.Errorf("res = %+v, want commit deadbeef and 1 network", res)
+	}
+	if !res.Diff.Empty() {
+		t.Errorf("Diff = %+v, want empty (no store to diff against)", res.Diff)
+	}
+}
+
 func TestStatusNotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
@@ -292,6 +408,24 @@ func TestNetworksAndInstances(t *testing.T) {
 	}
 	if !reflect.DeepEqual(instances, store.instances) {
 		t.Errorf("instances = %+v, want %+v", instances, store.instances)
+	}
+}
+
+func TestNetworksInstancesEmptyReturnArray(t *testing.T) {
+	// A store that has synced but holds nothing returns nil slices; the API
+	// must still serve "[]", not "null", so clients get a stable array shape.
+	for _, path := range []string{"/networks", "/instances"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+
+		New(nil, &fakeStore{}).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want %d", path, rec.Code, http.StatusOK)
+		}
+		if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+			t.Errorf("GET %s body = %q, want %q", path, got, "[]")
+		}
 	}
 }
 
