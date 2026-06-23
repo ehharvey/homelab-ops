@@ -156,6 +156,26 @@ Since the app is the source of truth for IP assignments, it needs to persist tha
 ### Answer
 Make the store durable — point `store.Open()` at a real file instead of `:memory:`, and treat it as the system of record for assigned IPs while git stays authoritative for desired config. Git write-back is deferred to a later iteration.
 
+## 13. Validation approach
+
+Surfaced by #46 (no `Network`-level validation) and tracked as the decision #47. Work on #35 (IPAM) left validation scattered and stringly-typed: `config.Network`/`config.Instance` hold every field (`cidr`, `gateway`, `static_ip`, `dhcp_excluded_range`, `dns`, `mac`) as a `string`; `config.Parse` does structural validation only (strict unknown-field detection), no semantics. The semantic checks that exist are duplicated and re-parsed — `internal/ipam` builds a throwaway validated representation (`*net.IPNet`/`net.IP` bounds) out of the strings, and `internal/seed` re-parses the same strings to re-check static-IP-in-CIDR and the gateway again — while `Network` has no validation entrypoint at all (gateway-is-an-IP, gateway-∈-CIDR, name-non-empty, DNS-are-IPs, range-∈-CIDR all go unchecked).
+
+### Options considered
+
+1. **`go-playground/validator`** (combined parse/validate, struct tags). Rejected: the rules that matter here are cross-field (gateway-∈-CIDR, range-∈-CIDR, static-ip-∈-CIDR-and-∈-range), which its tags can't express — you register custom validators and write the `ParseCIDR().Contains()` logic by hand anyway, losing the declarative payoff. It also leaves fields as `string`, so the re-parsing duplication survives, and it adds a reflection-heavy dependency tree against the repo's stdlib-first convention.
+2. **`zog`** (separate parse/validate, schema DSL). Right instinct (the parse/validate split), wrong dependency: it's a pre-1.0, single-maintainer library whose API churns — exactly what the "don't depend on unstable public APIs" note in `Development Conventions.md` warns against (cf. the cert decision citing incus's own v6→v7 bump). It's built for HTTP form/JSON request validation, still doesn't know "IP ∈ CIDR" (you write custom refinements regardless), and you hand-wire the typed target struct yourself — so the library mostly donates an issue-list datatype we can write in ~15 lines.
+
+### Answer
+
+**Roll our own, as a stdlib `net/netip` parse/validate split.** This keeps the good idea from each rejected option without the cost: zog's parse/validate separation and validator's centralized rules, using `net/netip`'s built-in `encoding.TextUnmarshaler` for the syntactic layer and a small hand-rolled validator for the cross-field semantics no library does for free here anyway. Consistent with every prior dependency decision in the repo (cert, YAML, sqlite, go-git) — no new dependency.
+
+- `config` fields become typed (`cidr → netip.Prefix`, `gateway`/`static_ip` → `netip.Addr`, `dns → []netip.Addr`, `dhcp_excluded_range →` a small range type; `mac` stays a string). Verified that `yaml.v3` honors `encoding.TextUnmarshaler`, so these parse straight from the synced YAML, fail on malformed input at parse time, and model optional fields cleanly via the zero value (`IsValid()==false`, no error on empty or omitted).
+- The validated representation then *is* the parsed representation: `internal/ipam` and `internal/seed` stop re-parsing strings, and #46's rules become one-line `Prefix.Contains(...)` checks in a single `config.Validate` pass.
+- **Leaving room without paying for it:** validation returns a stable `Issue{Path, Message}` value (the same shape zog's `issue.Path`/`issue.Message` produces). If an untrusted-input surface ever appears, a validation library can sit at *that* boundary producing the same `Issue` shape, without touching the git-sync path. No `Validator` abstraction/registry is built now — the value-returning function is the entire seam.
+- **When this gets revisited:** the trigger is the first write/create API endpoint that accepts a *request body* to author a `Network`/`Instance` (vs. the name-keyed action routes planned for Phase 2). The roadmap (Phases 0–3) and `Out of Scope.md` put no such surface in v1 — single-user, no auth, diff-and-warn from git, schema count stays at 2. And per `Out of Scope.md` §13 the likely growth path is JSON Schema *generated from* `internal/config`'s structs, which the typed structs serve directly — so the more probable future is codegen-from-structs, not adopting zog.
+
+Implementation (the `netip` type rework + `config.Validate` pass, which also closes #46) lands under #46; dev-facing conventions for it are in `Development Conventions.md` § Config validation.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
