@@ -72,6 +72,8 @@ Certs are for initial Incus client authentication against IncusOS (not Operation
 ### Answers
 Just assignment bookkeeping: track `Network` CIDRs to help with IP generation, with basic duplicate detection, and account for existing DHCP by tracking usable static-IP ranges outside the DHCP range. The app configures the node's network by writing `network.yaml`, not just recording it for a human to apply elsewhere. IPv4-only for now; the app is the sole source of truth, no DHCP/DNS write-back.
 
+Implemented in `internal/ipam` (#35): operator-supplied `static_ip` is honored and validated against the network's CIDR and `dhcp_excluded_range`; when omitted, the app auto-assigns the next free IPv4 from `dhcp_excluded_range`, reusing the same instance's prior persisted address across re-syncs so it doesn't churn. Duplicates and out-of-range values are rejected per network (two different networks may reuse the same address), and the sync that produced them is hard-failed — including an explicit `static_ip` that collides with a *different* instance's prior-assigned address, which is rejected rather than silently relocating that instance to a new one. Full policy: `docs/Ipam.md`.
+
 ## 6. TPM / Secure Boot (note 10) — flagging a likely misunderstanding
 
 IncusOS binds **disk encryption** to measured boot via TPM PCRs, and Secure Boot is what makes those measurements trustworthy ([security model docs](https://linuxcontainers.org/incus-os/docs/main/reference/security/)). Concretely:
@@ -130,6 +132,8 @@ We want to avoid putting Incus nodes on the public internet, so nodes need some 
 ### Answer
 Not yet decided — revisit when Phase 2/3 needs nodes to talk back to the app.
 
+
+
 #### Considered and rejected for v1: an end-to-end-encrypted command bus
 
 A more ambitious version of option 1 came up: make the internet-facing web app a *zero-knowledge relay* — nodes poll it, browser clients push encrypted commands, the server only ever stores ciphertext (per-node keypairs, signed payloads, replay windows, browser-held keys, ciphertext in Postgres). Rejected for v1:
@@ -141,6 +145,16 @@ A more ambitious version of option 1 came up: make the internet-facing web app a
 - **The real "command a node" path already exists.** The app issues each node a client cert and talks to its Incus API directly (§4) — authenticated by Incus itself. A second, parallel encrypted command bus would duplicate that and reintroduce the trusted control plane v1 avoids.
 
 Worth keeping from the discussion: prefer node-initiated outbound (option 1), and if a node ever does send actions, send *structured actions*, not shell commands. Revisit the whole idea only if multi-user or an untrusted-relay requirement ever materialises.
+
+
+## 12. Persisting IPAM state
+
+Since the app is the source of truth for IP assignments, it needs to persist that state somewhere. Options:
+1. Make the store durable. `store.Open()` already takes a path (not just `:memory:`) — point it at a real file and treat the store as the system of record for what's actually been handed out, while git stays the source of truth for desired config. Simplest change, but it means the store now needs a backup/migration story it doesn't have today (`docs/Architecture.md`'s "Instance/network store" paragraph currently frames it as a disposable, `:memory:`-by-default cache rebuilt every sync).
+2. Write auto-assigned IPs back into the synced git repo (commit the resolved `static_ip` once assigned) so git alone remains authoritative and the store can stay disposable. More faithful to the existing "app is sole source of truth via git" framing, but adds a write-back-to-git capability the app doesn't have yet, and raises its own questions (commit as the app's own bot identity? race if two requests assign concurrently?).
+
+### Answer
+Make the store durable — point `store.Open()` at a real file instead of `:memory:`, and treat it as the system of record for assigned IPs while git stays authoritative for desired config. Git write-back is deferred to a later iteration.
 
 ## Other notes
 1. Track the commit hash nodes are running

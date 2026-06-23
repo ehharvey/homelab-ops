@@ -26,7 +26,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 ## Phase 2 — IPAM + app-driven installer generation
 
-- [ ] IPAM: register `Network` CIDRs + DHCP-excluded ranges, assign static IPv4s to instances, duplicate-detect
+- [x] IPAM: register `Network` CIDRs + DHCP-excluded ranges, assign static IPv4s to instances, duplicate-detect: DONE; see #35
 - [ ] Reuse Phase 0's seed-rendering logic inside the app, parameterized by any `Instance`
 - [ ] Per-instance cert issuance (self-signed), basic local storage
 - [ ] Wire IPAM-assigned IP into the rendered `network.yaml`
