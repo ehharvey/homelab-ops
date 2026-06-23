@@ -170,3 +170,27 @@ func TestAssignmentRedrawnWhenPriorIPNoLongerValid(t *testing.T) {
 		t.Fatalf("StaticIP = %q, want %q", instances[0].StaticIP, "192.168.1.200")
 	}
 }
+
+func TestAssignmentRedrawnWhenPriorIPAlreadyTaken(t *testing.T) {
+	networks := []config.Network{sampleNetwork()}
+	prior := []config.Instance{
+		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.50"},
+	}
+	instances := []config.Instance{
+		{Name: "node-a", Network: "lan"},
+		{Name: "node-b", Network: "lan", StaticIP: "192.168.1.50"}, // now taken by node-b
+	}
+
+	// Expected behaviour:
+	// 1. node-a loses prior IP because it's now taken by node-b.
+	// 2. node-a gets a fresh draw from the pool.
+	if err := Assign(networks, instances, prior); err != nil {
+		t.Fatalf("Assign: %v", err)
+	}
+	if instances[0].StaticIP == "192.168.1.50" {
+		t.Fatalf("node-a reused prior IP, want a fresh draw")
+	}
+	
+	// instances[0] should get an IP between .200 and .203, but not .50 (taken by node-b).
+
+}
