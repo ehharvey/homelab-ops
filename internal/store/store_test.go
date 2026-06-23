@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"net/netip"
 	"reflect"
 	"testing"
 	"time"
@@ -39,11 +40,15 @@ func TestOpenCreatesSchema(t *testing.T) {
 func sampleConfig() config.Config {
 	return config.Config{
 		Networks: []config.Network{
-			{Name: "dev-lan", CIDR: "10.0.0.0/24", Gateway: "10.0.0.1", DHCPExcludedRange: "10.0.0.1-10.0.0.10", DNS: []string{"1.1.1.1"}},
+			{
+				Name: "dev-lan", CIDR: netip.MustParsePrefix("10.0.0.0/24"), Gateway: netip.MustParseAddr("10.0.0.1"),
+				DHCPExcludedRange: config.Range{Start: netip.MustParseAddr("10.0.0.1"), End: netip.MustParseAddr("10.0.0.10")},
+				DNS:               []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+			},
 		},
 		Instances: []config.Instance{
 			{
-				Name: "devnode0", MAC: "aa:bb:cc:dd:ee:ff", Network: "dev-lan", StaticIP: "10.0.0.20",
+				Name: "devnode0", MAC: "aa:bb:cc:dd:ee:ff", Network: "dev-lan", StaticIP: netip.MustParseAddr("10.0.0.20"),
 				Disk: "/dev/sda", NIC: "eth0",
 				Security:     config.Security{TPM: true, SecureBoot: false},
 				Applications: []string{"incus"},
@@ -113,7 +118,7 @@ func TestReplaceOverwritesPriorSnapshot(t *testing.T) {
 	}
 
 	second := config.Config{
-		Networks:  []config.Network{{Name: "other-lan", CIDR: "10.1.0.0/24"}},
+		Networks:  []config.Network{{Name: "other-lan", CIDR: netip.MustParsePrefix("10.1.0.0/24")}},
 		Instances: []config.Instance{{Name: "othernode"}},
 	}
 	if err := s.Replace(ctx, second, "second", time.Now()); err != nil {
@@ -182,8 +187,8 @@ func TestReplaceDuplicateNameLastWins(t *testing.T) {
 	s, ctx := openTestStore(t)
 	cfg := config.Config{
 		Networks: []config.Network{
-			{Name: "dup", CIDR: "10.0.0.0/24"},
-			{Name: "dup", CIDR: "10.1.0.0/24"},
+			{Name: "dup", CIDR: netip.MustParsePrefix("10.0.0.0/24")},
+			{Name: "dup", CIDR: netip.MustParsePrefix("10.1.0.0/24")},
 		},
 	}
 
@@ -195,7 +200,7 @@ func TestReplaceDuplicateNameLastWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Networks: %v", err)
 	}
-	if len(networks) != 1 || networks[0].CIDR != "10.1.0.0/24" {
+	if len(networks) != 1 || networks[0].CIDR != netip.MustParsePrefix("10.1.0.0/24") {
 		t.Errorf("Networks = %+v, want one dup network with the last CIDR", networks)
 	}
 }

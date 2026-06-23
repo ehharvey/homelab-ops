@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
@@ -14,6 +15,14 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/config"
 )
+
+// Test fixtures construct netip-typed config values; these helpers keep the
+// table fixtures terse.
+func prefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
+func addr(s string) netip.Addr     { return netip.MustParseAddr(s) }
+func rng(start, end string) config.Range {
+	return config.Range{Start: addr(start), End: addr(end)}
+}
 
 type fakeSyncer struct {
 	cfg config.Config
@@ -85,8 +94,8 @@ func TestSyncNotConfigured(t *testing.T) {
 
 func TestSyncSuccess(t *testing.T) {
 	cfg := config.Config{
-		Networks:  []config.Network{{Name: "dev-lan", CIDR: "10.0.0.0/24"}},
-		Instances: []config.Instance{{Name: "devnode0", Network: "dev-lan", StaticIP: "10.0.0.5"}},
+		Networks:  []config.Network{{Name: "dev-lan", CIDR: prefix("10.0.0.0/24")}},
+		Instances: []config.Instance{{Name: "devnode0", Network: "dev-lan", StaticIP: addr("10.0.0.5")}},
 	}
 	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
 	store := &fakeStore{}
@@ -122,13 +131,13 @@ func TestSyncSuccess(t *testing.T) {
 func TestSyncWithDiff(t *testing.T) {
 	store := &fakeStore{
 		synced:    true, // a prior sync happened, so this is not a "first sync"
-		networks:  []config.Network{{Name: "dev-lan", CIDR: "10.0.0.0/24"}},
+		networks:  []config.Network{{Name: "dev-lan", CIDR: prefix("10.0.0.0/24")}},
 		instances: []config.Instance{{Name: "devnode0"}},
 	}
 	cfg := config.Config{
 		Networks: []config.Network{
-			{Name: "dev-lan", CIDR: "10.0.1.0/24"}, // changed
-			{Name: "new-lan", CIDR: "10.0.2.0/24"}, // added
+			{Name: "dev-lan", CIDR: prefix("10.0.1.0/24")}, // changed
+			{Name: "new-lan", CIDR: prefix("10.0.2.0/24")}, // added
 		},
 		// devnode0 removed, no instances in the new sync
 	}
@@ -158,7 +167,7 @@ func TestSyncWithDiff(t *testing.T) {
 
 func TestSyncDiffReadFailure(t *testing.T) {
 	store := &fakeStore{synced: true, networksErr: errors.New("disk full")}
-	cfg := config.Config{Networks: []config.Network{{Name: "dev-lan"}}}
+	cfg := config.Config{Networks: []config.Network{{Name: "dev-lan", CIDR: prefix("10.0.0.0/24")}}}
 	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
 
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
@@ -221,11 +230,11 @@ func TestSyncStoreFailure(t *testing.T) {
 func TestSyncOnceReturnsDiffToCaller(t *testing.T) {
 	store := &fakeStore{
 		synced:   true, // prior sync happened, so this is a real diff
-		networks: []config.Network{{Name: "dev-lan", CIDR: "10.0.0.0/24"}},
+		networks: []config.Network{{Name: "dev-lan", CIDR: prefix("10.0.0.0/24")}},
 	}
 	cfg := config.Config{Networks: []config.Network{
-		{Name: "dev-lan", CIDR: "10.0.1.0/24"}, // changed
-		{Name: "new-lan", CIDR: "10.0.2.0/24"}, // added
+		{Name: "dev-lan", CIDR: prefix("10.0.1.0/24")}, // changed
+		{Name: "new-lan", CIDR: prefix("10.0.2.0/24")}, // added
 	}}
 
 	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
@@ -274,7 +283,7 @@ func TestSyncOnceClassifiesErrors(t *testing.T) {
 // what actually gets persisted via Store.Replace.
 func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 	cfg := config.Config{
-		Networks:  []config.Network{{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.203"}},
+		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203")}},
 		Instances: []config.Instance{{Name: "node-a", Network: "lan"}},
 	}
 	store := &fakeStore{}
@@ -283,10 +292,10 @@ func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
-	if got, want := res.Config.Instances[0].StaticIP, "192.168.1.200"; got != want {
+	if got, want := res.Config.Instances[0].StaticIP.String(), "192.168.1.200"; got != want {
 		t.Errorf("StaticIP = %q, want %q", got, want)
 	}
-	if got, want := store.replaceCfg.Instances[0].StaticIP, "192.168.1.200"; got != want {
+	if got, want := store.replaceCfg.Instances[0].StaticIP.String(), "192.168.1.200"; got != want {
 		t.Errorf("Replace persisted StaticIP = %q, want %q", got, want)
 	}
 }
@@ -297,7 +306,7 @@ func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 // instance's YAML still omits static_ip on every poll.
 func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	cfg := config.Config{
-		Networks:  []config.Network{{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.203"}},
+		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203")}},
 		Instances: []config.Instance{{Name: "node-a", Network: "lan"}},
 	}
 	store := &fakeStore{}
@@ -331,17 +340,17 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 // below exercises the same policy with an empty store; this one exercises it
 // through the actual store-read path SyncOnce uses for stability.
 func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
-	lan := config.Network{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.203"}
+	lan := config.Network{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203")}
 	store := &fakeStore{
 		synced:    true,
 		networks:  []config.Network{lan},
-		instances: []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"}},
+		instances: []config.Instance{{Name: "node-a", Network: "lan", StaticIP: addr("192.168.1.200")}},
 	}
 	cfg := config.Config{
 		Networks: []config.Network{lan},
 		Instances: []config.Instance{
-			{Name: "node-a", Network: "lan"},                            // omits static_ip; would normally reuse .200
-			{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"}, // reserved for node-a
+			{Name: "node-a", Network: "lan"},                                  // omits static_ip; would normally reuse .200
+			{Name: "node-b", Network: "lan", StaticIP: addr("192.168.1.200")}, // reserved for node-a
 		},
 	}
 
@@ -357,8 +366,12 @@ func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
 // TestSyncOnceIPAMFailures covers the data-integrity cases that must hard
 // fail a sync (no Store.Replace) rather than silently persisting bad state.
 func TestSyncOnceIPAMFailures(t *testing.T) {
-	lan := config.Network{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.200"}
+	lan := config.Network{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.200")}
 
+	// These are the assignment-time failures only ipam can express. An
+	// out-of-range *explicit* static_ip is no longer here: it's a semantic
+	// problem config.Validate catches first (see TestSyncOnceValidationFailure),
+	// so it surfaces as ErrValidate, not ErrIPAM.
 	cases := []struct {
 		name      string
 		instances []config.Instance
@@ -366,14 +379,8 @@ func TestSyncOnceIPAMFailures(t *testing.T) {
 		{
 			name: "duplicate explicit static_ip on the same network",
 			instances: []config.Instance{
-				{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
-				{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"},
-			},
-		},
-		{
-			name: "out-of-range explicit static_ip",
-			instances: []config.Instance{
-				{Name: "node-a", Network: "lan", StaticIP: "10.0.0.5"},
+				{Name: "node-a", Network: "lan", StaticIP: addr("192.168.1.200")},
+				{Name: "node-b", Network: "lan", StaticIP: addr("192.168.1.200")},
 			},
 		},
 		{
@@ -399,6 +406,40 @@ func TestSyncOnceIPAMFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSyncOnceValidationFailure covers the semantic-validation stage: a config
+// that parses fine but is semantically wrong (an explicit static_ip outside its
+// network's CIDR) must fail with ErrValidate before IPAM runs, map to HTTP 502,
+// and never reach Store.Replace.
+func TestSyncOnceValidationFailure(t *testing.T) {
+	cfg := config.Config{
+		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24")}},
+		Instances: []config.Instance{{Name: "node-a", Network: "lan", StaticIP: addr("10.0.0.5")}},
+	}
+
+	t.Run("SyncOnce wraps ErrValidate and skips Replace", func(t *testing.T) {
+		store := &fakeStore{}
+		_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+		if !errors.Is(err, ErrValidate) {
+			t.Fatalf("err = %v, want it to wrap ErrValidate", err)
+		}
+		if errors.Is(err, ErrIPAM) {
+			t.Errorf("err = %v, should not wrap ErrIPAM (validation runs first)", err)
+		}
+		if store.replaced {
+			t.Error("SyncOnce called Store.Replace despite a validation failure")
+		}
+	})
+
+	t.Run("POST /sync maps ErrValidate to 502", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/sync", nil)
+		rec := httptest.NewRecorder()
+		New(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}).ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("POST /sync with invalid config = %d, want %d", rec.Code, http.StatusBadGateway)
+		}
+	})
 }
 
 // concurrencyProbe is a Syncer that records the peak number of Sync calls

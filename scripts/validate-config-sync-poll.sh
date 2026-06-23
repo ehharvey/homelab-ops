@@ -101,9 +101,9 @@ docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" exec -T config-r
 kind: Network
 name: dev-lan
 cidr: 10.0.1.0/24
-gateway: 10.0.0.1
-dhcp_excluded_range: 10.0.0.200-10.0.0.250
-dns: [10.0.0.1]
+gateway: 10.0.1.1
+dhcp_excluded_range: 10.0.1.200-10.0.1.250
+dns: [10.0.1.1]
 ---
 kind: Network
 name: extra-lan

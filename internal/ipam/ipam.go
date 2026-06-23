@@ -4,154 +4,102 @@
 // falls inside it — and assigns/validates config.Instance.StaticIP against
 // it. IPv4-only for v1.
 //
+// The config fields it reads are net/netip-typed and already
+// syntactically valid (and, in the server sync path, semantically validated
+// by config.Validate before Assign runs); this package adds the
+// assignment-time concerns config.Validate can't express — duplicate
+// detection, pool exhaustion, and stable reuse of a prior address across
+// re-syncs.
+//
 // This is business logic, not persistence: callers (internal/server) read
 // the prior store snapshot, call Assign to fill in/validate StaticIP on the
 // in-memory config.Config, and only then persist via internal/store.
 package ipam
 
 import (
-	"bytes"
+	"encoding/binary"
 	"fmt"
-	"net"
-	"strings"
+	"net/netip"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
 )
 
-// ExcludedRangeBounds parses netCfg.DHCPExcludedRange (format
-// "<start>-<end>", e.g. "192.168.1.200-192.168.1.250") if set, and
-// validates it lies within netCfg.CIDR. It returns nil bounds and no error
-// if DHCPExcludedRange is unset — the range, and so the static pool, is
-// optional.
-func ExcludedRangeBounds(netCfg config.Network) (start, end net.IP, err error) {
-	if netCfg.DHCPExcludedRange == "" {
-		return nil, nil, nil
-	}
-
-	parts := strings.SplitN(netCfg.DHCPExcludedRange, "-", 2)
-	if len(parts) != 2 {
-		return nil, nil, fmt.Errorf("dhcp_excluded_range %q: want \"<start>-<end>\"", netCfg.DHCPExcludedRange)
-	}
-	start, end = net.ParseIP(strings.TrimSpace(parts[0])), net.ParseIP(strings.TrimSpace(parts[1]))
-	if start == nil || end == nil {
-		return nil, nil, fmt.Errorf("dhcp_excluded_range %q: not two valid IP addresses", netCfg.DHCPExcludedRange)
-	}
-	if bytes.Compare(start.To16(), end.To16()) > 0 {
-		return nil, nil, fmt.Errorf("dhcp_excluded_range %q: start is after end", netCfg.DHCPExcludedRange)
-	}
-
-	_, ipNet, err := net.ParseCIDR(netCfg.CIDR)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse cidr %q: %w", netCfg.CIDR, err)
-	}
-	if !ipNet.Contains(start) || !ipNet.Contains(end) {
-		return nil, nil, fmt.Errorf("dhcp_excluded_range %q is not contained in cidr %q", netCfg.DHCPExcludedRange, netCfg.CIDR)
-	}
-	return start, end, nil
-}
-
-// ValidateStaticIP validates that staticIP is a syntactically valid address
-// contained in cidr — and, if excludedStart/excludedEnd are non-nil, within
-// that dhcp_excluded_range too (static addresses are drawn from the
-// excluded range, so DHCP never hands one out from under a node). It
-// returns cidr's prefix length (e.g. 24 for a /24) for building a rendered
-// address ("192.168.1.201/24").
-func ValidateStaticIP(cidr, staticIP string, excludedStart, excludedEnd net.IP) (int, error) {
-	ip := net.ParseIP(staticIP)
-	if ip == nil {
-		return 0, fmt.Errorf("static_ip %q is not a valid IP address", staticIP)
-	}
-	_, ipNet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return 0, fmt.Errorf("parse cidr %q: %w", cidr, err)
-	}
-	if !ipNet.Contains(ip) {
-		return 0, fmt.Errorf("static_ip %q is not contained in cidr %q: %w", staticIP, cidr, ErrOutOfRange)
-	}
-	if excludedStart != nil && (bytes.Compare(ip.To16(), excludedStart.To16()) < 0 || bytes.Compare(ip.To16(), excludedEnd.To16()) > 0) {
-		return 0, fmt.Errorf("static_ip %q is outside dhcp_excluded_range %s-%s: %w", staticIP, excludedStart, excludedEnd, ErrOutOfRange)
-	}
-	size, _ := ipNet.Mask.Size()
-	return size, nil
-}
-
-// NetworkPool is a parsed Network ready to validate static_ips against and
-// (if DHCPExcludedRange is set) draw a usable static pool from.
+// NetworkPool is a Network ready to validate static_ips against and (if
+// DHCPExcludedRange is set) draw a usable static pool from.
 type NetworkPool struct {
 	netCfg                     config.Network
-	ipNet                      *net.IPNet
-	excludedStart, excludedEnd net.IP
-	gateway                    net.IP
+	prefix                     netip.Prefix
+	excludedStart, excludedEnd netip.Addr // zero when DHCPExcludedRange is unset
+	gateway                    netip.Addr // zero when no gateway
 }
 
-// NewNetworkPool parses n.CIDR and n.DHCPExcludedRange. IPv6 CIDRs return an
-// error — IPAM is IPv4-only for v1.
+// NewNetworkPool reads n.CIDR and n.DHCPExcludedRange. A missing/invalid or
+// IPv6 CIDR returns an error — IPAM is IPv4-only for v1.
 func NewNetworkPool(n config.Network) (*NetworkPool, error) {
-	_, ipNet, err := net.ParseCIDR(n.CIDR)
-	if err != nil {
-		return nil, fmt.Errorf("network %q: parse cidr %q: %w", n.Name, n.CIDR, err)
+	if !n.CIDR.IsValid() {
+		return nil, fmt.Errorf("network %q: missing or invalid cidr", n.Name)
 	}
-	if ipNet.IP.To4() == nil {
+	if !n.CIDR.Addr().Is4() {
 		return nil, fmt.Errorf("network %q: ipv6 cidr %q not supported", n.Name, n.CIDR)
 	}
 
-	start, end, err := ExcludedRangeBounds(n)
-	if err != nil {
-		return nil, fmt.Errorf("network %q: %w", n.Name, err)
-	}
-
-	var gateway net.IP
-	if n.Gateway != "" {
-		gateway = net.ParseIP(n.Gateway)
-	}
-
-	return &NetworkPool{netCfg: n, ipNet: ipNet, excludedStart: start, excludedEnd: end, gateway: gateway}, nil
+	return &NetworkPool{
+		netCfg:        n,
+		prefix:        n.CIDR.Masked(),
+		excludedStart: n.DHCPExcludedRange.Start,
+		excludedEnd:   n.DHCPExcludedRange.End,
+		gateway:       n.Gateway,
+	}, nil
 }
 
 // UsableIPs returns the candidate static pool — DHCPExcludedRange minus the
-// parent CIDR's network/broadcast addresses and the gateway, if any of
-// those fall inside it — in deterministic ascending order. It returns nil
-// if DHCPExcludedRange is unset: there is no auto-assignment pool for that
+// parent CIDR's network/broadcast addresses and the gateway, if any of those
+// fall inside it — in deterministic ascending order. It returns nil if
+// DHCPExcludedRange is unset: there is no auto-assignment pool for that
 // network.
-func (p *NetworkPool) UsableIPs() []net.IP {
-	if p.excludedStart == nil {
+func (p *NetworkPool) UsableIPs() []netip.Addr {
+	if !p.excludedStart.IsValid() {
 		return nil
 	}
 
-	network := p.ipNet.IP.Mask(p.ipNet.Mask).To4()
-	broadcast := broadcastAddr(p.ipNet)
+	network := p.prefix.Addr()
+	broadcast := lastAddr(p.prefix)
 
-	var out []net.IP
-	for ip := p.excludedStart.To4(); compareIP(ip, p.excludedEnd) <= 0; ip = nextIP(ip) {
-		if ip.Equal(network) || ip.Equal(broadcast) || (p.gateway != nil && ip.Equal(p.gateway)) {
+	var out []netip.Addr
+	for ip := p.excludedStart; ip.Compare(p.excludedEnd) <= 0; ip = ip.Next() {
+		if ip == network || ip == broadcast || ip == p.gateway {
 			continue
 		}
-		dup := make(net.IP, len(ip))
-		copy(dup, ip)
-		out = append(out, dup)
+		out = append(out, ip)
 	}
 	return out
 }
 
 // validate checks ip against the network's CIDR and, if set,
-// dhcp_excluded_range.
-func (p *NetworkPool) validate(ip net.IP) error {
-	_, err := ValidateStaticIP(p.netCfg.CIDR, ip.String(), p.excludedStart, p.excludedEnd)
-	return err
+// dhcp_excluded_range. Static addresses are drawn from the excluded range, so
+// DHCP never hands one out from under a node.
+func (p *NetworkPool) validate(ip netip.Addr) error {
+	if !p.prefix.Contains(ip) {
+		return fmt.Errorf("static_ip %s is not contained in cidr %s: %w", ip, p.prefix, ErrOutOfRange)
+	}
+	if p.excludedStart.IsValid() && (ip.Compare(p.excludedStart) < 0 || ip.Compare(p.excludedEnd) > 0) {
+		return fmt.Errorf("static_ip %s is outside dhcp_excluded_range %s-%s: %w", ip, p.excludedStart, p.excludedEnd, ErrOutOfRange)
+	}
+	return nil
 }
 
 // DetectDuplicates flags two instances on the same Network that both
-// explicitly request the same static_ip. Instances on different networks
-// are never compared against each other — two sites can legitimately reuse
-// the same address.
+// explicitly request the same static_ip. Instances on different networks are
+// never compared against each other — two sites can legitimately reuse the
+// same address.
 func DetectDuplicates(instances []config.Instance) error {
-	seen := make(map[string]map[string]string) // network -> static_ip -> instance name
+	seen := make(map[string]map[netip.Addr]string) // network -> static_ip -> instance name
 	for _, inst := range instances {
-		if inst.StaticIP == "" {
+		if !inst.StaticIP.IsValid() {
 			continue
 		}
 		if seen[inst.Network] == nil {
-			seen[inst.Network] = make(map[string]string)
+			seen[inst.Network] = make(map[netip.Addr]string)
 		}
 		if other, ok := seen[inst.Network][inst.StaticIP]; ok {
 			return fmt.Errorf("instances %q and %q both request static_ip %s on network %q: %w",
@@ -162,17 +110,15 @@ func DetectDuplicates(instances []config.Instance) error {
 	return nil
 }
 
-// Assign validates every explicit instances[i].StaticIP against its
-// network and fills in the rest by drawing from that network's usable pool,
-// mutating instances in place. prior is the previously persisted snapshot
-// (e.g. from store.Instances), consulted so an instance that already has a
-// valid assigned address keeps it across re-syncs rather than getting a
-// different address each cycle — auto-assignment is reuse-then-fill, not
-// pure next-free.
+// Assign validates every explicit instances[i].StaticIP against its network
+// and fills in the rest by drawing from that network's usable pool, mutating
+// instances in place. prior is the previously persisted snapshot (e.g. from
+// store.Instances), consulted so an instance that already has a valid assigned
+// address keeps it across re-syncs rather than getting a different address
+// each cycle — auto-assignment is reuse-then-fill, not pure next-free.
 //
-// Duplicate or out-of-range explicit static_ips, and pool exhaustion, are
-// all hard failures: callers should not persist cfg if Assign returns an
-// error.
+// Duplicate or out-of-range explicit static_ips, and pool exhaustion, are all
+// hard failures: callers should not persist cfg if Assign returns an error.
 func Assign(networks []config.Network, instances []config.Instance, prior []config.Instance) error {
 	if err := DetectDuplicates(instances); err != nil {
 		return err
@@ -183,26 +129,22 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 		netByName[n.Name] = n
 	}
 
-	priorIPByName := make(map[string]net.IP, len(prior))
-	priorOwner := make(map[string]map[string]string) // network -> ip.String() -> owning instance name
+	priorIPByName := make(map[string]netip.Addr, len(prior))
+	priorOwner := make(map[string]map[netip.Addr]string) // network -> ip -> owning instance name
 	for _, inst := range prior {
-		if inst.StaticIP == "" {
+		if !inst.StaticIP.IsValid() {
 			continue
 		}
-		ip := net.ParseIP(inst.StaticIP)
-		if ip == nil {
-			continue
-		}
-		priorIPByName[inst.Name] = ip
+		priorIPByName[inst.Name] = inst.StaticIP
 		if priorOwner[inst.Network] == nil {
-			priorOwner[inst.Network] = make(map[string]string)
+			priorOwner[inst.Network] = make(map[netip.Addr]string)
 		}
-		priorOwner[inst.Network][ip.String()] = inst.Name
+		priorOwner[inst.Network][inst.StaticIP] = inst.Name
 	}
 
 	pools := make(map[string]*NetworkPool)
-	usable := make(map[string][]net.IP)
-	taken := make(map[string]map[string]net.IP) // network -> ip.String() -> ip
+	usable := make(map[string][]netip.Addr)
+	taken := make(map[string]map[netip.Addr]bool) // network -> ip -> taken
 
 	getPool := func(network string) (*NetworkPool, error) {
 		if p, ok := pools[network]; ok {
@@ -218,7 +160,7 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 		}
 		pools[network] = p
 		usable[network] = p.UsableIPs()
-		taken[network] = make(map[string]net.IP)
+		taken[network] = make(map[netip.Addr]bool)
 		return p, nil
 	}
 
@@ -230,32 +172,28 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 	// docs/Ipam.md.
 	for i := range instances {
 		inst := &instances[i]
-		if inst.StaticIP == "" {
+		if !inst.StaticIP.IsValid() {
 			continue
 		}
 		pool, err := getPool(inst.Network)
 		if err != nil {
 			return fmt.Errorf("instance %q: %w", inst.Name, err)
 		}
-		ip := net.ParseIP(inst.StaticIP)
-		if ip == nil {
-			return fmt.Errorf("instance %q: static_ip %q is not a valid IP address: %w", inst.Name, inst.StaticIP, ErrOutOfRange)
-		}
-		if err := pool.validate(ip); err != nil {
+		if err := pool.validate(inst.StaticIP); err != nil {
 			return fmt.Errorf("instance %q: %w", inst.Name, err)
 		}
-		if owner, ok := priorOwner[inst.Network][ip.String()]; ok && owner != inst.Name {
+		if owner, ok := priorOwner[inst.Network][inst.StaticIP]; ok && owner != inst.Name {
 			return fmt.Errorf("instance %q: static_ip %s is already assigned to instance %q on network %q: %w",
-				inst.Name, ip, owner, inst.Network, ErrDuplicate)
+				inst.Name, inst.StaticIP, owner, inst.Network, ErrDuplicate)
 		}
-		taken[inst.Network][ip.String()] = ip
+		taken[inst.Network][inst.StaticIP] = true
 	}
 
 	// Pass 2: auto-assign the rest, reusing each instance's own prior
 	// address when it's still valid, otherwise drawing the next free one.
 	for i := range instances {
 		inst := &instances[i]
-		if inst.StaticIP != "" {
+		if inst.StaticIP.IsValid() {
 			continue
 		}
 		pool, err := getPool(inst.Network)
@@ -264,53 +202,36 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 		}
 
 		if priorIP, ok := priorIPByName[inst.Name]; ok && pool.validate(priorIP) == nil {
-			if _, conflict := taken[inst.Network][priorIP.String()]; !conflict {
-				taken[inst.Network][priorIP.String()] = priorIP
-				inst.StaticIP = priorIP.String()
+			if !taken[inst.Network][priorIP] {
+				taken[inst.Network][priorIP] = true
+				inst.StaticIP = priorIP
 				continue
 			}
 		}
 
-		var picked net.IP
+		var picked netip.Addr
 		for _, ip := range usable[inst.Network] {
-			if _, used := taken[inst.Network][ip.String()]; !used {
+			if !taken[inst.Network][ip] {
 				picked = ip
 				break
 			}
 		}
-		if picked == nil {
+		if !picked.IsValid() {
 			return fmt.Errorf("instance %q: network %q: %w", inst.Name, inst.Network, ErrPoolExhausted)
 		}
-		taken[inst.Network][picked.String()] = picked
-		inst.StaticIP = picked.String()
+		taken[inst.Network][picked] = true
+		inst.StaticIP = picked
 	}
 
 	return nil
 }
 
-func compareIP(a, b net.IP) int {
-	return bytes.Compare(a.To4(), b.To4())
-}
-
-func nextIP(ip net.IP) net.IP {
-	v4 := ip.To4()
-	out := make(net.IP, 4)
-	copy(out, v4)
-	for i := 3; i >= 0; i-- {
-		out[i]++
-		if out[i] != 0 {
-			break
-		}
-	}
-	return out
-}
-
-func broadcastAddr(ipNet *net.IPNet) net.IP {
-	ip := ipNet.IP.To4()
-	mask := ipNet.Mask
-	out := make(net.IP, 4)
-	for i := range out {
-		out[i] = ip[i] | ^mask[i]
-	}
-	return out
+// lastAddr returns the broadcast (highest) address of an IPv4 prefix, e.g.
+// 192.168.1.255 for 192.168.1.0/24. p must be a valid masked IPv4 prefix.
+func lastAddr(p netip.Prefix) netip.Addr {
+	a := p.Addr().As4()
+	v := binary.BigEndian.Uint32(a[:])
+	v |= uint32(0xffffffff) >> p.Bits() // set every host bit
+	binary.BigEndian.PutUint32(a[:], v)
+	return netip.AddrFrom4(a)
 }
