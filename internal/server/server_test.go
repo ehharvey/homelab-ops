@@ -323,6 +323,37 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	}
 }
 
+// TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP covers the
+// store-backed half of the prior-IP-reservation policy (docs/Ipam.md):
+// an explicit static_ip in the freshly synced config that collides with a
+// *different* instance's address already persisted from a prior sync must
+// hard-fail, not silently relocate the prior holder. TestSyncOnceIPAMFailures
+// below exercises the same policy with an empty store; this one exercises it
+// through the actual store-read path SyncOnce uses for stability.
+func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
+	lan := config.Network{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.203"}
+	store := &fakeStore{
+		synced:    true,
+		networks:  []config.Network{lan},
+		instances: []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"}},
+	}
+	cfg := config.Config{
+		Networks: []config.Network{lan},
+		Instances: []config.Instance{
+			{Name: "node-a", Network: "lan"},                            // omits static_ip; would normally reuse .200
+			{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"}, // reserved for node-a
+		},
+	}
+
+	_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+	if !errors.Is(err, ErrIPAM) {
+		t.Fatalf("err = %v, want it to wrap ErrIPAM", err)
+	}
+	if store.replaced {
+		t.Error("SyncOnce called Store.Replace despite a prior-IP conflict")
+	}
+}
+
 // TestSyncOnceIPAMFailures covers the data-integrity cases that must hard
 // fail a sync (no Store.Replace) rather than silently persisting bad state.
 func TestSyncOnceIPAMFailures(t *testing.T) {
