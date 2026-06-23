@@ -171,26 +171,35 @@ func TestAssignmentRedrawnWhenPriorIPNoLongerValid(t *testing.T) {
 	}
 }
 
-func TestAssignmentRedrawnWhenPriorIPAlreadyTaken(t *testing.T) {
+func TestExplicitStaticIPRejectedWhenConflictsWithPriorAssignedIP(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
 	prior := []config.Instance{
-		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.50"},
+		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
 	}
 	instances := []config.Instance{
 		{Name: "node-a", Network: "lan"},
-		{Name: "node-b", Network: "lan", StaticIP: "192.168.1.50"}, // now taken by node-b
+		{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"}, // reserved for node-a
 	}
 
-	// Expected behaviour:
-	// 1. node-a loses prior IP because it's now taken by node-b.
-	// 2. node-a gets a fresh draw from the pool.
+	// Expected behaviour: Assign should reject an explicit static_ip that
+	// conflicts with a prior-assigned IP owned by a different instance,
+	// rather than silently relocating the prior holder to a new address.
+	if err := Assign(networks, instances, prior); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("Assign error = %v, want ErrDuplicate", err)
+	}
+}
+
+func TestExplicitStaticIPReassertingOwnPriorIPAccepted(t *testing.T) {
+	networks := []config.Network{sampleNetwork()}
+	prior := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"}}
+	instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"}}
+
+	// An instance explicitly reasserting its own prior-assigned IP is never
+	// a conflict, even though that IP is "reserved" against other instances.
 	if err := Assign(networks, instances, prior); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	if instances[0].StaticIP == "192.168.1.50" {
-		t.Fatalf("node-a reused prior IP, want a fresh draw")
+	if got, want := instances[0].StaticIP, "192.168.1.200"; got != want {
+		t.Fatalf("StaticIP = %q, want %q", got, want)
 	}
-	
-	// instances[0] should get an IP between .200 and .203, but not .50 (taken by node-b).
-
 }

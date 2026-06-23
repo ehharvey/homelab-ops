@@ -184,13 +184,20 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 	}
 
 	priorIPByName := make(map[string]net.IP, len(prior))
+	priorOwner := make(map[string]map[string]string) // network -> ip.String() -> owning instance name
 	for _, inst := range prior {
 		if inst.StaticIP == "" {
 			continue
 		}
-		if ip := net.ParseIP(inst.StaticIP); ip != nil {
-			priorIPByName[inst.Name] = ip
+		ip := net.ParseIP(inst.StaticIP)
+		if ip == nil {
+			continue
 		}
+		priorIPByName[inst.Name] = ip
+		if priorOwner[inst.Network] == nil {
+			priorOwner[inst.Network] = make(map[string]string)
+		}
+		priorOwner[inst.Network][ip.String()] = inst.Name
 	}
 
 	pools := make(map[string]*NetworkPool)
@@ -217,7 +224,10 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 
 	// Pass 1: explicit static_ips. Validate and reserve them before any
 	// auto-assignment runs, so auto-assigned instances never collide with
-	// an operator's explicit choice.
+	// an operator's explicit choice. A prior-assigned IP is treated as
+	// reserved for its instance: a different instance's explicit static_ip
+	// colliding with it is a hard failure, not a silent reassignment — see
+	// docs/Ipam.md.
 	for i := range instances {
 		inst := &instances[i]
 		if inst.StaticIP == "" {
@@ -233,6 +243,10 @@ func Assign(networks []config.Network, instances []config.Instance, prior []conf
 		}
 		if err := pool.validate(ip); err != nil {
 			return fmt.Errorf("instance %q: %w", inst.Name, err)
+		}
+		if owner, ok := priorOwner[inst.Network][ip.String()]; ok && owner != inst.Name {
+			return fmt.Errorf("instance %q: static_ip %s is already assigned to instance %q on network %q: %w",
+				inst.Name, ip, owner, inst.Network, ErrDuplicate)
 		}
 		taken[inst.Network][ip.String()] = ip
 	}
