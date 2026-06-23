@@ -68,6 +68,8 @@ applications: [incus]
 
 This is illustrative, not a finalized schema — exact field names are an implementation step, not an open question that needs more discussion first.
 
+`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Open Questions §5).
+
 ## Key flows
 
 **Flow A — Node #0 bootstrap (manual, offline):**

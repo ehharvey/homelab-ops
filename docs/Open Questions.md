@@ -72,6 +72,8 @@ Certs are for initial Incus client authentication against IncusOS (not Operation
 ### Answers
 Just assignment bookkeeping: track `Network` CIDRs to help with IP generation, with basic duplicate detection, and account for existing DHCP by tracking usable static-IP ranges outside the DHCP range. The app configures the node's network by writing `network.yaml`, not just recording it for a human to apply elsewhere. IPv4-only for now; the app is the sole source of truth, no DHCP/DNS write-back.
 
+Implemented in `internal/ipam` (#35): operator-supplied `static_ip` is honored and validated against the network's CIDR and `dhcp_excluded_range`; when omitted, the app auto-assigns the next free IPv4 from `dhcp_excluded_range`, reusing the same instance's prior persisted address across re-syncs so it doesn't churn. Duplicates and out-of-range values are rejected per network (two different networks may reuse the same address), and the sync that produced them is hard-failed.
+
 ## 6. TPM / Secure Boot (note 10) — flagging a likely misunderstanding
 
 IncusOS binds **disk encryption** to measured boot via TPM PCRs, and Secure Boot is what makes those measurements trustworthy ([security model docs](https://linuxcontainers.org/incus-os/docs/main/reference/security/)). Concretely:

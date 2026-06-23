@@ -85,8 +85,8 @@ func TestSyncNotConfigured(t *testing.T) {
 
 func TestSyncSuccess(t *testing.T) {
 	cfg := config.Config{
-		Networks:  []config.Network{{Name: "dev-lan"}},
-		Instances: []config.Instance{{Name: "devnode0"}},
+		Networks:  []config.Network{{Name: "dev-lan", CIDR: "10.0.0.0/24"}},
+		Instances: []config.Instance{{Name: "devnode0", Network: "dev-lan", StaticIP: "10.0.0.5"}},
 	}
 	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
 	store := &fakeStore{}
@@ -266,6 +266,108 @@ func TestSyncOnceClassifiesErrors(t *testing.T) {
 			t.Errorf("err = %v, should not wrap ErrSync", err)
 		}
 	})
+}
+
+// TestSyncOnceAutoAssignsStaticIP covers the auto-assignment path end to
+// end through SyncOnce: an instance with no static_ip on a network with a
+// dhcp_excluded_range gets one drawn from that range, and the assignment is
+// what actually gets persisted via Store.Replace.
+func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
+	cfg := config.Config{
+		Networks:  []config.Network{{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.203"}},
+		Instances: []config.Instance{{Name: "node-a", Network: "lan"}},
+	}
+	store := &fakeStore{}
+
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+	if err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+	if got, want := res.Config.Instances[0].StaticIP, "192.168.1.200"; got != want {
+		t.Errorf("StaticIP = %q, want %q", got, want)
+	}
+	if got, want := store.replaceCfg.Instances[0].StaticIP, "192.168.1.200"; got != want {
+		t.Errorf("Replace persisted StaticIP = %q, want %q", got, want)
+	}
+}
+
+// TestSyncOnceAutoAssignmentIsStableAcrossResyncs guards the reuse-then-fill
+// requirement: an instance that already has an auto-assigned address must
+// keep it on the next sync rather than drawing a different one, since the
+// instance's YAML still omits static_ip on every poll.
+func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
+	cfg := config.Config{
+		Networks:  []config.Network{{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.203"}},
+		Instances: []config.Instance{{Name: "node-a", Network: "lan"}},
+	}
+	store := &fakeStore{}
+
+	first, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha1"}, store, time.Now())
+	if err != nil {
+		t.Fatalf("first SyncOnce: %v", err)
+	}
+	firstIP := first.Config.Instances[0].StaticIP
+
+	// Simulate the next poll: the store now reflects the prior assignment,
+	// and the freshly re-parsed YAML still has no explicit static_ip.
+	store.synced = true
+	store.networks = cfg.Networks
+	store.instances = first.Config.Instances
+
+	second, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha2"}, store, time.Now())
+	if err != nil {
+		t.Fatalf("second SyncOnce: %v", err)
+	}
+	if got := second.Config.Instances[0].StaticIP; got != firstIP {
+		t.Errorf("StaticIP churned across resync: first %q, second %q", firstIP, got)
+	}
+}
+
+// TestSyncOnceIPAMFailures covers the data-integrity cases that must hard
+// fail a sync (no Store.Replace) rather than silently persisting bad state.
+func TestSyncOnceIPAMFailures(t *testing.T) {
+	lan := config.Network{Name: "lan", CIDR: "192.168.1.0/24", DHCPExcludedRange: "192.168.1.200-192.168.1.200"}
+
+	cases := []struct {
+		name      string
+		instances []config.Instance
+	}{
+		{
+			name: "duplicate explicit static_ip on the same network",
+			instances: []config.Instance{
+				{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
+				{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"},
+			},
+		},
+		{
+			name: "out-of-range explicit static_ip",
+			instances: []config.Instance{
+				{Name: "node-a", Network: "lan", StaticIP: "10.0.0.5"},
+			},
+		},
+		{
+			name: "pool exhausted",
+			instances: []config.Instance{
+				{Name: "node-a", Network: "lan"},
+				{Name: "node-b", Network: "lan"}, // only one address (.200) in the pool
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{Networks: []config.Network{lan}, Instances: tc.instances}
+			store := &fakeStore{}
+
+			_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+			if !errors.Is(err, ErrIPAM) {
+				t.Fatalf("err = %v, want it to wrap ErrIPAM", err)
+			}
+			if store.replaced {
+				t.Error("SyncOnce called Store.Replace despite an IPAM failure")
+			}
+		})
+	}
 }
 
 // concurrencyProbe is a Syncer that records the peak number of Sync calls
