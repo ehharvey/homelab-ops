@@ -20,8 +20,12 @@ import (
 // table fixtures terse.
 func prefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 func addr(s string) netip.Addr     { return netip.MustParseAddr(s) }
-func rng(start, end string) config.Range {
-	return config.Range{Start: addr(start), End: addr(end)}
+func rng(s string) config.Range {
+	var r config.Range
+	if err := r.UnmarshalText([]byte(s)); err != nil {
+		panic(err)
+	}
+	return r
 }
 
 type fakeSyncer struct {
@@ -283,7 +287,7 @@ func TestSyncOnceClassifiesErrors(t *testing.T) {
 // what actually gets persisted via Store.Replace.
 func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 	cfg := config.Config{
-		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203")}},
+		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200-192.168.1.203")}},
 		Instances: []config.Instance{{Name: "node-a", Network: "lan"}},
 	}
 	store := &fakeStore{}
@@ -306,7 +310,7 @@ func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 // instance's YAML still omits static_ip on every poll.
 func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	cfg := config.Config{
-		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203")}},
+		Networks:  []config.Network{{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200-192.168.1.203")}},
 		Instances: []config.Instance{{Name: "node-a", Network: "lan"}},
 	}
 	store := &fakeStore{}
@@ -340,7 +344,7 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 // below exercises the same policy with an empty store; this one exercises it
 // through the actual store-read path SyncOnce uses for stability.
 func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
-	lan := config.Network{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203")}
+	lan := config.Network{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200-192.168.1.203")}
 	store := &fakeStore{
 		synced:    true,
 		networks:  []config.Network{lan},
@@ -366,7 +370,7 @@ func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
 // TestSyncOnceIPAMFailures covers the data-integrity cases that must hard
 // fail a sync (no Store.Replace) rather than silently persisting bad state.
 func TestSyncOnceIPAMFailures(t *testing.T) {
-	lan := config.Network{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200", "192.168.1.200")}
+	lan := config.Network{Name: "lan", CIDR: prefix("192.168.1.0/24"), DHCPExcludedRange: rng("192.168.1.200-192.168.1.200")}
 
 	// These are the assignment-time failures only ipam can express. An
 	// out-of-range *explicit* static_ip is no longer here: it's a semantic
