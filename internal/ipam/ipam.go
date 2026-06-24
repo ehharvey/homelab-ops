@@ -27,7 +27,6 @@ import (
 // NetworkPool is a Network ready to validate static_ips against and (if
 // DHCPExcludedRange is set) draw a usable static pool from.
 type NetworkPool struct {
-	netCfg                     config.Network
 	prefix                     netip.Prefix
 	excludedStart, excludedEnd netip.Addr // zero when DHCPExcludedRange is unset
 	gateway                    netip.Addr // zero when no gateway
@@ -44,7 +43,6 @@ func NewNetworkPool(n config.Network) (*NetworkPool, error) {
 	}
 
 	return &NetworkPool{
-		netCfg:        n,
 		prefix:        n.CIDR.Masked(),
 		excludedStart: n.DHCPExcludedRange.Start,
 		excludedEnd:   n.DHCPExcludedRange.End,
