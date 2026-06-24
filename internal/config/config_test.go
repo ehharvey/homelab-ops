@@ -1,8 +1,13 @@
 package config
 
 import (
+	"fmt"
+	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const sampleFleet = `
@@ -37,12 +42,12 @@ func TestParseSampleFleet(t *testing.T) {
 	}
 	wantNetwork := Network{
 		Name:              "home-lan",
-		CIDR:              "192.168.1.0/24",
-		Gateway:           "192.168.1.1",
-		DHCPExcludedRange: "192.168.1.200-192.168.1.250",
-		DNS:               []string{"192.168.1.1"},
+		CIDR:              netip.MustParsePrefix("192.168.1.0/24"),
+		Gateway:           netip.MustParseAddr("192.168.1.1"),
+		DHCPExcludedRange: Range{Start: netip.MustParseAddr("192.168.1.200"), End: netip.MustParseAddr("192.168.1.250")},
+		DNS:               []netip.Addr{netip.MustParseAddr("192.168.1.1")},
 	}
-	if got := cfg.Networks[0]; !networksEqual(got, wantNetwork) {
+	if got := cfg.Networks[0]; !reflect.DeepEqual(got, wantNetwork) {
 		t.Errorf("Networks[0] = %+v, want %+v", got, wantNetwork)
 	}
 
@@ -53,42 +58,45 @@ func TestParseSampleFleet(t *testing.T) {
 		Name:         "node0",
 		MAC:          "aa:bb:cc:dd:ee:ff",
 		Network:      "home-lan",
-		StaticIP:     "192.168.1.201",
+		StaticIP:     netip.MustParseAddr("192.168.1.201"),
 		Disk:         "single",
 		NIC:          "single",
 		Security:     Security{TPM: false, SecureBoot: true},
 		Applications: []string{"incus"},
 	}
-	if got := cfg.Instances[0]; !instancesEqual(got, wantInstance) {
+	if got := cfg.Instances[0]; !reflect.DeepEqual(got, wantInstance) {
 		t.Errorf("Instances[0] = %+v, want %+v", got, wantInstance)
 	}
 }
 
-func networksEqual(a, b Network) bool {
-	if a.Name != b.Name || a.CIDR != b.CIDR || a.Gateway != b.Gateway || a.DHCPExcludedRange != b.DHCPExcludedRange {
-		return false
+// ExampleNetwork_yamlUnmarshal pins the third-party assumption the whole
+// typed-config design rests on (see docs/Development Conventions.md § Config
+// validation): yaml.v3 honors encoding.TextUnmarshaler, so the net/netip
+// fields parse straight from YAML, and an empty (`gateway: ""`) or omitted
+// (`dhcp_excluded_range`) optional lands as a zero value with IsValid()==false
+// and no error. The Output block makes a future yaml.v3 bump that breaks this
+// premise fail CI rather than silently rotting the docs.
+func ExampleNetwork_yamlUnmarshal() {
+	const doc = `
+name: lan
+cidr: 192.168.1.0/24
+gateway: ""
+dns: [1.1.1.1, 8.8.8.8]
+`
+	var n Network
+	if err := yaml.Unmarshal([]byte(doc), &n); err != nil {
+		fmt.Println("error:", err)
+		return
 	}
-	return stringSlicesEqual(a.DNS, b.DNS)
-}
-
-func instancesEqual(a, b Instance) bool {
-	if a.Name != b.Name || a.MAC != b.MAC || a.Network != b.Network || a.StaticIP != b.StaticIP ||
-		a.Disk != b.Disk || a.NIC != b.NIC || a.Security != b.Security {
-		return false
-	}
-	return stringSlicesEqual(a.Applications, b.Applications)
-}
-
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	fmt.Println("cidr:", n.CIDR)                                   // netip.Prefix via TextUnmarshaler
+	fmt.Println("dns:", n.DNS)                                     // []netip.Addr, each via TextUnmarshaler
+	fmt.Println("gateway set:", n.Gateway.IsValid())               // empty string -> zero Addr, no error
+	fmt.Println("range set:", n.DHCPExcludedRange.Start.IsValid()) // omitted -> zero Range, no error
+	// Output:
+	// cidr: 192.168.1.0/24
+	// dns: [1.1.1.1 8.8.8.8]
+	// gateway set: false
+	// range set: false
 }
 
 func TestParseMultipleDocsOfSameKind(t *testing.T) {

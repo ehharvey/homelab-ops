@@ -117,14 +117,16 @@ func newDiffCounts(d configdiff.Result) diffCounts {
 	}
 }
 
-// ErrSync, ErrIPAM, and ErrStore classify a SyncOnce failure by stage: a
-// pull/parse failure or an IP-assignment data problem (both upstream's
-// fault — bad repo content — map to 502) versus a persistence failure
-// (ours, maps to 500). Callers use errors.Is to tell them apart.
+// ErrSync, ErrValidate, ErrIPAM, and ErrStore classify a SyncOnce failure by
+// stage: a pull/parse failure, a semantic-validation failure, or an
+// IP-assignment data problem (all three upstream's fault — bad repo content —
+// map to 502) versus a persistence failure (ours, maps to 500). Callers use
+// errors.Is to tell them apart.
 var (
-	ErrSync  = errors.New("sync failed")
-	ErrIPAM  = errors.New("ip assignment failed")
-	ErrStore = errors.New("store failed")
+	ErrSync     = errors.New("sync failed")
+	ErrValidate = errors.New("config validation failed")
+	ErrIPAM     = errors.New("ip assignment failed")
+	ErrStore    = errors.New("store failed")
 )
 
 // SyncResult is the outcome of one successful SyncOnce: the synced commit,
@@ -137,17 +139,18 @@ type SyncResult struct {
 
 // SyncOnce runs one config-sync cycle, shared by POST /sync and cmd/web's
 // background poller so both surface the same diff warnings and IP
-// assignments: pull from syncer, assign/validate static_ips against the
-// store's prior snapshot (so auto-assigned addresses are stable across
-// re-syncs — see ipam.Assign), diff the result against that same prior
-// snapshot (logging warnings — the only place warnings are surfaced today,
-// per Roadmap Phase 1), then replace the stored snapshot at time now. A
-// failure reading prior state is logged and treated as no baseline — never
-// failing the sync, since the diff is informational and a missing baseline
-// only means auto-assignment can't reuse a prior address this one time. A
-// nil store skips IPAM, the diff, and the replace (sync-only mode). Errors
-// wrap ErrSync (pull/parse), ErrIPAM (duplicate/out-of-range/exhausted
-// static_ip), or ErrStore (persistence).
+// assignments: pull from syncer, semantically validate the parsed config
+// (config.Validate), assign/validate static_ips against the store's prior
+// snapshot (so auto-assigned addresses are stable across re-syncs — see
+// ipam.Assign), diff the result against that same prior snapshot (logging
+// warnings — the only place warnings are surfaced today, per Roadmap Phase 1),
+// then replace the stored snapshot at time now. A failure reading prior state
+// is logged and treated as no baseline — never failing the sync, since the
+// diff is informational and a missing baseline only means auto-assignment
+// can't reuse a prior address this one time. A nil store skips validation,
+// IPAM, the diff, and the replace (sync-only mode). Errors wrap ErrSync
+// (pull/parse), ErrValidate (gateway/range/static_ip semantics), ErrIPAM
+// (duplicate/out-of-range/exhausted static_ip), or ErrStore (persistence).
 func SyncOnce(ctx context.Context, syncer Syncer, store Store, now time.Time) (SyncResult, error) {
 	cfg, sha, err := syncer.Sync(ctx)
 	if err != nil {
@@ -160,6 +163,14 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, now time.Time) (S
 		if err != nil {
 			log.Printf("read prior state: %v", err)
 			firstSync = true
+		}
+
+		// Validate the operator-authored config before IPAM fills in any
+		// auto-assigned addresses, so explicit static_ips/gateways/ranges are
+		// checked as written and ipam.Assign can assume a semantically sound
+		// Config (valid CIDRs, in-range explicit IPs).
+		if issues := config.Validate(cfg); !issues.Empty() {
+			return SyncResult{}, fmt.Errorf("%w: %w", ErrValidate, issues)
 		}
 
 		if err := ipam.Assign(cfg.Networks, cfg.Instances, oldCfg.Instances); err != nil {

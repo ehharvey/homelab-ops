@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"net/netip"
 	"reflect"
 	"testing"
 	"time"
@@ -39,11 +40,15 @@ func TestOpenCreatesSchema(t *testing.T) {
 func sampleConfig() config.Config {
 	return config.Config{
 		Networks: []config.Network{
-			{Name: "dev-lan", CIDR: "10.0.0.0/24", Gateway: "10.0.0.1", DHCPExcludedRange: "10.0.0.1-10.0.0.10", DNS: []string{"1.1.1.1"}},
+			{
+				Name: "dev-lan", CIDR: netip.MustParsePrefix("10.0.0.0/24"), Gateway: netip.MustParseAddr("10.0.0.1"),
+				DHCPExcludedRange: config.Range{Start: netip.MustParseAddr("10.0.0.1"), End: netip.MustParseAddr("10.0.0.10")},
+				DNS:               []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+			},
 		},
 		Instances: []config.Instance{
 			{
-				Name: "devnode0", MAC: "aa:bb:cc:dd:ee:ff", Network: "dev-lan", StaticIP: "10.0.0.20",
+				Name: "devnode0", MAC: "aa:bb:cc:dd:ee:ff", Network: "dev-lan", StaticIP: netip.MustParseAddr("10.0.0.20"),
 				Disk: "/dev/sda", NIC: "eth0",
 				Security:     config.Security{TPM: true, SecureBoot: false},
 				Applications: []string{"incus"},
@@ -105,6 +110,44 @@ func TestReplaceThenQuery(t *testing.T) {
 	}
 }
 
+// TestReplaceRoundTripsUnsetOptionals pins the zero-value round-trip the
+// asText/UnmarshalText TEXT encoding promises: a DHCP network (no gateway, no
+// dhcp_excluded_range, no DNS) and a DHCP instance (no static_ip) must read
+// back byte-for-byte equal, with the unset address fields landing as the zero
+// value (IsValid()==false) and not erroring on the empty TEXT column.
+func TestReplaceRoundTripsUnsetOptionals(t *testing.T) {
+	s, ctx := openTestStore(t)
+	cfg := config.Config{
+		Networks:  []config.Network{{Name: "dhcp-lan", CIDR: netip.MustParsePrefix("10.0.0.0/24")}},
+		Instances: []config.Instance{{Name: "dhcpnode", MAC: "aa:bb:cc:dd:ee:01", Network: "dhcp-lan"}},
+	}
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	n, ok, err := s.Network(ctx, "dhcp-lan")
+	if err != nil || !ok {
+		t.Fatalf("Network(dhcp-lan) = %+v, %v, %v", n, ok, err)
+	}
+	if !reflect.DeepEqual(n, cfg.Networks[0]) {
+		t.Errorf("Network round-trip = %+v, want %+v", n, cfg.Networks[0])
+	}
+	if n.Gateway.IsValid() || n.DHCPExcludedRange.Start.IsValid() {
+		t.Errorf("unset gateway/range did not round-trip to the zero value: %+v", n)
+	}
+
+	i, ok, err := s.Instance(ctx, "dhcpnode")
+	if err != nil || !ok {
+		t.Fatalf("Instance(dhcpnode) = %+v, %v, %v", i, ok, err)
+	}
+	if !reflect.DeepEqual(i, cfg.Instances[0]) {
+		t.Errorf("Instance round-trip = %+v, want %+v", i, cfg.Instances[0])
+	}
+	if i.StaticIP.IsValid() {
+		t.Errorf("unset static_ip did not round-trip to the zero value: %+v", i)
+	}
+}
+
 func TestReplaceOverwritesPriorSnapshot(t *testing.T) {
 	s, ctx := openTestStore(t)
 
@@ -113,7 +156,7 @@ func TestReplaceOverwritesPriorSnapshot(t *testing.T) {
 	}
 
 	second := config.Config{
-		Networks:  []config.Network{{Name: "other-lan", CIDR: "10.1.0.0/24"}},
+		Networks:  []config.Network{{Name: "other-lan", CIDR: netip.MustParsePrefix("10.1.0.0/24")}},
 		Instances: []config.Instance{{Name: "othernode"}},
 	}
 	if err := s.Replace(ctx, second, "second", time.Now()); err != nil {
@@ -182,8 +225,8 @@ func TestReplaceDuplicateNameLastWins(t *testing.T) {
 	s, ctx := openTestStore(t)
 	cfg := config.Config{
 		Networks: []config.Network{
-			{Name: "dup", CIDR: "10.0.0.0/24"},
-			{Name: "dup", CIDR: "10.1.0.0/24"},
+			{Name: "dup", CIDR: netip.MustParsePrefix("10.0.0.0/24")},
+			{Name: "dup", CIDR: netip.MustParsePrefix("10.1.0.0/24")},
 		},
 	}
 
@@ -195,7 +238,7 @@ func TestReplaceDuplicateNameLastWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Networks: %v", err)
 	}
-	if len(networks) != 1 || networks[0].CIDR != "10.1.0.0/24" {
+	if len(networks) != 1 || networks[0].CIDR != netip.MustParsePrefix("10.1.0.0/24") {
 		t.Errorf("Networks = %+v, want one dup network with the last CIDR", networks)
 	}
 }

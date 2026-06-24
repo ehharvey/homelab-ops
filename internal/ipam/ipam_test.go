@@ -2,17 +2,23 @@ package ipam
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
 )
 
+// rng is a small helper for building a config.Range from two address strings.
+func rng(start, end string) config.Range {
+	return config.Range{Start: netip.MustParseAddr(start), End: netip.MustParseAddr(end)}
+}
+
 func sampleNetwork() config.Network {
 	return config.Network{
 		Name:              "lan",
-		CIDR:              "192.168.1.0/24",
-		Gateway:           "192.168.1.1",
-		DHCPExcludedRange: "192.168.1.200-192.168.1.203",
+		CIDR:              netip.MustParsePrefix("192.168.1.0/24"),
+		Gateway:           netip.MustParseAddr("192.168.1.1"),
+		DHCPExcludedRange: rng("192.168.1.200", "192.168.1.203"),
 	}
 }
 
@@ -23,7 +29,7 @@ func TestNormalAssignment(t *testing.T) {
 	if err := Assign(networks, instances, nil); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	if got, want := instances[0].StaticIP, "192.168.1.200"; got != want {
+	if got, want := instances[0].StaticIP.String(), "192.168.1.200"; got != want {
 		t.Fatalf("StaticIP = %q, want %q", got, want)
 	}
 }
@@ -44,6 +50,34 @@ func TestPoolExhaustion(t *testing.T) {
 	}
 }
 
+// TestUsableIPsTerminatesAtBroadcast guards against an infinite loop when the
+// excluded range ends at the all-ones broadcast (255.255.255.255): Next() past
+// the last address returns the zero Addr, which sorts before the range end, so
+// an unguarded "<= end" loop never terminates. config.Validate accepts such a
+// config (the range is within the CIDR), so the pool builder must be robust to
+// it. Without the guard this test hangs the whole package's `go test`.
+func TestUsableIPsTerminatesAtBroadcast(t *testing.T) {
+	p, err := NewNetworkPool(config.Network{
+		Name:              "edge",
+		CIDR:              netip.MustParsePrefix("255.255.255.0/24"),
+		DHCPExcludedRange: rng("255.255.255.200", "255.255.255.255"),
+	})
+	if err != nil {
+		t.Fatalf("NewNetworkPool: %v", err)
+	}
+	usable := p.UsableIPs()
+	// .200-.254 minus the network/broadcast (.255 is the broadcast and must be
+	// dropped); .200-.254 is 55 addresses.
+	if got, want := len(usable), 55; got != want {
+		t.Fatalf("UsableIPs returned %d addresses, want %d", got, want)
+	}
+	for _, ip := range usable {
+		if ip == netip.MustParseAddr("255.255.255.255") {
+			t.Fatalf("UsableIPs included the broadcast address %s", ip)
+		}
+	}
+}
+
 func TestOutOfRangeSuppliedIP(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -56,7 +90,7 @@ func TestOutOfRangeSuppliedIP(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			networks := []config.Network{sampleNetwork()}
-			instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: tc.staticIP}}
+			instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr(tc.staticIP)}}
 
 			err := Assign(networks, instances, nil)
 			if !errors.Is(err, ErrOutOfRange) {
@@ -69,8 +103,8 @@ func TestOutOfRangeSuppliedIP(t *testing.T) {
 func TestDuplicateSuppliedIPs(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
 	instances := []config.Instance{
-		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
-		{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"},
+		{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")},
+		{Name: "node-b", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")},
 	}
 
 	if err := Assign(networks, instances, nil); !errors.Is(err, ErrDuplicate) {
@@ -81,11 +115,11 @@ func TestDuplicateSuppliedIPs(t *testing.T) {
 func TestDuplicateSuppliedIPsAcrossNetworksAllowed(t *testing.T) {
 	networks := []config.Network{
 		sampleNetwork(),
-		{Name: "lan2", CIDR: "192.168.2.0/24", Gateway: "192.168.2.1", DHCPExcludedRange: "192.168.2.200-192.168.2.203"},
+		{Name: "lan2", CIDR: netip.MustParsePrefix("192.168.2.0/24"), Gateway: netip.MustParseAddr("192.168.2.1"), DHCPExcludedRange: rng("192.168.2.200", "192.168.2.203")},
 	}
 	instances := []config.Instance{
-		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
-		{Name: "node-b", Network: "lan2", StaticIP: "192.168.2.200"},
+		{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")},
+		{Name: "node-b", Network: "lan2", StaticIP: netip.MustParseAddr("192.168.2.200")},
 	}
 
 	if err := Assign(networks, instances, nil); err != nil {
@@ -96,21 +130,21 @@ func TestDuplicateSuppliedIPsAcrossNetworksAllowed(t *testing.T) {
 func TestAssignedAlreadyInStore(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
 	instances := []config.Instance{
-		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
+		{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")},
 		{Name: "node-b", Network: "lan"}, // auto-assign, must skip .200
 	}
 
 	if err := Assign(networks, instances, nil); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	if got, want := instances[1].StaticIP, "192.168.1.201"; got != want {
+	if got, want := instances[1].StaticIP.String(), "192.168.1.201"; got != want {
 		t.Fatalf("node-b StaticIP = %q, want %q", got, want)
 	}
 }
 
 func TestNoDHCPExcludedRange(t *testing.T) {
 	net := sampleNetwork()
-	net.DHCPExcludedRange = ""
+	net.DHCPExcludedRange = config.Range{}
 	networks := []config.Network{net}
 
 	t.Run("auto-assign unavailable", func(t *testing.T) {
@@ -121,12 +155,12 @@ func TestNoDHCPExcludedRange(t *testing.T) {
 	})
 
 	t.Run("explicit static_ip still validated against cidr", func(t *testing.T) {
-		instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.50"}}
+		instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.50")}}
 		if err := Assign(networks, instances, nil); err != nil {
 			t.Fatalf("Assign: %v", err)
 		}
 
-		instances = []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "10.0.0.5"}}
+		instances = []config.Instance{{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("10.0.0.5")}}
 		if err := Assign(networks, instances, nil); !errors.Is(err, ErrOutOfRange) {
 			t.Fatalf("Assign error = %v, want ErrOutOfRange", err)
 		}
@@ -157,28 +191,28 @@ func TestAssignmentStableAcrossResyncs(t *testing.T) {
 
 func TestAssignmentRedrawnWhenPriorIPNoLongerValid(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
-	prior := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.50"}} // now outside the excluded range
+	prior := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.50")}} // now outside the excluded range
 	instances := []config.Instance{{Name: "node-a", Network: "lan"}}
 
 	if err := Assign(networks, instances, prior); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	if instances[0].StaticIP == "192.168.1.50" {
+	if instances[0].StaticIP.String() == "192.168.1.50" {
 		t.Fatalf("stale out-of-pool prior IP was reused, want a fresh draw")
 	}
-	if instances[0].StaticIP != "192.168.1.200" {
-		t.Fatalf("StaticIP = %q, want %q", instances[0].StaticIP, "192.168.1.200")
+	if got, want := instances[0].StaticIP.String(), "192.168.1.200"; got != want {
+		t.Fatalf("StaticIP = %q, want %q", got, want)
 	}
 }
 
 func TestExplicitStaticIPRejectedWhenConflictsWithPriorAssignedIP(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
 	prior := []config.Instance{
-		{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"},
+		{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")},
 	}
 	instances := []config.Instance{
 		{Name: "node-a", Network: "lan"},
-		{Name: "node-b", Network: "lan", StaticIP: "192.168.1.200"}, // reserved for node-a
+		{Name: "node-b", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")}, // reserved for node-a
 	}
 
 	// Expected behaviour: Assign should reject an explicit static_ip that
@@ -191,15 +225,15 @@ func TestExplicitStaticIPRejectedWhenConflictsWithPriorAssignedIP(t *testing.T) 
 
 func TestExplicitStaticIPReassertingOwnPriorIPAccepted(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
-	prior := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"}}
-	instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: "192.168.1.200"}}
+	prior := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")}}
+	instances := []config.Instance{{Name: "node-a", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")}}
 
 	// An instance explicitly reasserting its own prior-assigned IP is never
 	// a conflict, even though that IP is "reserved" against other instances.
 	if err := Assign(networks, instances, prior); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	if got, want := instances[0].StaticIP, "192.168.1.200"; got != want {
+	if got, want := instances[0].StaticIP.String(), "192.168.1.200"; got != want {
 		t.Fatalf("StaticIP = %q, want %q", got, want)
 	}
 }
