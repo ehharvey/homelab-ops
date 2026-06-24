@@ -32,6 +32,16 @@ type Store interface {
 	LastSync(ctx context.Context) (commit string, syncedAt time.Time, ok bool, err error)
 	Networks(ctx context.Context) ([]config.Network, error)
 	Instances(ctx context.Context) ([]config.Instance, error)
+	Network(ctx context.Context, name string) (config.Network, bool, error)
+	Instance(ctx context.Context, name string) (config.Instance, bool, error)
+}
+
+// CertSource provides the deployment's single break-glass client
+// certificate to preseed into every rendered instance's incus.yaml. It is
+// parameterless because the cert is one per cluster, not one per instance
+// — see docs/Open Questions.md §4's follow-up.
+type CertSource interface {
+	ClientCertPEM(ctx context.Context) ([]byte, error)
 }
 
 // Service coordinates config syncs from one syncer into one store. It exists
@@ -42,13 +52,15 @@ type Store interface {
 type Service struct {
 	syncer Syncer
 	store  Store
+	certs  CertSource
 	mu     sync.Mutex
 }
 
 // NewService builds a Service over syncer and store, either of which may be
 // nil (POST /sync and the read endpoints then report themselves unconfigured).
-func NewService(syncer Syncer, store Store) *Service {
-	return &Service{syncer: syncer, store: store}
+// certs may also be nil (the seed route then reports itself unconfigured).
+func NewService(syncer Syncer, store Store, certs CertSource) *Service {
+	return &Service{syncer: syncer, store: store, certs: certs}
 }
 
 // Sync runs one serialized sync cycle at time now; see SyncOnce for the
@@ -59,11 +71,11 @@ func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 	return SyncOnce(ctx, s.syncer, s.store, now)
 }
 
-// New builds the web app's HTTP handler. syncer and store may be nil, in
-// which case POST /sync and the read endpoints report themselves as
-// unconfigured rather than failing /healthz.
-func New(syncer Syncer, store Store) http.Handler {
-	return NewFromService(NewService(syncer, store))
+// New builds the web app's HTTP handler. syncer, store, and certs may be
+// nil, in which case POST /sync, the read endpoints, and the seed route
+// report themselves as unconfigured rather than failing /healthz.
+func New(syncer Syncer, store Store, certs CertSource) http.Handler {
+	return NewFromService(NewService(syncer, store, certs))
 }
 
 // NewFromService builds the handler around an existing Service, so a caller
@@ -76,6 +88,7 @@ func NewFromService(svc *Service) http.Handler {
 	mux.HandleFunc("GET /status", handleStatus(svc.store))
 	mux.HandleFunc("GET /networks", handleNetworks(svc.store))
 	mux.HandleFunc("GET /instances", handleInstances(svc.store))
+	mux.HandleFunc("POST /instances/{name}/seed", handleInstanceSeed(svc.store, svc.certs))
 	return mux
 }
 
