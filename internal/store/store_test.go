@@ -110,6 +110,44 @@ func TestReplaceThenQuery(t *testing.T) {
 	}
 }
 
+// TestReplaceRoundTripsUnsetOptionals pins the zero-value round-trip the
+// asText/UnmarshalText TEXT encoding promises: a DHCP network (no gateway, no
+// dhcp_excluded_range, no DNS) and a DHCP instance (no static_ip) must read
+// back byte-for-byte equal, with the unset address fields landing as the zero
+// value (IsValid()==false) and not erroring on the empty TEXT column.
+func TestReplaceRoundTripsUnsetOptionals(t *testing.T) {
+	s, ctx := openTestStore(t)
+	cfg := config.Config{
+		Networks:  []config.Network{{Name: "dhcp-lan", CIDR: netip.MustParsePrefix("10.0.0.0/24")}},
+		Instances: []config.Instance{{Name: "dhcpnode", MAC: "aa:bb:cc:dd:ee:01", Network: "dhcp-lan"}},
+	}
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	n, ok, err := s.Network(ctx, "dhcp-lan")
+	if err != nil || !ok {
+		t.Fatalf("Network(dhcp-lan) = %+v, %v, %v", n, ok, err)
+	}
+	if !reflect.DeepEqual(n, cfg.Networks[0]) {
+		t.Errorf("Network round-trip = %+v, want %+v", n, cfg.Networks[0])
+	}
+	if n.Gateway.IsValid() || n.DHCPExcludedRange.Start.IsValid() {
+		t.Errorf("unset gateway/range did not round-trip to the zero value: %+v", n)
+	}
+
+	i, ok, err := s.Instance(ctx, "dhcpnode")
+	if err != nil || !ok {
+		t.Fatalf("Instance(dhcpnode) = %+v, %v, %v", i, ok, err)
+	}
+	if !reflect.DeepEqual(i, cfg.Instances[0]) {
+		t.Errorf("Instance round-trip = %+v, want %+v", i, cfg.Instances[0])
+	}
+	if i.StaticIP.IsValid() {
+		t.Errorf("unset static_ip did not round-trip to the zero value: %+v", i)
+	}
+}
+
 func TestReplaceOverwritesPriorSnapshot(t *testing.T) {
 	s, ctx := openTestStore(t)
 
