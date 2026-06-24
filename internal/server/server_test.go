@@ -53,6 +53,9 @@ type fakeStore struct {
 	networksErr error
 	instances   []config.Instance
 	instErr     error
+
+	networkByName  map[string]config.Network
+	instanceByName map[string]config.Instance
 }
 
 func (f *fakeStore) Replace(_ context.Context, cfg config.Config, commit string, _ time.Time) error {
@@ -74,11 +77,21 @@ func (f *fakeStore) Instances(context.Context) ([]config.Instance, error) {
 	return f.instances, f.instErr
 }
 
+func (f *fakeStore) Network(_ context.Context, name string) (config.Network, bool, error) {
+	n, ok := f.networkByName[name]
+	return n, ok, nil
+}
+
+func (f *fakeStore) Instance(_ context.Context, name string) (config.Instance, bool, error) {
+	i, ok := f.instanceByName[name]
+	return i, ok, nil
+}
+
 func TestHealthz(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, nil).ServeHTTP(rec, req)
+	New(nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /healthz = %d, want %d", rec.Code, http.StatusOK)
@@ -89,7 +102,7 @@ func TestSyncNotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, nil).ServeHTTP(rec, req)
+	New(nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /sync with nil syncer = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -107,7 +120,7 @@ func TestSyncSuccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store).ServeHTTP(rec, req)
+	New(syncer, store, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -150,7 +163,7 @@ func TestSyncWithDiff(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store).ServeHTTP(rec, req)
+	New(syncer, store, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -177,7 +190,7 @@ func TestSyncDiffReadFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store).ServeHTTP(rec, req)
+	New(syncer, store, nil).ServeHTTP(rec, req)
 
 	// A failure reading prior state for the diff must not fail the sync.
 	if rec.Code != http.StatusOK {
@@ -202,7 +215,7 @@ func TestSyncFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, nil).ServeHTTP(rec, req)
+	New(syncer, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("POST /sync with failing syncer = %d, want %d", rec.Code, http.StatusBadGateway)
@@ -219,7 +232,7 @@ func TestSyncStoreFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store).ServeHTTP(rec, req)
+	New(syncer, store, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /sync with failing store = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -439,7 +452,7 @@ func TestSyncOnceValidationFailure(t *testing.T) {
 	t.Run("POST /sync maps ErrValidate to 502", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 		rec := httptest.NewRecorder()
-		New(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}).ServeHTTP(rec, req)
+		New(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}, nil).ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadGateway {
 			t.Fatalf("POST /sync with invalid config = %d, want %d", rec.Code, http.StatusBadGateway)
 		}
@@ -472,7 +485,7 @@ func (p *concurrencyProbe) Sync(context.Context) (config.Config, string, error) 
 
 func TestServiceSyncSerializesCalls(t *testing.T) {
 	probe := &concurrencyProbe{}
-	svc := NewService(probe, nil) // nil store: exercise the lock without persistence
+	svc := NewService(probe, nil, nil) // nil store: exercise the lock without persistence
 
 	var wg sync.WaitGroup
 	for range 10 {
@@ -510,7 +523,7 @@ func TestStatusNotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, nil).ServeHTTP(rec, req)
+	New(nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /status with nil store = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -521,7 +534,7 @@ func TestStatusNeverSynced(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, &fakeStore{synced: false}).ServeHTTP(rec, req)
+	New(nil, &fakeStore{synced: false}, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /status = %d, want %d", rec.Code, http.StatusOK)
@@ -542,7 +555,7 @@ func TestStatusSynced(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, store).ServeHTTP(rec, req)
+	New(nil, store, nil).ServeHTTP(rec, req)
 
 	var got statusResponse
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -562,7 +575,7 @@ func TestNetworksAndInstances(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/networks", nil)
 	rec := httptest.NewRecorder()
-	New(nil, store).ServeHTTP(rec, req)
+	New(nil, store, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /networks = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -576,7 +589,7 @@ func TestNetworksAndInstances(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/instances", nil)
 	rec = httptest.NewRecorder()
-	New(nil, store).ServeHTTP(rec, req)
+	New(nil, store, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /instances = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -596,7 +609,7 @@ func TestNetworksInstancesEmptyReturnArray(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 
-		New(nil, &fakeStore{}).ServeHTTP(rec, req)
+		New(nil, &fakeStore{}, nil).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s = %d, want %d", path, rec.Code, http.StatusOK)
@@ -612,7 +625,7 @@ func TestNetworksInstancesNotConfigured(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 
-		New(nil, nil).ServeHTTP(rec, req)
+		New(nil, nil, nil).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("GET %s with nil store = %d, want %d", path, rec.Code, http.StatusServiceUnavailable)
@@ -633,7 +646,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		rec := httptest.NewRecorder()
 
-		New(nil, nil).ServeHTTP(rec, req)
+		New(nil, nil, nil).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, http.StatusMethodNotAllowed)

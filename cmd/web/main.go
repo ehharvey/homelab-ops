@@ -42,7 +42,7 @@ func run() error {
 
 	// One Service shared between the HTTP handler and the background poller so
 	// their syncs serialize through a single lock.
-	svc := server.NewService(syncer, st)
+	svc := server.NewService(syncer, st, newCertSource())
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -144,4 +144,25 @@ func storePath() string {
 		return p
 	}
 	return ":memory:"
+}
+
+// newCertSource builds the deployment's break-glass CertSource from
+// CLIENT_CERT_PATH, or a nil server.CertSource if unset (the seed route
+// then reports itself unconfigured, mirroring newSyncer's nil-Syncer
+// convention).
+func newCertSource() server.CertSource {
+	path := os.Getenv("CLIENT_CERT_PATH")
+	if path == "" {
+		return nil
+	}
+	return fileCertSource{path: path}
+}
+
+// fileCertSource reads the operator-supplied break-glass client cert from a
+// local path on every call. It is never generated, minted, or persisted by
+// the app — see docs/Architecture.md's "Cert sourcing".
+type fileCertSource struct{ path string }
+
+func (f fileCertSource) ClientCertPEM(_ context.Context) ([]byte, error) {
+	return os.ReadFile(f.path) //nolint:gosec // path is operator-supplied deployment config, not untrusted input
 }

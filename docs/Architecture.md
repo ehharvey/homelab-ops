@@ -19,7 +19,7 @@ A standalone command, not part of the always-on web app — it has to work befor
 - Generates a self-signed cert/key pair offline (no network dependency)
 - Reads one `Instance`/`Network` definition (see Data model) and renders an IncusOS seed bundle: `install.yaml` (disk target, TPM/Secure Boot flags), `network.yaml` (static IP or DHCP, plus a default route — required once an instance has a static IP, or the node can't reach anything off-subnet), `applications.yaml` (`incus` only — no `operations-center` for v1), `incus.yaml` (preseeds the generated client cert as a trusted Incus client cert, so Incus trusts it on first boot — see #5)
 - Invokes `flasher-tool` to bake the seed into a `.img`
-- Leaves the cert/key on local disk — this becomes the credential the web app adopts later to talk to this node's Incus API
+- Leaves the cert/key on local disk. This cert is the deployment's single break-glass client credential, not a one-off for node #0 alone — the web app is later pointed at the same cert's public half via its own deployment config (see "Cert sourcing" below), so it embeds it into every subsequently-provisioned node too. The private key never leaves the operator's local disk and the web app never reads it.
 
 Once node #0 is up and reachable, this tool's job is done; steady-state provisioning moves to the web app.
 
@@ -33,7 +33,7 @@ Modules:
 - **Instance/network store** — holds the parsed `Instance` and `Network` objects, queryable by kind/name. Backed by sqlite (`modernc.org/sqlite`, pure Go, no cgo — keeps the single-binary/distroless deployment goal from #18), file-backed by default so IPAM-assigned IPs survive a restart (see `Open Questions.md` §12) — `:memory:` remains available for tests. Each sync fully replaces the prior snapshot rather than merging into it, matching config sync's full-`Config`-per-sync output (see #21); git stays authoritative for desired-state config, the store is the system of record for what's actually been assigned.
 - **IPAM** — tracks `Network` definitions (CIDR + DHCP exclusion ranges), assigns static IPv4s to instances, basic duplicate detection. App is the sole source of truth; assignments persist in the durable store, no DHCP/DNS write-back in v1.
 - **Seed/installer generation** — same seed-rendering logic as the bootstrap CLI, generalized to any instance: builds `install.yaml`/`network.yaml`/`applications.yaml`/`incus.yaml`, calls `flasher-tool`, and either serves the resulting `.img` for download or flashes it directly — whichever is easiest to implement first.
-- **Cert issuance** — self-signed cert per node, for direct Incus client authentication (not Operations Center auth — that question is shelved with the OC-wrapping decision), preseeded into the node's `incus.yaml` so Incus trusts it before first boot. Storage/rotation/revocation explicitly deferred.
+- **Cert sourcing** — the app never generates, mints, or stores a client cert itself. It reads one operator-supplied, self-signed cert (the same artifact the bootstrap CLI's `gen-cert` already produces for node #0) from local deployment config, and preseeds its public half into every subsequently-provisioned node's `incus.yaml`, so the whole fleet trusts a single break-glass credential identical to what node #0 trusts (not Operations Center auth — that question is shelved with the OC-wrapping decision). The private key is never read, transmitted, or persisted by the app — rotation/revocation remain deferred, but the key-storage risk that deferral originally implied is avoided entirely rather than just postponed.
 - **Tailscale config** — takes an operator-supplied authkey and writes it into the node's seed for IncusOS's built-in [Tailscale service](https://linuxcontainers.org/incus-os/docs/main/reference/services/tailscale/). No per-node enrollment flow yet.
 - **Logging config** — provisions an Alloy instance under Incus and points the node's remote syslog at it; Alloy forwards to Grafana Cloud. Tailscale-reachable Grafana endpoint is TBD later.
 
@@ -76,7 +76,7 @@ This is illustrative, not a finalized schema — exact field names are an implem
 Bootstrap CLI generates cert → renders seed from one `Instance`/`Network` doc → `flasher-tool` produces `.img` → operator flashes USB → node boots, installs IncusOS, Incus comes up trusting the generated cert.
 
 **Flow B — Steady-state provisioning (web app, post node #0):**
-GitHub push → config sync pulls + parses → diff shown (warn only) → operator/app triggers seed generation for a given instance → `.img` produced/downloaded → repeat Flow A's flash/install for that node, now trusting a web-app-issued cert.
+GitHub push → config sync pulls + parses → diff shown (warn only) → operator/app triggers seed generation for a given instance → `.img` produced/downloaded → repeat Flow A's flash/install for that node, now trusting the same break-glass cert node #0 trusts.
 
 **Flow C — Logging:**
 IncusOS node syslog → Alloy Incus instance → Grafana Cloud.
@@ -95,6 +95,7 @@ The web app (`internal/server`) currently exposes:
 | `/status` | GET | Last-synced commit SHA and sync time, if any |
 | `/networks` | GET | All stored `Network` objects |
 | `/instances` | GET | All stored `Instance` objects |
+| `/instances/{name}/seed` | POST | Renders the four IncusOS seed documents (`install.yaml`, `network.yaml`, `applications.yaml`, `incus.yaml`) for a synced instance, embedding the break-glass cert from `CLIENT_CERT_PATH` |
 
 Full diff detail (human-readable added/changed/removed lines) is server-log-only, not part of the JSON response — keeps the API from committing to a long-form string contract before a UI exists to consume it. No OpenAPI spec yet (see `Out of Scope.md`).
 
