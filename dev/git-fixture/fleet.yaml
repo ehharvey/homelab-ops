@@ -9,7 +9,7 @@ kind: Instance
 name: devnode0
 mac: aa:bb:cc:dd:ee:00
 network: dev-lan
-static_ip: 10.0.0.10
+static_ip: 10.0.0.210
 disk: single
 nic: single
 security:

@@ -19,7 +19,6 @@ import (
 	incusseed "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api/seed"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
-	"github.com/ehharvey/homelab-ops/internal/ipam"
 )
 
 // Options configures behavior that has no equivalent in the fleet
@@ -84,33 +83,32 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 		Name:  "eth0",
 		Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
 	}
-	excludedStart, excludedEnd, err := ipam.ExcludedRangeBounds(net)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("network %q: %w", net.Name, err)
-	}
-
-	if inst.StaticIP != "" {
-		prefix, err := ipam.ValidateStaticIP(net.CIDR, inst.StaticIP, excludedStart, excludedEnd)
-		if err != nil {
-			return Bundle{}, fmt.Errorf("instance %q: %w", inst.Name, err)
-		}
-		iface.Addresses = []string{fmt.Sprintf("%s/%d", inst.StaticIP, prefix)}
+	// Addressing semantics (static_ip ∈ CIDR ∈ range, range ∈ CIDR) are
+	// validated upstream by config.Validate — both the server sync path and
+	// the render-seed CLI run it before Render. Here we only read the typed,
+	// already-valid fields to render the seed.
+	if inst.StaticIP.IsValid() {
+		iface.Addresses = []string{fmt.Sprintf("%s/%d", inst.StaticIP, net.CIDR.Bits())}
 
 		// A static address with no default route leaves the node unable to
 		// reach anything outside its own subnet — confirmed by booting a
 		// real seeded image (IncusOS's update/Secure-Boot-key checks failed
 		// with "network is unreachable" until a route was added).
-		if net.Gateway == "" {
+		if !net.Gateway.IsValid() {
 			return Bundle{}, fmt.Errorf("network %q: gateway is required when an instance has a static_ip", net.Name)
 		}
-		iface.Routes = []incusapi.SystemNetworkRoute{{To: "0.0.0.0/0", Via: net.Gateway}}
+		iface.Routes = []incusapi.SystemNetworkRoute{{To: "0.0.0.0/0", Via: net.Gateway.String()}}
 	}
 
 	netConfig := incusapi.SystemNetworkConfig{
 		Interfaces: []incusapi.SystemNetworkInterface{iface},
 	}
 	if len(net.DNS) > 0 {
-		netConfig.DNS = &incusapi.SystemNetworkDNS{Nameservers: net.DNS}
+		nameservers := make([]string, len(net.DNS))
+		for i, d := range net.DNS {
+			nameservers[i] = d.String()
+		}
+		netConfig.DNS = &incusapi.SystemNetworkDNS{Nameservers: nameservers}
 	}
 
 	applications := make([]incusseed.Application, 0, len(inst.Applications))

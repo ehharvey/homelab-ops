@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -87,7 +88,7 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 		if err != nil {
 			return fmt.Errorf("marshal network %q dns: %w", n.Name, err)
 		}
-		if _, err := tx.ExecContext(ctx, replaceNetworkSQL, n.Name, n.CIDR, n.Gateway, n.DHCPExcludedRange, string(dns)); err != nil {
+		if _, err := tx.ExecContext(ctx, replaceNetworkSQL, n.Name, asText(n.CIDR), asText(n.Gateway), asText(n.DHCPExcludedRange), string(dns)); err != nil {
 			return fmt.Errorf("store network %q: %w", n.Name, err)
 		}
 	}
@@ -104,7 +105,7 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 			return fmt.Errorf("marshal instance %q applications: %w", i.Name, err)
 		}
 		if _, err := tx.ExecContext(ctx, replaceInstanceSQL,
-			i.Name, i.MAC, i.Network, i.StaticIP, i.Disk, i.NIC,
+			i.Name, i.MAC, i.Network, asText(i.StaticIP), i.Disk, i.NIC,
 			boolToInt(i.Security.TPM), boolToInt(i.Security.SecureBoot), string(apps),
 		); err != nil {
 			return fmt.Errorf("store instance %q: %w", i.Name, err)
@@ -208,9 +209,18 @@ type row interface {
 
 func scanNetwork(r row) (config.Network, error) {
 	var n config.Network
-	var dns string
-	if err := r.Scan(&n.Name, &n.CIDR, &n.Gateway, &n.DHCPExcludedRange, &dns); err != nil {
+	var cidr, gateway, excluded, dns string
+	if err := r.Scan(&n.Name, &cidr, &gateway, &excluded, &dns); err != nil {
 		return config.Network{}, err
+	}
+	if err := n.CIDR.UnmarshalText([]byte(cidr)); err != nil {
+		return config.Network{}, fmt.Errorf("parse cidr for %q: %w", n.Name, err)
+	}
+	if err := n.Gateway.UnmarshalText([]byte(gateway)); err != nil {
+		return config.Network{}, fmt.Errorf("parse gateway for %q: %w", n.Name, err)
+	}
+	if err := n.DHCPExcludedRange.UnmarshalText([]byte(excluded)); err != nil {
+		return config.Network{}, fmt.Errorf("parse dhcp_excluded_range for %q: %w", n.Name, err)
 	}
 	if err := json.Unmarshal([]byte(dns), &n.DNS); err != nil {
 		return config.Network{}, fmt.Errorf("unmarshal dns for %q: %w", n.Name, err)
@@ -221,9 +231,12 @@ func scanNetwork(r row) (config.Network, error) {
 func scanInstance(r row) (config.Instance, error) {
 	var i config.Instance
 	var tpm, secureBoot int
-	var apps string
-	if err := r.Scan(&i.Name, &i.MAC, &i.Network, &i.StaticIP, &i.Disk, &i.NIC, &tpm, &secureBoot, &apps); err != nil {
+	var staticIP, apps string
+	if err := r.Scan(&i.Name, &i.MAC, &i.Network, &staticIP, &i.Disk, &i.NIC, &tpm, &secureBoot, &apps); err != nil {
 		return config.Instance{}, err
+	}
+	if err := i.StaticIP.UnmarshalText([]byte(staticIP)); err != nil {
+		return config.Instance{}, fmt.Errorf("parse static_ip for %q: %w", i.Name, err)
 	}
 	i.Security.TPM = tpm != 0
 	i.Security.SecureBoot = secureBoot != 0
@@ -231,6 +244,16 @@ func scanInstance(r row) (config.Instance, error) {
 		return config.Instance{}, fmt.Errorf("unmarshal applications for %q: %w", i.Name, err)
 	}
 	return i, nil
+}
+
+// asText renders a netip.Addr/netip.Prefix/config.Range to the string stored
+// in its TEXT column. Each marshals its zero value to "" (and UnmarshalText
+// reads "" back to the zero value), so an unset optional — a DHCP instance's
+// static_ip, a gateway-less network's gateway — round-trips losslessly.
+// MarshalText on these stdlib/typed values never returns an error.
+func asText(m encoding.TextMarshaler) string {
+	b, _ := m.MarshalText()
+	return string(b)
 }
 
 func boolToInt(b bool) int {

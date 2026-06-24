@@ -94,9 +94,9 @@ docker compose exec -T config-repo sh -c '
 kind: Network
 name: dev-lan
 cidr: 10.0.1.0/24
-gateway: 10.0.0.1
-dhcp_excluded_range: 10.0.0.200-10.0.0.250
-dns: [10.0.0.1]
+gateway: 10.0.1.1
+dhcp_excluded_range: 10.0.1.200-10.0.1.250
+dns: [10.0.1.1]
 ---
 kind: Network
 name: extra-lan
@@ -127,7 +127,38 @@ check_log "log shows the removed instance as a human-readable warning" \
   "- instance devnode0 removed"
 
 echo
-echo "== 4. Zero side effects on real nodes =="
+echo "== 4. A semantically-invalid pushed config is rejected at sync (issue #46) =="
+# config.Validate runs in server.SyncOnce: a Network whose gateway falls
+# outside its CIDR is bad upstream content and must fail the sync with 502
+# (ErrValidate), naming the offending field path in the log — never persisting
+# the broken state.
+docker compose exec -T config-repo sh -c '
+  set -e
+  rm -rf /tmp/validate-bad
+  git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-bad
+  cd /tmp/validate-bad
+  git config user.email dev@homelab-ops.local
+  git config user.name "validate-issue-22"
+  cat > fleet.yaml <<EOF
+kind: Network
+name: dev-lan
+cidr: 10.0.1.0/24
+gateway: 10.9.9.9
+dhcp_excluded_range: 10.0.1.200-10.0.1.250
+dns: [10.0.1.1]
+EOF
+  git add fleet.yaml
+  git commit -m "validate-issue-22: gateway outside cidr (must fail validation)" >/dev/null
+  git push origin main >/dev/null 2>&1
+' >/dev/null 2>&1
+check "pushed an invalid third commit to the fixture repo" docker compose exec -T config-repo test -d /tmp/validate-bad
+
+bad_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/sync")
+check_json "POST /sync on invalid config returns 502" "{\"code\":$bad_status}" '.code == 502'
+check_log "log names the offending field path" "networks[0].gateway"
+
+echo
+echo "== 5. Zero side effects on real nodes =="
 check "web container has no shell (still distroless; no provisioning tooling crept in)" \
   bash -c '! docker compose exec -T web sh -c "true" 2>/dev/null'
 

@@ -58,6 +58,14 @@ func runRenderSeed(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("parse config file: %w", err)
 	}
 
+	// Parse only checks structure/syntax; reject semantically invalid
+	// addressing (gateway/range/static_ip not adding up) before rendering a
+	// seed off it. This is the same config.Validate pass the web app runs in
+	// server.SyncOnce — seed.Render itself no longer re-validates.
+	if issues := config.Validate(cfg); !issues.Empty() {
+		return fmt.Errorf("invalid config: %w", issues)
+	}
+
 	if len(cfg.Networks) != 1 {
 		return fmt.Errorf("expected exactly 1 Network, got %d", len(cfg.Networks))
 	}

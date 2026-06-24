@@ -1,6 +1,7 @@
 package configdiff
 
 import (
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -8,11 +9,22 @@ import (
 )
 
 func net(name, cidr string, dns ...string) config.Network {
-	return config.Network{Name: name, CIDR: cidr, DNS: dns}
+	n := config.Network{Name: name}
+	if cidr != "" {
+		n.CIDR = netip.MustParsePrefix(cidr)
+	}
+	for _, d := range dns {
+		n.DNS = append(n.DNS, netip.MustParseAddr(d))
+	}
+	return n
 }
 
 func inst(name, staticIP string, apps ...string) config.Instance {
-	return config.Instance{Name: name, StaticIP: staticIP, Applications: apps}
+	i := config.Instance{Name: name, Applications: apps}
+	if staticIP != "" {
+		i.StaticIP = netip.MustParseAddr(staticIP)
+	}
+	return i
 }
 
 func TestDiffNoChange(t *testing.T) {

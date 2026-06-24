@@ -3,6 +3,7 @@ package seed
 import (
 	"encoding/base64"
 	"encoding/pem"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,10 +29,10 @@ func sampleClientCertPEM(t *testing.T) []byte {
 func sampleNetwork() config.Network {
 	return config.Network{
 		Name:              "home-lan",
-		CIDR:              "192.168.1.0/24",
-		Gateway:           "192.168.1.1",
-		DHCPExcludedRange: "192.168.1.200-192.168.1.250",
-		DNS:               []string{"192.168.1.1"},
+		CIDR:              netip.MustParsePrefix("192.168.1.0/24"),
+		Gateway:           netip.MustParseAddr("192.168.1.1"),
+		DHCPExcludedRange: config.Range{Start: netip.MustParseAddr("192.168.1.200"), End: netip.MustParseAddr("192.168.1.250")},
+		DNS:               []netip.Addr{netip.MustParseAddr("192.168.1.1")},
 	}
 }
 
@@ -40,7 +41,7 @@ func sampleInstance() config.Instance {
 		Name:         "node0",
 		MAC:          "aa:bb:cc:dd:ee:ff",
 		Network:      "home-lan",
-		StaticIP:     "192.168.1.201",
+		StaticIP:     netip.MustParseAddr("192.168.1.201"),
 		Disk:         "single",
 		NIC:          "single",
 		Security:     config.Security{TPM: false, SecureBoot: true},
@@ -91,7 +92,7 @@ func TestRenderHappyPath(t *testing.T) {
 
 func TestRenderDHCP(t *testing.T) {
 	inst := sampleInstance()
-	inst.StaticIP = ""
+	inst.StaticIP = netip.Addr{}
 
 	b, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{})
 	if err != nil {
@@ -108,59 +109,17 @@ func TestRenderDHCP(t *testing.T) {
 
 func TestRenderRejectsStaticIPWithoutGateway(t *testing.T) {
 	net := sampleNetwork()
-	net.Gateway = ""
+	net.Gateway = netip.Addr{}
 
 	if _, err := Render(net, sampleInstance(), sampleClientCertPEM(t), Options{}); err == nil {
 		t.Fatal("expected error for static_ip without a network gateway, got nil")
 	}
 }
 
-func TestRenderRejectsStaticIPOutsideCIDR(t *testing.T) {
-	inst := sampleInstance()
-	inst.StaticIP = "10.0.0.5"
-
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
-		t.Fatal("expected error for static_ip outside the network's cidr, got nil")
-	}
-}
-
-func TestRenderRejectsInvalidStaticIP(t *testing.T) {
-	inst := sampleInstance()
-	inst.StaticIP = "not-an-ip"
-
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
-		t.Fatal("expected error for malformed static_ip, got nil")
-	}
-}
-
-func TestRenderRejectsExcludedRangeOutsideCIDR(t *testing.T) {
-	net := sampleNetwork()
-	net.DHCPExcludedRange = "10.0.0.200-10.0.0.250"
-	inst := sampleInstance()
-	inst.StaticIP = ""
-
-	if _, err := Render(net, inst, sampleClientCertPEM(t), Options{}); err == nil {
-		t.Fatal("expected error for dhcp_excluded_range outside the network's cidr, got nil")
-	}
-}
-
-func TestRenderRejectsMalformedExcludedRange(t *testing.T) {
-	net := sampleNetwork()
-	net.DHCPExcludedRange = "not-a-range"
-
-	if _, err := Render(net, sampleInstance(), sampleClientCertPEM(t), Options{}); err == nil {
-		t.Fatal("expected error for malformed dhcp_excluded_range, got nil")
-	}
-}
-
-func TestRenderRejectsStaticIPOutsideExcludedRange(t *testing.T) {
-	inst := sampleInstance()
-	inst.StaticIP = "192.168.1.50"
-
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
-		t.Fatal("expected error for static_ip outside dhcp_excluded_range, got nil")
-	}
-}
+// Addressing semantics (static_ip ∈ CIDR ∈ range, range ∈ CIDR, well-formed
+// range) are no longer Render's responsibility — they're validated upstream by
+// config.Validate (see internal/config/validate_test.go). Render only enforces
+// the rendering-specific guards below.
 
 func TestRenderRejectsNetworkMismatch(t *testing.T) {
 	inst := sampleInstance()
