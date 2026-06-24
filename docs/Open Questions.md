@@ -62,6 +62,12 @@ flasher-tool, for now — node #0 has no other way in. Raw `.img`, not ISO, sinc
 ### Answers
 Certs are for initial Incus client authentication against IncusOS (not Operations Center auth). Self-signed is fine for now. Key storage and rotation/revocation are deferred — current focus is just one node.
 
+### Follow-up (resolved on #36/#37): one break-glass cert per deployment, supplied by the operator, never held by the app
+
+Worked out across #36/#37's implementation discussion: the cert is a single break-glass credential for the whole deployment, not one per node — Incus's trusted-client-cert list is already cluster-wide by construction, and minting a unique keypair per node bought no real isolation anyway, since custody would still be centralized in one place. Taken one step further than that discussion's first conclusion: the web app doesn't generate or persist this cert in *any* form, not even just the public half. The operator runs the existing `bootstrap gen-cert` once — the same step node #0 already requires — and points the web app at the resulting public cert via local deployment config (e.g. a `CLIENT_CERT_PATH` file path, mirroring `STORE_PATH`'s pattern); the web app reads and embeds that public cert into every node's seed and never sees, generates, or stores the private key.
+
+This resolves both questions left open on #37's review thread: key custody (moot — the app holds no key, full stop) and whether node #0's cert is the same credential as the cluster's break-glass cert (yes, by construction — it's literally the same file pointed at by config, not a separately generated or imported copy). `internal/cert` itself is unchanged by this — it's still exactly the CLI-only, offline generator it always was; the web app simply never calls it.
+
 ## 5. IPAM (note 7)
 
 - Scope for v1: just "assign a static IP per node" bookkeeping, or real subnet/VLAN modeling with conflict detection?
