@@ -64,7 +64,12 @@ func (p *NetworkPool) UsableIPs() []netip.Addr {
 	broadcast := lastAddr(p.prefix)
 
 	var out []netip.Addr
-	for ip := p.excludedStart; ip.Compare(p.excludedEnd) <= 0; ip = ip.Next() {
+	// ip.IsValid() guards the terminal case: Next() past the last address
+	// (255.255.255.255) returns the zero Addr, which sorts *before*
+	// excludedEnd, so a range ending at the all-ones broadcast (e.g. a
+	// 255.255.255.0/24 network) would otherwise loop forever. excludedStart is
+	// known valid here (checked above).
+	for ip := p.excludedStart; ip.IsValid() && ip.Compare(p.excludedEnd) <= 0; ip = ip.Next() {
 		if ip == network || ip == broadcast || ip == p.gateway {
 			continue
 		}

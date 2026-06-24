@@ -50,6 +50,34 @@ func TestPoolExhaustion(t *testing.T) {
 	}
 }
 
+// TestUsableIPsTerminatesAtBroadcast guards against an infinite loop when the
+// excluded range ends at the all-ones broadcast (255.255.255.255): Next() past
+// the last address returns the zero Addr, which sorts before the range end, so
+// an unguarded "<= end" loop never terminates. config.Validate accepts such a
+// config (the range is within the CIDR), so the pool builder must be robust to
+// it. Without the guard this test hangs the whole package's `go test`.
+func TestUsableIPsTerminatesAtBroadcast(t *testing.T) {
+	p, err := NewNetworkPool(config.Network{
+		Name:              "edge",
+		CIDR:              netip.MustParsePrefix("255.255.255.0/24"),
+		DHCPExcludedRange: rng("255.255.255.200", "255.255.255.255"),
+	})
+	if err != nil {
+		t.Fatalf("NewNetworkPool: %v", err)
+	}
+	usable := p.UsableIPs()
+	// .200-.254 minus the network/broadcast (.255 is the broadcast and must be
+	// dropped); .200-.254 is 55 addresses.
+	if got, want := len(usable), 55; got != want {
+		t.Fatalf("UsableIPs returned %d addresses, want %d", got, want)
+	}
+	for _, ip := range usable {
+		if ip == netip.MustParseAddr("255.255.255.255") {
+			t.Fatalf("UsableIPs included the broadcast address %s", ip)
+		}
+	}
+}
+
 func TestOutOfRangeSuppliedIP(t *testing.T) {
 	cases := []struct {
 		name     string
