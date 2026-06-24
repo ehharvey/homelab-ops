@@ -7,7 +7,7 @@ Guidance for Claude Code working in this repo. Full context lives in
 - `docs/Roadmap.md` — current phase/status; check off items you complete
 - `docs/Development Conventions.md` — branching, PR format, Go layout,
   vendoring rules — read this *before* writing code, not after
-- `docs/Open Questions.md` — resolved design decisions with rationale
+- `docs/Decisions.md` — resolved design decisions with rationale
 
 ## Commands
 
