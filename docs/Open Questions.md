@@ -19,7 +19,7 @@ That overlaps directly with notes 1, 5, 6, and part of 4. Before designing anyth
 This decision reshapes most of the rest of the doc, so it's worth resolving first.
 
 ### Answer
-~~Yes, we should use Operations Center and thinly wrap it since it provides an API.~~ Superseded: v1 does not depend on or wrap Operations Center — see `Architecture.md` § v1 framing. Operations Center expects a trusted client cert in its own seed before it'll talk to anyone, which for node #0 doesn't remove the bootstrap problem, it just relocates it; and multi-node clustering (its main value-add) is out of scope for v1 anyway. Revisit wrapping it once multi-node is actually on the table.
+~~Yes, we should use Operations Center and thinly wrap it since it provides an API.~~ Superseded: 0.x does not depend on or wrap Operations Center — see `Architecture.md` § 0.x framing. Operations Center expects a trusted client cert in its own seed before it'll talk to anyone, which for node #0 doesn't remove the bootstrap problem, it just relocates it; and multi-node clustering (its main value-add) is out of scope for 0.x anyway. Revisit wrapping it once multi-node is actually on the table.
 
 ## 1. GitHub-sourced config (note 2)
 
@@ -37,11 +37,11 @@ One repo per environment, public only for now (private/auth deferred); a later i
 - What identifies a physical machine in the YAML — MAC address, serial/asset tag, a manually assigned name? How does the app match a booting machine to its definition?
 - Does one YAML file = one machine, or one file describing the whole fleet?
 - Does this schema double as (or wrap) an IncusOS install seed (`install.yaml`/`network.yaml`/`applications.yaml`), or is it a separate higher-level format the app translates into seeds?
-- Multi-node clusters vs. independent single-node hosts — in scope for v1?
+- Multi-node clusters vs. independent single-node hosts — in scope for 0.x?
 
 
 ### Answers
-MAC address identifies a machine. Format is k8s-style — objects discriminated by a `kind:` key, merged together — as a simpler, higher-level format the app translates into install seeds, not a wrapper around them. v1 focuses on single-node hosts; multi-node is evaluated later.
+MAC address identifies a machine. Format is k8s-style — objects discriminated by a `kind:` key, merged together — as a simpler, higher-level format the app translates into install seeds, not a wrapper around them. 0.x focuses on single-node hosts; multi-node is evaluated later.
 
 ## 3. USB installer generation (note 5)
 
@@ -70,7 +70,7 @@ This resolves both questions left open on #37's review thread: key custody (moot
 
 ## 5. IPAM (note 7)
 
-- Scope for v1: just "assign a static IP per node" bookkeeping, or real subnet/VLAN modeling with conflict detection?
+- Scope for 0.x: just "assign a static IP per node" bookkeeping, or real subnet/VLAN modeling with conflict detection?
 - Does the app *configure* the node's network (writing `network.yaml` into its seed) or only *record* the assignment for a human to apply elsewhere (e.g., on the router/DHCP server)?
 - IPv6 in scope, or IPv4-only for now?
 - Any integration with an existing DHCP/DNS setup (e.g., reserve the address there too), or does this app become the sole source of truth?
@@ -123,10 +123,10 @@ Use IncusOS's built-in [Tailscale service](https://linuxcontainers.org/incus-os/
 
 ## 10. Single disk / single NIC default, configurable (note 9)
 
-- Confirms this maps to `install.yaml`'s `target` (disk selection) and `network.yaml` (interface config) per machine — does the per-instance YAML (§2) need to support arbitrary multi-disk/multi-NIC overrides in v1, or just the single/single default for now with multi as a documented future case?
+- Confirms this maps to `install.yaml`'s `target` (disk selection) and `network.yaml` (interface config) per machine — does the per-instance YAML (§2) need to support arbitrary multi-disk/multi-NIC overrides in 0.x, or just the single/single default for now with multi as a documented future case?
 
 ### Answers
-Maps to `install.yaml`'s disk `target` and `network.yaml`'s interface config. Single disk/single NIC is the v1 default; multi-NIC is a documented future case, not built now. `Network` config needs to cover DHCP on/off, DNS source, and static IPs.
+Maps to `install.yaml`'s disk `target` and `network.yaml`'s interface config. Single disk/single NIC is the 0.x default; multi-NIC is a documented future case, not built now. `Network` config needs to cover DHCP on/off, DNS source, and static IPs.
 
 ## 11. Networking between nodes and the web app
 
@@ -140,15 +140,15 @@ Not yet decided — revisit when Phase 2/3 needs nodes to talk back to the app.
 
 
 
-#### Considered and rejected for v1: an end-to-end-encrypted command bus
+#### Considered and rejected for 0.x: an end-to-end-encrypted command bus
 
-A more ambitious version of option 1 came up: make the internet-facing web app a *zero-knowledge relay* — nodes poll it, browser clients push encrypted commands, the server only ever stores ciphertext (per-node keypairs, signed payloads, replay windows, browser-held keys, ciphertext in Postgres). Rejected for v1:
+A more ambitious version of option 1 came up: make the internet-facing web app a *zero-knowledge relay* — nodes poll it, browser clients push encrypted commands, the server only ever stores ciphertext (per-node keypairs, signed payloads, replay windows, browser-held keys, ciphertext in Postgres). Rejected for 0.x:
 
-- **It's a control plane; v1 deliberately isn't one.** Config sync is diff-and-warn only — no apply, no reconciliation (§1). An encrypted command queue is the opposite of that decision.
-- **E2EE's value proposition is moot here.** v1 is single-user with no auth (see `Out of Scope.md`). Zero-knowledge encryption protects data from an untrusted server operator across multiple clients; with one user running their own server, it encrypts data from yourself.
+- **It's a control plane; 0.x deliberately isn't one.** Config sync is diff-and-warn only — no apply, no reconciliation (§1). An encrypted command queue is the opposite of that decision.
+- **E2EE's value proposition is moot here.** 0.x is single-user with no auth (see `Out of Scope.md`). Zero-knowledge encryption protects data from an untrusted server operator across multiple clients; with one user running their own server, it encrypts data from yourself.
 - **The transport story already covers it.** The decided posture is keeping nodes off the public internet and reaching them over Tailscale/WireGuard (§8, options 2–3 above), which already gives confidentiality + node identity without a bespoke crypto protocol.
 - **Wrong stack / against conventions.** It assumes Postgres and a custom Ed25519/AES-GCM protocol; the app is pure-Go sqlite, single-binary, distroless (§9), and conventions favour stdlib over a bespoke security-critical subsystem.
-- **The real "command a node" path already exists.** The app issues each node a client cert and talks to its Incus API directly (§4) — authenticated by Incus itself. A second, parallel encrypted command bus would duplicate that and reintroduce the trusted control plane v1 avoids.
+- **The real "command a node" path already exists.** The app issues each node a client cert and talks to its Incus API directly (§4) — authenticated by Incus itself. A second, parallel encrypted command bus would duplicate that and reintroduce the trusted control plane 0.x avoids.
 
 Worth keeping from the discussion: prefer node-initiated outbound (option 1), and if a node ever does send actions, send *structured actions*, not shell commands. Revisit the whole idea only if multi-user or an untrusted-relay requirement ever materialises.
 
@@ -178,7 +178,7 @@ Surfaced by #46 (no `Network`-level validation) and tracked as the decision #47.
 - `config` fields become typed (`cidr → netip.Prefix`, `gateway`/`static_ip` → `netip.Addr`, `dns → []netip.Addr`, `dhcp_excluded_range →` a small range type; `mac` stays a string). Verified that `yaml.v3` honors `encoding.TextUnmarshaler`, so these parse straight from the synced YAML, fail on malformed input at parse time, and model optional fields cleanly via the zero value (`IsValid()==false`, no error on empty or omitted).
 - The validated representation then *is* the parsed representation: `internal/ipam` and `internal/seed` stop re-parsing strings, and #46's rules become one-line `Prefix.Contains(...)` checks in a single `config.Validate` pass.
 - **Leaving room without paying for it:** validation returns a stable `Issue{Path, Message}` value (the same shape zog's `issue.Path`/`issue.Message` produces). If an untrusted-input surface ever appears, a validation library can sit at *that* boundary producing the same `Issue` shape, without touching the git-sync path. No `Validator` abstraction/registry is built now — the value-returning function is the entire seam.
-- **When this gets revisited:** the trigger is the first write/create API endpoint that accepts a *request body* to author a `Network`/`Instance` (vs. the name-keyed action routes planned for Phase 2). The roadmap (Phases 0–3) and `Out of Scope.md` put no such surface in v1 — single-user, no auth, diff-and-warn from git, schema count stays at 2. And per `Out of Scope.md` §13 the likely growth path is JSON Schema *generated from* `internal/config`'s structs, which the typed structs serve directly — so the more probable future is codegen-from-structs, not adopting zog.
+- **When this gets revisited:** the trigger is the first write/create API endpoint that accepts a *request body* to author a `Network`/`Instance` (vs. the name-keyed action routes planned for Phase 2). The roadmap (Phases 0–3) and `Out of Scope.md` put no such surface in 0.x — single-user, no auth, diff-and-warn from git, schema count stays at 2. And per `Out of Scope.md` §13 the likely growth path is JSON Schema *generated from* `internal/config`'s structs, which the typed structs serve directly — so the more probable future is codegen-from-structs, not adopting zog.
 
 Implementation (the `netip` type rework + `config.Validate` pass, which also closes #46) lands under #46; dev-facing conventions for it are in `Development Conventions.md` § Config validation.
 

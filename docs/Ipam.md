@@ -1,4 +1,4 @@
-# IPAM — IP Allocation & Conflict-resolution (v1)
+# IPAM — IP Allocation & Conflict-resolution (0.x)
 
 Purpose
 - Track Network definitions (CIDR + DHCP excluded range).
@@ -6,7 +6,7 @@ Purpose
 - Validate explicit `static_ip` values.
 - Persist assignments in the durable store so IPs survive restarts.
 
-High-level policy (v1)
+High-level policy (0.x)
 - Explicit static_ip in the incoming desired-state is accepted if valid and not already held by a different instance.
   - Valid means: parseable IP, belongs to the Network's CIDR, and (if a DHCP excluded range is configured) belongs to that excluded range.
   - Not already held means: no *other* instance's prior-assigned IP (per the durable store) is the same address on the same Network. The same instance reasserting its own prior IP explicitly is fine.
@@ -58,7 +58,7 @@ Examples
 - Network lan: 192.168.1.0/24, excluded 192.168.1.200-192.168.1.203
   - Prior store: node-a → .200
   - Incoming config: node-a (static_ip omitted), node-b static_ip: .200
-  - Result (v1): rejected with ErrDuplicate — .200 is reserved for node-a; node-b must pick a different address or the operator must free .200 first.
+  - Result (0.x): rejected with ErrDuplicate — .200 is reserved for node-a; node-b must pick a different address or the operator must free .200 first.
   - Contrast: if node-a's own entry instead explicitly reasserts static_ip: .200, that's accepted (no-op) — an instance reclaiming its own address is never a conflict.
 
 Testing guidance
@@ -79,7 +79,7 @@ Testing guidance
   - TestExplicitStaticIPRejectedWhenConflictsWithPriorAssignedIP
 
 Notes / alternatives
-- An earlier draft of this doc proposed "explicit wins, prior is silently redrawn" — i.e. a new instance's explicit static_ip could bump a different instance off its existing address without any error. Rejected: silently relocating one node's static IP because another node's config happened to claim the same address is exactly the kind of surprise that should be a hard, visible failure for hardware provisioning (see CLAUDE.md's note on issue #5 — passing tests don't guarantee no surprises on real hardware). v1 instead reserves prior-assigned IPs against explicit conflicts (this doc's current policy).
+- An earlier draft of this doc proposed "explicit wins, prior is silently redrawn" — i.e. a new instance's explicit static_ip could bump a different instance off its existing address without any error. Rejected: silently relocating one node's static IP because another node's config happened to claim the same address is exactly the kind of surprise that should be a hard, visible failure for hardware provisioning (see CLAUDE.md's note on issue #5 — passing tests don't guarantee no surprises on real hardware). 0.x instead reserves prior-assigned IPs against explicit conflicts (this doc's current policy).
 
 Linkage
 - This doc complements the high-level notes in docs/Architecture.md. Keep implementation-level validation in internal/config/validate.go and assignment logic in internal/ipam/*.

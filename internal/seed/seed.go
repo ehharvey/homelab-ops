@@ -37,13 +37,13 @@ type Bundle struct {
 	Incus        incusseed.Incus
 }
 
-// supportedApplications is v1's fixed application list: incus only, no
+// supportedApplications is the 0.x fixed application list: incus only, no
 // operations-center, per Architecture.md.
 var supportedApplications = map[string]bool{"incus": true}
 
 // Render builds a seed Bundle for inst, which must belong to net. Disk and
 // NIC must be "single" — multi-disk/multi-NIC instances are out of scope
-// for v1 and rendering one would silently produce a seed that doesn't match
+// for 0.x and rendering one would silently produce a seed that doesn't match
 // the operator's intent, so it's an error instead. clientCertPEM is the
 // PEM-encoded bootstrap client certificate (gen-cert's client.crt); it is
 // preseeded into Incus's own trust store so the node trusts it on first
@@ -62,7 +62,7 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 
 	for _, app := range inst.Applications {
 		if !supportedApplications[app] {
-			return Bundle{}, fmt.Errorf("instance %q: application %q not supported in v1", inst.Name, app)
+			return Bundle{}, fmt.Errorf("instance %q: application %q not supported in 0.x", inst.Name, app)
 		}
 	}
 
@@ -79,7 +79,7 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 		Hwaddr: inst.MAC,
 		// Name is required by IncusOS (omitting it leaves the interface
 		// unconfigured at boot — confirmed by booting a real seeded image).
-		// v1 only supports a single NIC, so one fixed name is enough.
+		// 0.x only supports a single NIC, so one fixed name is enough.
 		Name:  "eth0",
 		Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
 	}

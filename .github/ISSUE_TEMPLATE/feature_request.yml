@@ -24,10 +24,10 @@ body:
   - type: dropdown
     id: scope
     attributes:
-      label: Is this in scope for v1?
-      description: Check the "Out of scope for v1" list in docs/Architecture.md and docs/Roadmap.md first.
+      label: Is this in scope for 0.x?
+      description: Check the "Out of scope for 0.x" list in docs/Architecture.md and docs/Roadmap.md first.
       options:
-        - "Yes — fits current v1 scope"
+        - "Yes — fits current 0.x scope"
         - "No — should be deferred"
         - "Unsure — needs a design decision first"
     validations:

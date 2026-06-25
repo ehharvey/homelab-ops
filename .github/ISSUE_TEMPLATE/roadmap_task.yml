@@ -18,7 +18,7 @@ body:
         - "Phase 1 — Web app skeleton + config sync"
         - "Phase 2 — IPAM + app-driven installer generation"
         - "Phase 3 — Tailscale + logging"
-        - "Deferred / post-v1"
+        - "Deferred / post-1.0"
     validations:
       required: true
   - type: textarea
