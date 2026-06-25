@@ -1,14 +1,14 @@
-# Architecture — Homelab Ops App (v1)
+# Architecture — Homelab Ops App (0.x)
 
-Synthesized from the resolved decisions in `Open Questions.md`. This is the v1 shape only — anything multi-node or Operations-Center-dependent is explicitly deferred (see "Out of scope for v1").
+Synthesized from the resolved decisions in `Open Questions.md`. This is the 0.x shape only — anything multi-node or Operations-Center-dependent is explicitly deferred (see "Out of scope for 0.x").
 
-## v1 framing
+## 0.x framing
 
-v1 does **not** depend on or wrap Operations Center. That was originally considered (§0 of Open Questions) but dropped because:
+0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Open Questions) but dropped because:
 - Operations Center expects a trusted client cert in its own seed before it'll talk to anyone — for node #0 there's nothing yet to provide that, so it doesn't remove the bootstrap problem, it just relocates it.
-- Multi-node clustering (Operations Center's main value-add) is explicitly out of scope for v1 anyway.
+- Multi-node clustering (Operations Center's main value-add) is explicitly out of scope for 0.x anyway.
 
-So for v1, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Wrapping Operations Center is revisited once multi-node is actually on the table.
+So for 0.x, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Wrapping Operations Center is revisited once multi-node is actually on the table.
 
 ## Components
 
@@ -17,7 +17,7 @@ So for v1, this app talks to IncusOS nodes directly: it builds install seeds its
 A standalone command, not part of the always-on web app — it has to work before the app exists anywhere.
 
 - Generates a self-signed cert/key pair offline (no network dependency)
-- Reads one `Instance`/`Network` definition (see Data model) and renders an IncusOS seed bundle: `install.yaml` (disk target, TPM/Secure Boot flags), `network.yaml` (static IP or DHCP, plus a default route — required once an instance has a static IP, or the node can't reach anything off-subnet), `applications.yaml` (`incus` only — no `operations-center` for v1), `incus.yaml` (preseeds the generated client cert as a trusted Incus client cert, so Incus trusts it on first boot — see #5)
+- Reads one `Instance`/`Network` definition (see Data model) and renders an IncusOS seed bundle: `install.yaml` (disk target, TPM/Secure Boot flags), `network.yaml` (static IP or DHCP, plus a default route — required once an instance has a static IP, or the node can't reach anything off-subnet), `applications.yaml` (`incus` only — no `operations-center` for 0.x), `incus.yaml` (preseeds the generated client cert as a trusted Incus client cert, so Incus trusts it on first boot — see #5)
 - Invokes `flasher-tool` to bake the seed into a `.img`
 - Leaves the cert/key on local disk. This cert is the deployment's single break-glass client credential, not a one-off for node #0 alone — the web app is later pointed at the same cert's public half via its own deployment config (see "Cert sourcing" below), so it embeds it into every subsequently-provisioned node too. The private key never leaves the operator's local disk and the web app never reads it.
 
@@ -25,13 +25,13 @@ Once node #0 is up and reachable, this tool's job is done; steady-state provisio
 
 ### 2. Web app (Go)
 
-No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; deployment targets are a Docker image and a plain binary. Migrating it to run inside the IncusOS-managed fleet itself is a later, explicit migration step, not a v1 concern.
+No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; deployment targets are a Docker image and a plain binary. Migrating it to run inside the IncusOS-managed fleet itself is a later, explicit migration step, not a 0.x concern.
 
 Modules:
 
-- **Config sync** — pulls one git repo (public, per environment; any `go-git`-supported transport, not GitHub-API-specific) on a poll/manual trigger, parses the k8s-style multi-doc YAML, diffs against last-known state, and **warns only** — no auto-apply, no rollback logic in v1.
+- **Config sync** — pulls one git repo (public, per environment; any `go-git`-supported transport, not GitHub-API-specific) on a poll/manual trigger, parses the k8s-style multi-doc YAML, diffs against last-known state, and **warns only** — no auto-apply, no rollback logic in 0.x.
 - **Instance/network store** — holds the parsed `Instance` and `Network` objects, queryable by kind/name. Backed by sqlite (`modernc.org/sqlite`, pure Go, no cgo — keeps the single-binary/distroless deployment goal from #18), file-backed by default so IPAM-assigned IPs survive a restart (see `Open Questions.md` §12) — `:memory:` remains available for tests. Each sync fully replaces the prior snapshot rather than merging into it, matching config sync's full-`Config`-per-sync output (see #21); git stays authoritative for desired-state config, the store is the system of record for what's actually been assigned.
-- **IPAM** — tracks `Network` definitions (CIDR + DHCP exclusion ranges), assigns static IPv4s to instances, basic duplicate detection. App is the sole source of truth; assignments persist in the durable store, no DHCP/DNS write-back in v1.
+- **IPAM** — tracks `Network` definitions (CIDR + DHCP exclusion ranges), assigns static IPv4s to instances, basic duplicate detection. App is the sole source of truth; assignments persist in the durable store, no DHCP/DNS write-back in 0.x.
 - **Seed/installer generation** — same seed-rendering logic as the bootstrap CLI, generalized to any instance: builds `install.yaml`/`network.yaml`/`applications.yaml`/`incus.yaml`, calls `flasher-tool`, and either serves the resulting `.img` for download or flashes it directly — whichever is easiest to implement first.
 - **Cert sourcing** — the app never generates, mints, or stores a client cert itself. It reads one operator-supplied, self-signed cert (the same artifact the bootstrap CLI's `gen-cert` already produces for node #0) from local deployment config, and preseeds its public half into every subsequently-provisioned node's `incus.yaml`, so the whole fleet trusts a single break-glass credential identical to what node #0 trusts (not Operations Center auth — that question is shelved with the OC-wrapping decision). The private key is never read, transmitted, or persisted by the app — rotation/revocation remain deferred, but the key-storage risk that deferral originally implied is avoided entirely rather than just postponed.
 - **Tailscale config** — takes an operator-supplied authkey and writes it into the node's seed for IncusOS's built-in [Tailscale service](https://linuxcontainers.org/incus-os/docs/main/reference/services/tailscale/). No per-node enrollment flow yet.
@@ -58,8 +58,8 @@ name: node0
 mac: aa:bb:cc:dd:ee:ff
 network: home-lan
 static_ip: 192.168.1.201
-disk: single          # v1 default; multi-disk override deferred
-nic: single            # v1 default; multi-nic override deferred
+disk: single          # 0.x default; multi-disk override deferred
+nic: single            # 0.x default; multi-nic override deferred
 security:
   tpm: false           # configurable per §6
   secure_boot: true     # configurable per §6
@@ -104,7 +104,7 @@ Networking between IncusOS nodes and the web app itself (avoiding exposing nodes
 ## Incus Node networking to Web App
 We want to avoid putting Incus nodes on the public internet, so we need to figure out a way for nodes to interact with the Web app.
 
-This is all out-of-scope for Phase 1. We need to visit after v1.
+This is all out-of-scope for Phase 1. We need to visit after 0.x.
 
 ### Nodes connect to Web app.
 Proposition: Incus nodes run a management container. This container polls the Web App for updates.

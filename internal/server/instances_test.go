@@ -151,7 +151,7 @@ func TestInstanceSeedMissingNetwork422s(t *testing.T) {
 func TestInstanceSeedRenderRejection422s(t *testing.T) {
 	net := sampleSeedNetwork()
 	inst := sampleSeedInstance()
-	inst.Disk = "multi" // unsupported in v1, see seed.Render
+	inst.Disk = "multi" // unsupported in 0.x, see seed.Render
 
 	store := &fakeStore{
 		networkByName:  map[string]config.Network{net.Name: net},

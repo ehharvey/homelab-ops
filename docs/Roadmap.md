@@ -1,6 +1,8 @@
-# Roadmap — Homelab Ops App (v1)
+# Roadmap — Homelab Ops App (0.x)
 
 Phased build order derived from `Architecture.md`. Each phase should produce something runnable/demonstrable before moving on.
+
+> **Naming note (renamed 2026-06-24, see #58):** this milestone was originally called "v1" throughout the docs, code comments, and issue templates. It's now the **0.x line** — "0.x" signals pre-stable per semver, reserving a real `v1.0` tag for the first stable release. Older commits, issues, and PRs may still say "v1"; they mean the 0.x line.
 
 ## Phase 0 — Node #0 bootstrap tool
 
