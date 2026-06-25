@@ -2,7 +2,7 @@
 // dhcp_excluded_range carved out of DHCP for static use, minus the parent
 // CIDR's network/broadcast addresses and the network's gateway if either
 // falls inside it — and assigns/validates config.Instance.StaticIP against
-// it. IPv4-only for v1.
+// it. IPv4-only in the 0.x line.
 //
 // The config fields it reads are net/netip-typed and already
 // syntactically valid (and, in the server sync path, semantically validated
@@ -33,7 +33,7 @@ type NetworkPool struct {
 }
 
 // NewNetworkPool reads n.CIDR and n.DHCPExcludedRange. A missing/invalid or
-// IPv6 CIDR returns an error — IPAM is IPv4-only for v1.
+// IPv6 CIDR returns an error — IPAM is IPv4-only in the 0.x line.
 func NewNetworkPool(n config.Network) (*NetworkPool, error) {
 	if !n.CIDR.IsValid() {
 		return nil, fmt.Errorf("network %q: missing or invalid cidr", n.Name)
