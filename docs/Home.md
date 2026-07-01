@@ -9,4 +9,4 @@ here.
 - [Architecture](Architecture) — what this app is and how the pieces fit
 - [Roadmap](Roadmap) — current phase/status
 - [Development Conventions](Development%20Conventions) — branching, PRs, Go layout, vendoring rules
-- [Open Questions](Open%20Questions) — resolved design decisions and their rationale
+- [Decisions](Decisions) — resolved design decisions and their rationale

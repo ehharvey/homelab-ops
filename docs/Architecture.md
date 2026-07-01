@@ -4,7 +4,7 @@ Synthesized from the resolved decisions in `Decisions.md`. This is the 0.x shape
 
 ## 0.x framing
 
-0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Open Questions) but dropped because:
+0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Decisions) but dropped because:
 - Operations Center expects a trusted client cert in its own seed before it'll talk to anyone — for node #0 there's nothing yet to provide that, so it doesn't remove the bootstrap problem, it just relocates it.
 - Multi-node clustering (Operations Center's main value-add) is explicitly out of scope for 0.x anyway.
 
@@ -68,7 +68,7 @@ applications: [incus]
 
 This is illustrative, not a finalized schema — exact field names are an implementation step, not an open question that needs more discussion first.
 
-`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Open Questions §5).
+`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Decisions §5).
 
 ## Key flows
 
