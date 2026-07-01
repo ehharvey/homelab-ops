@@ -70,4 +70,4 @@ See [Architecture](Architecture) § HTTP API for what each route returns.
 - [Architecture](Architecture) — what this app is and how the pieces fit
 - [Roadmap](Roadmap) — current phase/status
 - [Development Conventions](Development%20Conventions) — branching, PR format, Go layout, vendoring rules
-- [Open Questions](Open%20Questions) — resolved design decisions with rationale
+- [Decisions](Decisions) — resolved design decisions with rationale

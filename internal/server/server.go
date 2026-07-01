@@ -39,7 +39,7 @@ type Store interface {
 // CertSource provides the deployment's single break-glass client
 // certificate to preseed into every rendered instance's incus.yaml. It is
 // parameterless because the cert is one per cluster, not one per instance
-// — see docs/Open Questions.md §4's follow-up.
+// — see docs/Decisions.md §4's follow-up.
 type CertSource interface {
 	ClientCertPEM(ctx context.Context) ([]byte, error)
 }

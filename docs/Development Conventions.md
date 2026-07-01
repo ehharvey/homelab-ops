@@ -4,7 +4,7 @@ Working conventions established while building the bootstrap CLI (issue #1). Not
 
 ## Docs live in-repo, synced to the wiki
 
-Design docs (`Architecture.md`, `Roadmap.md`, `Open Questions.md`) live under `docs/` in this repo — that is now the canonical source. This reverses an earlier decision to keep them in the GitHub wiki instead: the wiki repo is a separate clone with no PR review, so doc changes bypassed the normal review flow that code changes go through, and keeping a second working tree (`../wiki`, auto-cloned by the devcontainer) in sync by hand was friction for no real benefit. Docs now get the same PR review as code, in the same checkout, with no separate clone required.
+Design docs (`Architecture.md`, `Roadmap.md`, `Decisions.md`) live under `docs/` in this repo — that is now the canonical source. This reverses an earlier decision to keep them in the GitHub wiki instead: the wiki repo is a separate clone with no PR review, so doc changes bypassed the normal review flow that code changes go through, and keeping a second working tree (`../wiki`, auto-cloned by the devcontainer) in sync by hand was friction for no real benefit. Docs now get the same PR review as code, in the same checkout, with no separate clone required.
 
 A GitHub Action (`.github/workflows/sync-wiki.yml`) pushes `docs/*.md` to the wiki repo automatically on every push to `main` that touches `docs/**`. The wiki is a **read-only mirror** — never edit pages there directly; any hand-edit will be silently overwritten (or just diverge unnoticed) on the next sync, since the sync only pushes from `docs/` and never pulls wiki changes back. To change doc content, edit `docs/` and open a PR like normal.
 
@@ -68,7 +68,7 @@ Established by `internal/config` (the `Network`/`Instance` parser):
 
 ## Config validation (issues #46, #47)
 
-Decided in `Open Questions.md` § Validation approach (#47): **roll our own, as a stdlib `net/netip` parse/validate split** — no validation library (`go-playground/validator`/`zog` both evaluated and rejected there). Conventions for implementing it (#46):
+Decided in `Decisions.md` § Validation approach (#47): **roll our own, as a stdlib `net/netip` parse/validate split** — no validation library (`go-playground/validator`/`zog` both evaluated and rejected there). Conventions for implementing it (#46):
 
 - **Parse stays structural + syntactic; semantics are a separate pass.** `config.Parse` keeps doing only multi-doc decode + strict unknown-field detection — it stays cardinality-agnostic and reusable, per the YAML-parsing note above. A separate `config.Validate(Config) Issues` does the cross-field semantic checks (gateway-∈-CIDR, range-∈-CIDR, static-ip-∈-CIDR-and-∈-range, DNS-are-IPs, name-non-empty). Don't fold semantics back into `Parse`.
 - **Typed fields, not strings.** `config.Network`/`config.Instance` fields move to `net/netip` types: `CIDR → netip.Prefix`, `Gateway`/`StaticIP → netip.Addr`, `DNS → []netip.Addr`, `DHCPExcludedRange →` a small `Range` type with a custom `UnmarshalText` that splits on `-` into two `netip.Addr`. `MAC` stays a `string` — `net.HardwareAddr` has no stdlib `TextUnmarshaler`.

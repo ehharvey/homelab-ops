@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Mirrors the format in `docs/Open Questions.md`. Use this when a design ambiguity blocks a roadmap task — once resolved, fold the answer back into the relevant doc and close this issue.
+        Mirrors the format in `docs/Decisions.md`. Use this when a design ambiguity blocks a roadmap task — once resolved, fold the answer back into the relevant doc and close this issue.
   - type: textarea
     id: question
     attributes:
@@ -34,13 +34,13 @@ body:
     id: answer
     attributes:
       label: Answer
-      description: Fill in once decided. Copy this back into docs/Open Questions.md or docs/Architecture.md.
+      description: Fill in once decided. Copy this back into docs/Decisions.md or docs/Architecture.md.
     validations:
       required: false
   - type: input
     id: doc-refs
     attributes:
       label: Doc references
-      description: Relevant file(s)/section(s), e.g. `docs/Open Questions.md §6`.
+      description: Relevant file(s)/section(s), e.g. `docs/Decisions.md §6`.
     validations:
       required: false

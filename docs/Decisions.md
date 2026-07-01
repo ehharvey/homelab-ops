@@ -1,4 +1,4 @@
-# Open Questions — Homelab Ops Web App
+# Decisions — Homelab Ops Web App
 
 Gaps and decisions surfaced while reviewing `Rough Notes.md`, grounded against the current IncusOS docs/source. Decided so far: backend in **Go**; where the app itself runs is still open.
 
