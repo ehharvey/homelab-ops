@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.1
-	github.com/lxc/incus/v7 v7.2.0
+	github.com/lxc/incus/v7 v7.2.1-0.20260630223516-faff1e16043c
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
