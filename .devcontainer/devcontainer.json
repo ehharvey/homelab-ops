@@ -33,7 +33,7 @@
 		}
 	},
 
-	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r .devcontainer/scripts/* $TEMPDIR/ && chmod +x $TEMPDIR/*.sh && for f in $TEMPDIR/*.sh; do $f; done && rm -rf $TEMPDIR",
+	"postAttachCommand": "TEMPDIR=$(mktemp -d) && cp -r .devcontainer/scripts/* $TEMPDIR/ && chmod +x $TEMPDIR/*.sh && for f in $TEMPDIR/*.sh; do $f; done && rm -rf $TEMPDIR",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
