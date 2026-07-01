@@ -1,10 +1,10 @@
 # Architecture — Homelab Ops App (0.x)
 
-Synthesized from the resolved decisions in `Open Questions.md`. This is the 0.x shape only — anything multi-node or Operations-Center-dependent is explicitly deferred (see "Out of scope for 0.x").
+Synthesized from the resolved decisions in `Decisions.md`. This is the 0.x shape only — anything multi-node or Operations-Center-dependent is explicitly deferred (see "Out of scope for 0.x").
 
 ## 0.x framing
 
-0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Open Questions) but dropped because:
+0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Decisions) but dropped because:
 - Operations Center expects a trusted client cert in its own seed before it'll talk to anyone — for node #0 there's nothing yet to provide that, so it doesn't remove the bootstrap problem, it just relocates it.
 - Multi-node clustering (Operations Center's main value-add) is explicitly out of scope for 0.x anyway.
 
@@ -30,7 +30,7 @@ No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; dep
 Modules:
 
 - **Config sync** — pulls one git repo (public, per environment; any `go-git`-supported transport, not GitHub-API-specific) on a poll/manual trigger, parses the k8s-style multi-doc YAML, diffs against last-known state, and **warns only** — no auto-apply, no rollback logic in 0.x.
-- **Instance/network store** — holds the parsed `Instance` and `Network` objects, queryable by kind/name. Backed by sqlite (`modernc.org/sqlite`, pure Go, no cgo — keeps the single-binary/distroless deployment goal from #18), file-backed by default so IPAM-assigned IPs survive a restart (see `Open Questions.md` §12) — `:memory:` remains available for tests. Each sync fully replaces the prior snapshot rather than merging into it, matching config sync's full-`Config`-per-sync output (see #21); git stays authoritative for desired-state config, the store is the system of record for what's actually been assigned.
+- **Instance/network store** — holds the parsed `Instance` and `Network` objects, queryable by kind/name. Backed by sqlite (`modernc.org/sqlite`, pure Go, no cgo — keeps the single-binary/distroless deployment goal from #18), file-backed by default so IPAM-assigned IPs survive a restart (see `Decisions.md` §12) — `:memory:` remains available for tests. Each sync fully replaces the prior snapshot rather than merging into it, matching config sync's full-`Config`-per-sync output (see #21); git stays authoritative for desired-state config, the store is the system of record for what's actually been assigned.
 - **IPAM** — tracks `Network` definitions (CIDR + DHCP exclusion ranges), assigns static IPv4s to instances, basic duplicate detection. App is the sole source of truth; assignments persist in the durable store, no DHCP/DNS write-back in 0.x.
 - **Seed/installer generation** — same seed-rendering logic as the bootstrap CLI, generalized to any instance: builds `install.yaml`/`network.yaml`/`applications.yaml`/`incus.yaml`, calls `flasher-tool`, and either serves the resulting `.img` for download or flashes it directly — whichever is easiest to implement first.
 - **Cert sourcing** — the app never generates, mints, or stores a client cert itself. It reads one operator-supplied, self-signed cert (the same artifact the bootstrap CLI's `gen-cert` already produces for node #0) from local deployment config, and preseeds its public half into every subsequently-provisioned node's `incus.yaml`, so the whole fleet trusts a single break-glass credential identical to what node #0 trusts (not Operations Center auth — that question is shelved with the OC-wrapping decision). The private key is never read, transmitted, or persisted by the app — rotation/revocation remain deferred, but the key-storage risk that deferral originally implied is avoided entirely rather than just postponed.
@@ -68,7 +68,7 @@ applications: [incus]
 
 This is illustrative, not a finalized schema — exact field names are an implementation step, not an open question that needs more discussion first.
 
-`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Open Questions §5).
+`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Decisions §5).
 
 ## Key flows
 
@@ -99,7 +99,7 @@ The web app (`internal/server`) currently exposes:
 
 Full diff detail (human-readable added/changed/removed lines) is server-log-only, not part of the JSON response — keeps the API from committing to a long-form string contract before a UI exists to consume it. No OpenAPI spec yet (see `Out of Scope.md`).
 
-Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is unresolved — see `Open Questions.md` § Networking. Out of scope for Phase 1.
+Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is unresolved — see `Decisions.md` § Networking. Out of scope for Phase 1.
 
 ## Incus Node networking to Web App
 We want to avoid putting Incus nodes on the public internet, so we need to figure out a way for nodes to interact with the Web app.
