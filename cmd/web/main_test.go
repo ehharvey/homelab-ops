@@ -32,7 +32,7 @@ func TestPollSyncRunsAtStartup(t *testing.T) {
 	defer st.Close() //nolint:errcheck // test cleanup
 
 	cs := &countingSyncer{}
-	svc := server.NewService(cs, st, nil)
+	svc := server.NewService(cs, st, nil, nil)
 
 	// A long interval means only the startup sync can fire within the test
 	// window, so observing one sync proves pollSync doesn't wait for the
