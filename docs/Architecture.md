@@ -96,8 +96,18 @@ The web app (`internal/server`) currently exposes:
 | `/networks` | GET | All stored `Network` objects |
 | `/instances` | GET | All stored `Instance` objects |
 | `/instances/{name}/seed` | POST | Renders the four IncusOS seed documents (`install.yaml`, `network.yaml`, `applications.yaml`, `incus.yaml`) for a synced instance, embedding the break-glass cert from `CLIENT_CERT_PATH` |
+| `/instances/{name}/image` | GET | Regenerates and streams a bootable `.img` for a synced instance, reflecting its current seed/cert/IP, generated fresh on each request (no caching). Requires `BASE_IMAGE_PATH` (an operator-supplied base IncusOS raw image) and a `flasher-tool` matching that image's IncusOS release — the Docker image bakes one in; otherwise the route reports 503 |
 
 Full diff detail (human-readable added/changed/removed lines) is server-log-only, not part of the JSON response — keeps the API from committing to a long-form string contract before a UI exists to consume it. No OpenAPI spec yet (see `Out of Scope.md`).
+
+`GET /instances/{name}/image` regenerates on demand: each request copies the
+multi-GB base image into a temp dir (`os.TempDir()`, i.e. `/tmp` in the
+distroless image) and injects the seed, then streams and deletes it. That copy
+is disk-backed, not RAM (the distroless image ships `/tmp` mode 1777 on its
+writable overlay layer, no `tmpfs`), so a large image won't OOM the container —
+but the deployment must give the container enough writable disk for at least
+one full image copy (more if concurrent downloads are expected), or mount a
+suitably-sized volume/`tmpfs` at `/tmp`.
 
 Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is unresolved — see `Decisions.md` § Networking. Out of scope for Phase 1.
 

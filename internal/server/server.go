@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -44,23 +45,35 @@ type CertSource interface {
 	ClientCertPEM(ctx context.Context) ([]byte, error)
 }
 
+// ImageBuilder bakes the seed written to seedDir into a bootable .img at
+// outputPath, writing the underlying tool's subprocess output to logs. The one
+// production implementation (cmd/web) wraps internal/flasher.Run and owns the
+// base-image and flasher-tool paths; keeping those out of this interface means
+// the server package doesn't import internal/flasher, and tests can fake image
+// generation without a real flasher-tool binary or a multi-GB base image.
+type ImageBuilder interface {
+	Build(ctx context.Context, seedDir, outputPath string, logs io.Writer) error
+}
+
 // Service coordinates config syncs from one syncer into one store. It exists
 // so a manual POST /sync and cmd/web's background poller share a single
 // serialization point: the mutex below means their read-prior-then-replace
 // sequences can't interleave (which would mis-attribute a diff warning) and
 // two clones never run at once. syncer and store may be nil — see New.
 type Service struct {
-	syncer Syncer
-	store  Store
-	certs  CertSource
-	mu     sync.Mutex
+	syncer  Syncer
+	store   Store
+	certs   CertSource
+	builder ImageBuilder
+	mu      sync.Mutex
 }
 
 // NewService builds a Service over syncer and store, either of which may be
 // nil (POST /sync and the read endpoints then report themselves unconfigured).
-// certs may also be nil (the seed route then reports itself unconfigured).
-func NewService(syncer Syncer, store Store, certs CertSource) *Service {
-	return &Service{syncer: syncer, store: store, certs: certs}
+// certs and builder may also be nil (the seed and image routes then report
+// themselves unconfigured).
+func NewService(syncer Syncer, store Store, certs CertSource, builder ImageBuilder) *Service {
+	return &Service{syncer: syncer, store: store, certs: certs, builder: builder}
 }
 
 // Sync runs one serialized sync cycle at time now; see SyncOnce for the
@@ -71,11 +84,11 @@ func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 	return SyncOnce(ctx, s.syncer, s.store, now)
 }
 
-// New builds the web app's HTTP handler. syncer, store, and certs may be
-// nil, in which case POST /sync, the read endpoints, and the seed route
-// report themselves as unconfigured rather than failing /healthz.
-func New(syncer Syncer, store Store, certs CertSource) http.Handler {
-	return NewFromService(NewService(syncer, store, certs))
+// New builds the web app's HTTP handler. syncer, store, certs, and builder may
+// be nil, in which case POST /sync, the read endpoints, the seed route, and the
+// image route report themselves as unconfigured rather than failing /healthz.
+func New(syncer Syncer, store Store, certs CertSource, builder ImageBuilder) http.Handler {
+	return NewFromService(NewService(syncer, store, certs, builder))
 }
 
 // NewFromService builds the handler around an existing Service, so a caller
@@ -89,6 +102,7 @@ func NewFromService(svc *Service) http.Handler {
 	mux.HandleFunc("GET /networks", handleNetworks(svc.store))
 	mux.HandleFunc("GET /instances", handleInstances(svc.store))
 	mux.HandleFunc("POST /instances/{name}/seed", handleInstanceSeed(svc.store, svc.certs))
+	mux.HandleFunc("GET /instances/{name}/image", handleInstanceImage(svc.store, svc.certs, svc.builder))
 	return mux
 }
 

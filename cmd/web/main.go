@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/configsync"
+	"github.com/ehharvey/homelab-ops/internal/flasher"
 	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
 )
@@ -42,7 +44,7 @@ func run() error {
 
 	// One Service shared between the HTTP handler and the background poller so
 	// their syncs serialize through a single lock.
-	svc := server.NewService(syncer, st, newCertSource())
+	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder())
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -165,4 +167,37 @@ type fileCertSource struct{ path string }
 
 func (f fileCertSource) ClientCertPEM(_ context.Context) ([]byte, error) {
 	return os.ReadFile(f.path) //nolint:gosec // path is operator-supplied deployment config, not untrusted input
+}
+
+// newImageBuilder builds the flasher-backed ImageBuilder from BASE_IMAGE_PATH
+// (the operator-supplied base IncusOS raw image), or a nil server.ImageBuilder
+// if unset (the image route then reports itself unconfigured, mirroring
+// newCertSource's nil-CertSource convention). FLASHER_TOOL_PATH overrides the
+// flasher-tool binary location — the Docker image sets it to /flasher-tool
+// since distroless has no $PATH; unset falls back to resolving "flasher-tool"
+// from $PATH for dev/devcontainer use.
+func newImageBuilder() server.ImageBuilder {
+	base := os.Getenv("BASE_IMAGE_PATH")
+	if base == "" {
+		return nil
+	}
+	return flasherBuilder{basePath: base, binPath: os.Getenv("FLASHER_TOOL_PATH")}
+}
+
+// flasherBuilder implements server.ImageBuilder by shelling out to flasher-tool
+// via internal/flasher.Run. Force is always set: the output path is a fresh
+// per-request temp file the handler owns, so there is nothing to protect from
+// overwrite.
+type flasherBuilder struct{ basePath, binPath string }
+
+func (b flasherBuilder) Build(ctx context.Context, seedDir, outputPath string, logs io.Writer) error {
+	return flasher.Run(ctx, flasher.Options{
+		SeedDir:     seedDir,
+		BaseImage:   b.basePath,
+		OutputImage: outputPath,
+		Force:       true,
+		BinPath:     b.binPath,
+		Stdout:      logs,
+		Stderr:      logs,
+	})
 }
