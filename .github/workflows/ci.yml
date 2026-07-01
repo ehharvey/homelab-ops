@@ -30,3 +30,18 @@ jobs:
           go-version: "1.26"
           cache: true
       - uses: golangci/golangci-lint-action@v9.2.1
+
+  # Builds the web image and proves flasher-tool actually executes inside the
+  # distroless/static final stage. The image route (#39) shells out to it, but
+  # no other CI job builds the Docker image — so a cgo/glibc/exec-format
+  # regression (e.g. flasher-tool gaining a cgo dependency that no longer links
+  # static) would otherwise only surface when someone runs validate-issue-39.sh
+  # by hand. distroless has no shell, so the binary is invoked directly via
+  # --entrypoint rather than through `sh -c`.
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t homelab-ops-web .
+      - name: flasher-tool runs in the built image
+        run: docker run --rm --entrypoint /flasher-tool homelab-ops-web --help
