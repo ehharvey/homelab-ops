@@ -36,6 +36,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 - [x] `config.Validate`: reject duplicate `Network` names (silent last-wins data loss): DONE; see #52
 - [x] `config.Validate`: reject `static_ip` colliding with its network's gateway/network/broadcast address: DONE; see #53
 - [x] `config.Validate`: reject duplicate `Network` names (silent last-wins data loss): DONE; see #52
+- [x] `config.Validate`: reject `static_ip` colliding with its network's gateway/network/broadcast address: DONE; see #53
 
 **Done when:** the app can take a new `Instance` entry from the synced repo and produce a working installer end-to-end, without the bootstrap CLI.
 
