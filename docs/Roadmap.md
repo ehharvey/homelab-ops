@@ -33,6 +33,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 - [x] Wire an operator-supplied break-glass cert (read from local deployment config, never generated/stored by the app) into rendered seeds: DONE; see #36
 - [x] Wire IPAM-assigned IP into the rendered `network.yaml`: DONE; wiring via #36, closed out with pull-through regression coverage in #38
 - [x] Serve generated `.img` for download (download only; direct flashing deferred, see #34): DONE; see #39
+- [x] `config.Validate`: reject duplicate `Network` names (silent last-wins data loss): DONE; see #52
 
 **Done when:** the app can take a new `Instance` entry from the synced repo and produce a working installer end-to-end, without the bootstrap CLI.
 
