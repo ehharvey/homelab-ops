@@ -134,6 +134,28 @@ func TestValidateInstanceIssues(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsStaticIPCollisions(t *testing.T) {
+	net := validNetwork() // 192.168.1.0/24, gateway 192.168.1.1
+	tests := []struct {
+		name    string
+		ip      string
+		wantMsg string
+	}{
+		{"collides with gateway", "192.168.1.1", "collides with the gateway"},
+		{"collides with network address", "192.168.1.0", "collides with the network address"},
+		{"collides with broadcast address", "192.168.1.255", "collides with the broadcast address"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := Instance{Name: "n", Network: "home-lan", StaticIP: netip.MustParseAddr(tc.ip)}
+			issues := Validate(Config{Networks: []Network{net}, Instances: []Instance{inst}})
+			if !issueContains(issues, "instances[0].static_ip", tc.wantMsg) {
+				t.Fatalf("Validate() = %v, want an issue at instances[0].static_ip containing %q", issues, tc.wantMsg)
+			}
+		})
+	}
+}
+
 func TestValidateReportsAllIssues(t *testing.T) {
 	// Two independent problems must both surface, not just the first.
 	n := validNetwork()
@@ -155,6 +177,15 @@ func TestIssuesErrorMentionsPath(t *testing.T) {
 func hasPath(issues Issues, path string) bool {
 	for _, i := range issues {
 		if i.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func issueContains(issues Issues, path, substr string) bool {
+	for _, i := range issues {
+		if i.Path == path && strings.Contains(i.Message, substr) {
 			return true
 		}
 	}
