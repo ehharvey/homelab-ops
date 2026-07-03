@@ -75,6 +75,38 @@ func TestValidateNetworkIssues(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsDuplicateNetworkName(t *testing.T) {
+	n := validNetwork()
+	dup := validNetwork()
+	dup.CIDR = netip.MustParsePrefix("10.0.0.0/24")
+	dup.Gateway = netip.Addr{}
+	dup.DHCPExcludedRange = Range{}
+
+	issues := Validate(Config{Networks: []Network{n, dup}})
+	if !hasPath(issues, "networks[1].name") {
+		t.Fatalf("Validate() = %v, want a duplicate-name issue at networks[1].name", issues)
+	}
+}
+
+func TestValidateDoesNotDoubleReportDuplicateEmptyNames(t *testing.T) {
+	// Two networks with empty names are each already flagged as "must not be
+	// empty" — they shouldn't also collide with each other as duplicates.
+	n := validNetwork()
+	n.Name = ""
+	other := validNetwork()
+	other.Name = ""
+	other.CIDR = netip.MustParsePrefix("10.0.0.0/24")
+	other.Gateway = netip.Addr{}
+	other.DHCPExcludedRange = Range{}
+
+	issues := Validate(Config{Networks: []Network{n, other}})
+	for _, i := range issues {
+		if strings.Contains(i.Message, "already defined by") {
+			t.Fatalf("Validate() = %v, want no duplicate-name issue for empty names", issues)
+		}
+	}
+}
+
 func TestValidateInstanceIssues(t *testing.T) {
 	net := validNetwork()
 	tests := []struct {

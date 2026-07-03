@@ -47,12 +47,17 @@ func Validate(c Config) Issues {
 	add := func(path, msg string) { issues = append(issues, Issue{Path: path, Message: msg}) }
 
 	byName := make(map[string]Network, len(c.Networks))
+	firstIndex := make(map[string]int, len(c.Networks))
 	for i, n := range c.Networks {
 		path := fmt.Sprintf("networks[%d]", i)
 		byName[n.Name] = n
 
 		if strings.TrimSpace(n.Name) == "" {
 			add(path+".name", "must not be empty")
+		} else if j, ok := firstIndex[n.Name]; ok {
+			add(path+".name", fmt.Sprintf("%q is already defined by networks[%d]", n.Name, j))
+		} else {
+			firstIndex[n.Name] = i
 		}
 		if !n.CIDR.IsValid() {
 			add(path+".cidr", "must be a valid CIDR")
