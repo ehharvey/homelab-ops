@@ -224,6 +224,98 @@ This means "local Grafana instance" and "Grafana Cloud" aren't an either/or choi
 
 **Local dev/test stack:** requiring live Grafana Cloud credentials for every `scripts/validate-*.sh` run (or every dev loop) is exactly the friction the repo's other dev fixtures avoid (`dev/git-fixture` for config sync). So a local stack — Grafana + Loki + Prometheus (with `--web.enable-remote-write-receiver`) under `docker-compose.yml`, mirroring the existing `web`/`config-repo` services — is always at least one of the configured destinations for `scripts/validate-*.sh`'s Phase 3 checks: no cloud credentials needed for that destination, fully automatable, torn down after each run. A real Grafana Cloud check (with the local stack configured as an *additional* destination, or on its own) remains available as a separate, credential-gated step (same gate-and-skip pattern as `INCUSOS_BASE_IMAGE`/`BASE_IMAGE_PATH` for real-VM tests) rather than the thing CI/every contributor has to run.
 
+## 15. Multi-OS support (Debian, Talos) — direction, not yet built
+
+Explored 2026-07-03: the long-term plan is to manage more than IncusOS
+nodes. Two targets came up; neither is built, and both are blocked on
+prerequisite work below. Captured here so the reasoning survives even
+though `Out of Scope.md` is where this currently lives.
+
+### Debian + Incus
+
+Same managed workload as IncusOS (Incus), so `config.Instance`/
+`config.Network`, IPAM, config sync, the store, and the break-glass-cert
+model (`internal/seed`'s `renderIncusPreseed` → `InitPreseed`) all carry
+over unchanged — `incus admin init --preseed` on Debian accepts the
+identical struct. The open question was the install mechanism:
+
+- **cloud-init/NoCloud**: works fine on bare metal (NoCloud just needs a
+  `cidata`-labeled volume; Debian's `generic` cloud image + `dd` +
+  `growpart` handles the rest) — but gives a plain unencrypted root
+  filesystem. Since `config.Instance.Security.{TPM,SecureBoot}` is a real,
+  decided-on-purpose feature for IncusOS instances (§6), silently ignoring
+  those same fields for Debian instances would be a correctness gap, not a
+  smaller feature set.
+- **systemd-repart** (chosen direction): a small `mkosi`-built helper Linux
+  environment boots off USB, runs `systemd-repart` against the target disk
+  from a rendered `repart.d/*.conf` (the Debian analog of `install.yaml`),
+  which supports `Encrypt=tpm2` for real LUKS2+TPM2-bound unlock at install
+  time and `CopyFiles=` to populate the partition from a
+  `debootstrap`/squashfs rootfs source. Secure Boot is handled by Debian's
+  `shim-signed` package (Microsoft-signed shim + signed GRUB via normal
+  `apt`), not a from-scratch signing problem. This mirrors IncusOS's own
+  build tooling — confirmed via IncusOS's docs that it's built with
+  `mkosi`/`ukify` with TPM PCR binding via `systemd-measure` — so it's the
+  same tooling family, not a detour.
+- **mkosi-built target image**: rejected as the *target* rootfs mechanism
+  (most work, least reuse of Debian's official images) — but mkosi is
+  still the right tool for building the *helper* boot environment itself.
+
+### Helper OS: pre-install hardware registration/confirmation
+
+Rather than only reporting hardware post-install (see `Out of Scope.md`'s
+existing phone-home/manifest item, which is a one-shot post-install ping),
+the systemd-repart helper OS is also the natural place to solve bare-metal
+identification: it boots pre-install, reports disk inventory / machine-id /
+NICs to the web app, and the operator confirms (which `Instance`
+definition, which target disk) before the helper OS proceeds to run
+`systemd-repart`. This is an interactive, blocking round-trip, not a
+fire-and-forget ping — distinct enough from the existing phone-home item to
+warrant its own line in `Out of Scope.md`. It also relaxes the current
+MAC-only identification model (§2): useful once a machine has more than one
+candidate disk or MAC isn't known in advance.
+
+### Talos
+
+Talos nodes aren't Incus hosts — they're Kubernetes nodes — so
+`applications: [incus]`, the break-glass-cert-into-Incus trust model, and
+Alloy-as-an-Incus-instance for observability don't transfer. Talos has its
+own machine-config format (one YAML, a reasonable analog to today's seed)
+and its own PKI bootstrap (`talosctl gen config`), implemented in parallel
+rather than reused. Phased the same way Incus multi-node itself is (§0,
+`Architecture.md`'s 0.x framing): single-node install first; full cluster
+lifecycle (control-plane/worker roles, `talosctl bootstrap`, etcd quorum)
+deferred further behind that, mirroring the existing Operations Center
+deferral.
+
+### Prerequisites (why this isn't buildable yet)
+
+1. **OS-target abstraction.** `internal/seed.Render` and `config.Instance`
+   currently hard-assume IncusOS's exact 4-file seed bundle
+   (`supportedApplications = map[string]bool{"incus": true}`,
+   single-disk/single-NIC-only checks). Before any second OS backend
+   lands, this needs a discriminator (e.g. an `os`/`target` field on
+   `Instance`) and a renderer-selection seam — one `Render`/image-build
+   implementation per OS behind a shared interface.
+2. **Node → web app networking**, currently fully unresolved
+   (`Architecture.md` § "Incus Node networking to Web App", `Decisions.md`
+   §11). The helper-OS registration/confirmation flow *requires* this — a
+   helper OS reporting hardware back to the app pre-install is exactly the
+   "node talks back to the app" problem §11 defers. This has to be decided
+   before the helper-OS flow is buildable at all, not just nice-to-have.
+   Phase 3's Tailscale work may end up supplying the answer — §11 already
+   lists "web app also runs Tailscale" as a live option, and it's the same
+   transport the existing phone-home-over-Tailscale idea (Other notes #2)
+   would use.
+3. Phase 3 (Tailscale/logging/metrics) is already in progress and likely
+   lands first regardless of this direction.
+4. A smaller intermediate milestone is worth considering before the full
+   confirmation-flow UX: a "declared-disk" Debian+Incus path (operator
+   pre-specifies the target disk in config, no helper-OS round-trip) as a
+   stepping stone — proves systemd-repart + cert/network seed rendering
+   end-to-end before adding the networking-dependent confirmation flow on
+   top.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
