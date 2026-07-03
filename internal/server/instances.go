@@ -16,9 +16,23 @@ import (
 )
 
 // errInstanceNotFound marks a resolveInstanceSeed failure caused by an
-// unknown instance name, distinguishing a 404 from the various 422 causes
-// below via errors.Is.
+// unknown instance name, distinguishing a 404 from the other causes below
+// via errors.Is.
 var errInstanceNotFound = errors.New("instance not found")
+
+// errSeedInvalid marks a resolveInstanceSeed failure caused by the synced
+// data or the render step itself — a network missing from the synced
+// snapshot, or a seed.Render rejection (unsupported disk/nic/application, a
+// malformed client cert PEM, etc.) — as opposed to a server-side fault.
+// Distinguishes a 422 from the 5xx causes below via errors.Is.
+var errSeedInvalid = errors.New("seed data invalid")
+
+// errCertUnavailable marks a resolveInstanceSeed failure caused by the
+// break-glass cert becoming unreadable after startup (e.g. CLIENT_CERT_PATH
+// deleted or its permissions changed) — a deployment/environment problem,
+// not a bug, so it maps to 503 like the "cert source not configured" case
+// rather than a generic 500.
+var errCertUnavailable = errors.New("client cert unavailable")
 
 // instanceSeedResponse holds the four rendered seed documents, one YAML
 // string per field — matching seed.Write's per-field marshaling — so each
@@ -46,12 +60,7 @@ func handleInstanceSeed(store Store, certs CertSource) http.HandlerFunc {
 
 		bundle, err := resolveInstanceSeed(r.Context(), store, certs, name)
 		if err != nil {
-			if errors.Is(err, errInstanceNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			log.Printf("resolve instance seed %q: %v", name, err)
-			http.Error(w, "could not render seed", http.StatusUnprocessableEntity)
+			writeResolveSeedError(w, r, name, err)
 			return
 		}
 
@@ -110,27 +119,47 @@ func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, nam
 	if !ok {
 		// The instance points at a network absent from the same synced
 		// snapshot — a data-integrity problem in the synced fleet, not a
-		// bad request, so it's distinguished in the log from a Render
-		// rejection below even though both map to the same client status.
-		return seed.Bundle{}, fmt.Errorf("instance %q targets network %q, which is missing from the synced snapshot", name, inst.Network)
+		// server fault.
+		return seed.Bundle{}, fmt.Errorf("%w: instance %q targets network %q, which is missing from the synced snapshot", errSeedInvalid, name, inst.Network)
 	}
 
 	certPEM, err := certs.ClientCertPEM(ctx)
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("read client cert: %w", err)
+		return seed.Bundle{}, fmt.Errorf("%w: read client cert: %w", errCertUnavailable, err)
 	}
 
 	bundle, err := seed.Render(net, inst, certPEM, seed.Options{})
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("render seed for instance %q: %w", name, err)
+		return seed.Bundle{}, fmt.Errorf("%w: render seed for instance %q: %w", errSeedInvalid, name, err)
 	}
 	return bundle, nil
 }
 
+// writeResolveSeedError maps a resolveInstanceSeed error to an HTTP
+// response, logging the full error first: 404 for an unknown instance, 422
+// for bad synced/render data (errSeedInvalid), 503 for a cert that became
+// unavailable after startup (errCertUnavailable, mirroring the "cert source
+// not configured" case), and 500 for anything else — a genuine store/server
+// fault rather than a client-correctable request.
+func writeResolveSeedError(w http.ResponseWriter, r *http.Request, name string, err error) {
+	log.Printf("resolve instance seed %q: %v", name, err)
+	switch {
+	case errors.Is(err, errInstanceNotFound):
+		http.NotFound(w, r)
+	case errors.Is(err, errSeedInvalid):
+		http.Error(w, "could not render seed", http.StatusUnprocessableEntity)
+	case errors.Is(err, errCertUnavailable):
+		http.Error(w, "cert source unavailable", http.StatusServiceUnavailable)
+	default:
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
 // handleInstanceImage regenerates and streams a bootable .img for name's
 // instance on every request (no caching — docs/Decisions.md §3), reusing
-// resolveInstanceSeed for the same 404/422 lookup as handleInstanceSeed, then
-// seed.Write + the ImageBuilder (flasher.Run) into throwaway temp paths.
+// resolveInstanceSeed and writeResolveSeedError for the same lookup and
+// error mapping as handleInstanceSeed, then seed.Write + the ImageBuilder
+// (flasher.Run) into throwaway temp paths.
 func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
@@ -150,12 +179,7 @@ func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder) ht
 
 		bundle, err := resolveInstanceSeed(r.Context(), store, certs, name)
 		if err != nil {
-			if errors.Is(err, errInstanceNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			log.Printf("resolve instance seed %q: %v", name, err)
-			http.Error(w, "could not render seed", http.StatusUnprocessableEntity)
+			writeResolveSeedError(w, r, name, err)
 			return
 		}
 

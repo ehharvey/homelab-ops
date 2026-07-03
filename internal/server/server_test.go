@@ -56,6 +56,8 @@ type fakeStore struct {
 
 	networkByName  map[string]config.Network
 	instanceByName map[string]config.Instance
+	networkErr     error // if set, Network returns this instead of a networkByName lookup
+	instanceErr    error // if set, Instance returns this instead of an instanceByName lookup
 }
 
 func (f *fakeStore) Replace(_ context.Context, cfg config.Config, commit string, _ time.Time) error {
@@ -78,11 +80,17 @@ func (f *fakeStore) Instances(context.Context) ([]config.Instance, error) {
 }
 
 func (f *fakeStore) Network(_ context.Context, name string) (config.Network, bool, error) {
+	if f.networkErr != nil {
+		return config.Network{}, false, f.networkErr
+	}
 	n, ok := f.networkByName[name]
 	return n, ok, nil
 }
 
 func (f *fakeStore) Instance(_ context.Context, name string) (config.Instance, bool, error) {
+	if f.instanceErr != nil {
+		return config.Instance{}, false, f.instanceErr
+	}
 	i, ok := f.instanceByName[name]
 	return i, ok, nil
 }
