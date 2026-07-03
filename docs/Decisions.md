@@ -112,6 +112,20 @@ Run Alloy as an Incus instance; configure IncusOS's remote syslog to point at it
 ### Answers
 Use IncusOS's built-in [Tailscale service](https://linuxcontainers.org/incus-os/docs/main/reference/services/tailscale/). For now the app just takes an operator-supplied authkey per node; a real enrollment flow is a later expansion.
 
+### Addendum (2026-07-03)
+As of this writing, IncusOS's built-in Tailscale service has no seed-time
+configuration hook: none of the 10 documented seed files (`install`,
+`network`, `applications`, `incus`, `kernel`, `migration-manager`,
+`operations-center`, `provider`, `security`, `update` — checked against the
+vendored schema, the pinned `third_party/incus-os` submodule commit, and
+upstream `main`) carry Tailscale config; `ServiceTailscaleConfig.AuthKey` is
+only settable via a post-boot REST call to the node's incus-osd API. No
+upstream issue/PR proposes adding a seed hook; the closest thread is
+[lxc/incus-os#497](https://github.com/lxc/incus-os/issues/497), where this is
+an open question. Implementation is deferred pending upstream clarity —
+tracked as issue #76 with the `later` label rather than built against a
+seed file incus-osd won't yet read.
+
 ## 9. Where does the web app itself run? (flagged as open per your earlier answer)
 
 - Inside the homelab it manages (a container/VM on one Incus host) — needs a bootstrap path for node #1 before the app exists to generate its installer.
