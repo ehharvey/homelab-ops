@@ -41,7 +41,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 ## Phase 3 — Tailscale, logging + metrics
 
-- [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service
+- [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service (blocked on upstream seed support — see #76, deferred)
 - [ ] Add a local Grafana + Loki + Prometheus dev stack under `docker-compose.yml`, so log/metric forwarding can be validated without live Grafana Cloud credentials
 - [ ] Stand up an Alloy Incus instance; point node syslog at it
 - [ ] Alloy → Grafana forwarding confirmed end-to-end (local stack by default; Grafana Cloud is the real production destination, checked separately)
