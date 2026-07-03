@@ -1,7 +1,9 @@
 package config
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
@@ -105,7 +107,31 @@ func Validate(c Config) Issues {
 			(inst.StaticIP.Compare(r.Start) < 0 || inst.StaticIP.Compare(r.End) > 0) {
 			add(path+".static_ip", fmt.Sprintf("%s is outside dhcp_excluded_range %s-%s", inst.StaticIP, r.Start, r.End))
 		}
+		switch network, broadcast, ok := networkAndBroadcast(n.CIDR); {
+		case n.Gateway.IsValid() && inst.StaticIP == n.Gateway:
+			add(path+".static_ip", fmt.Sprintf("%s collides with the gateway", inst.StaticIP))
+		case ok && inst.StaticIP == network:
+			add(path+".static_ip", fmt.Sprintf("%s collides with the network address", inst.StaticIP))
+		case ok && inst.StaticIP == broadcast:
+			add(path+".static_ip", fmt.Sprintf("%s collides with the broadcast address", inst.StaticIP))
+		}
 	}
 
 	return issues
+}
+
+// networkAndBroadcast returns p's network (lowest) and broadcast (highest)
+// addresses. IPv4-only, mirroring ipam.NetworkPool's reserved-address
+// exclusions; ok is false for a non-IPv4 prefix (p is already known-valid by
+// the time callers reach this).
+func networkAndBroadcast(p netip.Prefix) (network, broadcast netip.Addr, ok bool) {
+	if !p.Addr().Is4() {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	m := p.Masked()
+	a := m.Addr().As4()
+	v := binary.BigEndian.Uint32(a[:])
+	v |= uint32(0xffffffff) >> m.Bits()
+	binary.BigEndian.PutUint32(a[:], v)
+	return m.Addr(), netip.AddrFrom4(a), true
 }
