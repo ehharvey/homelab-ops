@@ -45,6 +45,8 @@ When a `Roadmap.md` checklist item is completed, check it off in its own commit 
 
 This keeps `Roadmap.md` as a live, skimmable status board rather than a static spec.
 
+**Milestones are named after the phase alone, no separate "Sprint N" counter** (changed 2026-07-03): milestones/issues used to read `Sprint N — Phase M: ...`, but sprint numbers were 1-indexed against 0-indexed phases and every sprint has mapped 1:1 to exactly one phase — so the sprint counter carried no information beyond "which phase, off by one" (`Sprint 3` did `Phase 2`'s work). GitHub milestones are now just `Phase N: <name>`, matching `Roadmap.md`'s headings; the `Sprint planning` issue template is `phase_planning.yml` (`[Phase]: ` issues). Older closed issues that predate this (`[Sprint]: N`) were retitled to match; only issue *bodies*/comments referencing the old scheme are left as historical record.
+
 ## Go project layout
 
 Established by the bootstrap CLI (`internal/cert`, `cmd/bootstrap`):
