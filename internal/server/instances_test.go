@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -167,6 +168,60 @@ func TestInstanceSeedRenderRejection422s(t *testing.T) {
 
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("POST /instances/devnode0/seed (unsupported disk) = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+func TestInstanceSeedInstanceStoreError500s(t *testing.T) {
+	store := &fakeStore{instanceErr: errors.New("disk full")}
+	certs := fakeCertSource{pem: sampleClientCertPEM(t)}
+
+	req := httptest.NewRequest(http.MethodPost, "/instances/devnode0/seed", nil)
+	req.SetPathValue("name", "devnode0")
+	rec := httptest.NewRecorder()
+
+	handleInstanceSeed(store, certs)(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /instances/devnode0/seed (instance store error) = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestInstanceSeedNetworkStoreError500s(t *testing.T) {
+	inst := sampleSeedInstance()
+	store := &fakeStore{
+		instanceByName: map[string]config.Instance{inst.Name: inst},
+		networkErr:     errors.New("disk full"),
+	}
+	certs := fakeCertSource{pem: sampleClientCertPEM(t)}
+
+	req := httptest.NewRequest(http.MethodPost, "/instances/devnode0/seed", nil)
+	req.SetPathValue("name", "devnode0")
+	rec := httptest.NewRecorder()
+
+	handleInstanceSeed(store, certs)(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /instances/devnode0/seed (network store error) = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestInstanceSeedCertReadError503s(t *testing.T) {
+	net := sampleSeedNetwork()
+	inst := sampleSeedInstance()
+	store := &fakeStore{
+		networkByName:  map[string]config.Network{net.Name: net},
+		instanceByName: map[string]config.Instance{inst.Name: inst},
+	}
+	certs := fakeCertSource{err: errors.New("permission denied")}
+
+	req := httptest.NewRequest(http.MethodPost, "/instances/devnode0/seed", nil)
+	req.SetPathValue("name", "devnode0")
+	rec := httptest.NewRecorder()
+
+	handleInstanceSeed(store, certs)(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /instances/devnode0/seed (cert read error) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
