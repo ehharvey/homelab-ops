@@ -1,0 +1,16 @@
+# Dev-only fixture: auto-wires Grafana's Loki + Prometheus datasources for
+# the local docker-compose stack. Not part of the app's own image/binary —
+# mirrors dev/git-fixture's rationale for keeping dev-only wiring out of
+# production code paths.
+apiVersion: 1
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

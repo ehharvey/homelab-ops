@@ -1,0 +1,14 @@
+# Dev-only fixture: Prometheus scrapes itself and remote_writes those same
+# samples back to its own --web.enable-remote-write-receiver endpoint, so
+# scripts/validate-issue-82.sh can prove the remote_write receiver path
+# actually works without needing a real Alloy/remote-write client.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+remote_write:
+  - url: http://localhost:9090/api/v1/write
