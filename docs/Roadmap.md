@@ -39,10 +39,12 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 **Done when:** the app can take a new `Instance` entry from the synced repo and produce a working installer end-to-end, without the bootstrap CLI.
 
-## Phase 3 — Tailscale + logging
+## Phase 3 — Tailscale, logging + metrics
 
 - [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service
 - [ ] Stand up an Alloy Incus instance; point node syslog at it
 - [ ] Alloy → Grafana Cloud forwarding confirmed end-to-end
+- [ ] Extend the per-node Alloy instance to scrape Incus's native `/1.0/metrics` endpoint and remote_write to Grafana Cloud, alongside its existing syslog forwarding
+- [ ] Mint a per-instance `metrics`-typed Incus cert at seed-render time (shared `internal/cert`+`internal/seed` code, used by both the bootstrap CLI and the web app) and preseed it via `incus.yaml` for Alloy's local scrape — invisible to the operator, distinct from the break-glass client cert
 
-**Done when:** a freshly provisioned node is reachable over Tailscale and its logs show up in Grafana Cloud.
+**Done when:** a freshly provisioned node is reachable over Tailscale and both its logs and its resource metrics (host + instance, CPU/memory/disk/network) show up in Grafana Cloud.
