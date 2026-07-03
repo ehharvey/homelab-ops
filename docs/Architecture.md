@@ -35,11 +35,11 @@ Modules:
 - **Seed/installer generation** — same seed-rendering logic as the bootstrap CLI, generalized to any instance: builds `install.yaml`/`network.yaml`/`applications.yaml`/`incus.yaml`, calls `flasher-tool`, and either serves the resulting `.img` for download or flashes it directly — whichever is easiest to implement first.
 - **Cert sourcing** — the app never generates, mints, or stores a client cert itself. It reads one operator-supplied, self-signed cert (the same artifact the bootstrap CLI's `gen-cert` already produces for node #0) from local deployment config, and preseeds its public half into every subsequently-provisioned node's `incus.yaml`, so the whole fleet trusts a single break-glass credential identical to what node #0 trusts (not Operations Center auth — that question is shelved with the OC-wrapping decision). The private key is never read, transmitted, or persisted by the app — rotation/revocation remain deferred, but the key-storage risk that deferral originally implied is avoided entirely rather than just postponed.
 - **Tailscale config** — takes an operator-supplied authkey and writes it into the node's seed for IncusOS's built-in [Tailscale service](https://linuxcontainers.org/incus-os/docs/main/reference/services/tailscale/). No per-node enrollment flow yet.
-- **Logging config** — provisions an Alloy instance under Incus and points the node's remote syslog at it; Alloy forwards to Grafana Cloud. Tailscale-reachable Grafana endpoint is TBD later.
+- **Observability config** — provisions an Alloy instance under Incus and points the node's remote syslog at it; Alloy forwards logs to Grafana Cloud. The same Alloy instance also scrapes Incus's native `/1.0/metrics` endpoint (host + per-instance resource stats) and remote_writes it to Grafana Cloud — one agent per node handles both logs and metrics rather than running a second exporter. The metrics scrape authenticates with a dedicated `metrics`-typed Incus cert (read-only, scoped to `/1.0/metrics` only), minted per-instance at seed-render time alongside the rest of that instance's seed — distinct from, and lower-privilege than, the break-glass client cert (see `Decisions.md` § Metrics). Tailscale-reachable Grafana endpoint is TBD later.
 
 ### 3. Managed node(s)
 
-IncusOS host(s) running: Incus (always), Tailscale service (authkey-enrolled), and — once logging is wired up — an Alloy Incus instance receiving the node's syslog.
+IncusOS host(s) running: Incus (always), Tailscale service (authkey-enrolled), and — once observability is wired up — an Alloy Incus instance receiving the node's syslog and scraping its local Incus API for metrics.
 
 ## Data model (sketch)
 
@@ -78,8 +78,8 @@ Bootstrap CLI generates cert → renders seed from one `Instance`/`Network` doc 
 **Flow B — Steady-state provisioning (web app, post node #0):**
 GitHub push → config sync pulls + parses → diff shown (warn only) → operator/app triggers seed generation for a given instance → `.img` produced/downloaded → repeat Flow A's flash/install for that node, now trusting the same break-glass cert node #0 trusts.
 
-**Flow C — Logging:**
-IncusOS node syslog → Alloy Incus instance → Grafana Cloud.
+**Flow C — Observability (logs + metrics):**
+IncusOS node syslog → Alloy Incus instance → Grafana Cloud (logs). The same Alloy instance also scrapes Incus's local `/1.0/metrics` endpoint → Grafana Cloud (metrics), authenticated via a per-instance `metrics`-typed cert minted at seed-render time.
 
 **Flow D — Remote access:**
 Operator supplies a Tailscale authkey per node → baked into seed → node joins tailnet via IncusOS's Tailscale service.

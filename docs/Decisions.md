@@ -182,6 +182,26 @@ Surfaced by #46 (no `Network`-level validation) and tracked as the decision #47.
 
 Implementation (the `netip` type rework + `config.Validate` pass, which also closes #46) lands under #46; dev-facing conventions for it are in `Development Conventions.md` § Config validation.
 
+## 14. Metrics (Phase 3 scope addition)
+
+Phase 3 was originally scoped as Tailscale + logging only (§7 above). Folding in node/infra resource metrics (host + Incus-instance CPU/memory/disk/network) alongside logging raised three questions: where do metrics come from, how do they get shipped, and how does the shipping agent authenticate.
+
+### Source
+
+Incus already exposes a native Prometheus-format metrics endpoint (`/1.0/metrics`, host + per-instance stats) — confirmed in the vendored `lxc/incus/v7` module this repo already depends on. No separate exporter (e.g. `node_exporter`) is needed: IncusOS's minimal/immutable host has no natural home for a second agent, and Incus already exposes this data for free. Host stats Incus doesn't expose (e.g. disk usage outside its storage pools) are out of scope for now; revisit only if a concrete gap shows up.
+
+### Delivery
+
+The same per-node Alloy instance already planned for syslog forwarding (§7) also handles metrics — one Alloy config with both a syslog receiver and a `prometheus.scrape` + `prometheus.remote_write` pair, rather than a second agent/instance per node.
+
+### Cert custody for Alloy's scrape
+
+Alloy needs to *present* a client cert to Incus's API when scraping `/1.0/metrics`, unlike the break-glass cert (§4), which the app only ever embeds the public half of. Incus supports a dedicated `metrics` certificate type (`api.CertificateTypeMetrics`) that's restricted to read-only `/1.0/metrics` access — nothing else on the Incus API — preseeded via the same `incus.yaml`/`InitPreseed` mechanism `internal/seed` already uses for the break-glass cert.
+
+**Answer:** this cert is minted invisibly, per instance, at seed-render time — the operator never sees or manages it. Whichever tool renders the seed (bootstrap CLI for node #0, web app for every later node) mints a fresh keypair via the existing `internal/cert.Generate` (already offline/no-network, so this works identically before or after any node exists), embeds the public half into that instance's `incus.yaml` as a `metrics`-typed trusted cert, and bakes the private half into the same instance's Alloy provisioning data. `internal/seed`'s `renderIncusPreseed` already builds `InitPreseed.Certificates` as a slice, so adding this second entry is additive.
+
+This is a deliberate, narrow exception to the break-glass cert's "the app never mints certs" precedent (§4): that rule exists to avoid centralizing custody of a *standing, full-access* credential. A per-instance, read-only-metrics keypair minted and immediately handed off to the same instance carries none of that risk, so there's no reason to push a manual step onto the operator for it. The operator's only remaining observability-related config surface is *where to ship logs/metrics* (Grafana Cloud endpoint + auth), not certificate handling.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
