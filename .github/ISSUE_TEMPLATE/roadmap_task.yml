@@ -1,5 +1,5 @@
 name: Roadmap task
-description: A scoped build item from docs/Roadmap.md (sprint/phase work)
+description: A scoped build item from docs/Roadmap.md (phase work)
 title: "[Task]: "
 labels:
   - task
@@ -17,7 +17,7 @@ body:
         - "Phase 0 — Node #0 bootstrap tool"
         - "Phase 1 — Web app skeleton + config sync"
         - "Phase 2 — IPAM + app-driven installer generation"
-        - "Phase 3 — Tailscale + logging"
+        - "Phase 3 — Tailscale, logging + metrics"
         - "Deferred / post-1.0"
     validations:
       required: true
