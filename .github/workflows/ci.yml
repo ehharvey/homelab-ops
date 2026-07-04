@@ -29,7 +29,7 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
-      - uses: golangci/golangci-lint-action@v9.2.1
+      - uses: golangci/golangci-lint-action@v9.3.0
 
   # Builds the web image and proves flasher-tool actually executes inside the
   # distroless/static final stage. The image route (#39) shells out to it, but
