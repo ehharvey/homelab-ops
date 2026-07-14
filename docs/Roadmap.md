@@ -39,13 +39,36 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 **Done when:** the app can take a new `Instance` entry from the synced repo and produce a working installer end-to-end, without the bootstrap CLI.
 
-## Phase 3 — Tailscale, logging + metrics
+## Phase 3 — Local app-manager agent + node connectivity
+
+> **Rejig note (2026-07-14):** this phase used to be "Tailscale, logging +
+> metrics." That content didn't disappear — it moved to the new Phase 4
+> below, displaced by two pieces of infrastructure everything after it now
+> builds on: node↔app connectivity, and a self-managing app-manager agent.
+> See `docs/Decisions.md` for the full rationale (cert custody, why a local
+> agent instead of the always-on app driving Incus directly, the WireGuard
+> vs. Tailscale/NetBird seed-hook comparison).
+
+- [ ] Seed WireGuard connectivity between nodes and the web app: web app
+  generates its own identity + a per-node keypair at seed-render time,
+  embedded into `network.yaml` (no live enrollment step, unlike
+  Tailscale/NetBird); resolves `docs/Decisions.md` §11 — see #91
+- [ ] Local per-node app-manager agent: Incus instance with the host's own
+  Incus socket forwarded in, polls the fleet config git repo directly,
+  reconciles a new `kind: App` object via a small renderer registry —
+  proven by managing itself (blue-green self-upgrade) — see #92
+
+**Done when:** a managed node has a persistent WireGuard tunnel to the web
+app, and a local app-manager agent that can deploy and upgrade itself
+(blue-green) from git-declared config.
+
+## Phase 4 — Tailscale, logging + metrics
 
 - [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service (blocked on upstream seed support — see #76, deferred)
 - [x] Add a local Grafana + Loki + Prometheus dev stack under `docker-compose.yml`, so log/metric forwarding can be validated without live Grafana Cloud credentials (see #82)
-- [ ] Stand up an Alloy Incus instance; point node syslog at it
-- [ ] Alloy → Grafana forwarding confirmed end-to-end (local stack by default; Grafana Cloud is the real production destination, checked separately)
-- [ ] Mint a per-instance `metrics`-typed Incus cert at seed-render time (shared `internal/cert`+`internal/seed` code, used by both the bootstrap CLI and the web app) and preseed it via `incus.yaml` for Alloy's local scrape — invisible to the operator, distinct from the break-glass client cert
-- [ ] Extend the per-node Alloy instance to scrape Incus's native `/1.0/metrics` endpoint and remote_write to Grafana, alongside its existing syslog forwarding
+- [ ] Stand up an Alloy Incus instance; point node syslog at it — now a renderer registered with Phase 3's app-manager agent (see #92) rather than built from scratch — see #77
+- [ ] Alloy → Grafana forwarding confirmed end-to-end (local stack by default; Grafana Cloud is the real production destination, checked separately) — see #78
+- [ ] Mint a per-instance `metrics`-typed Incus cert at seed-render time (shared `internal/cert`+`internal/seed` code, used by both the bootstrap CLI and the web app) and preseed it via `incus.yaml` for Alloy's local scrape — invisible to the operator, distinct from the break-glass client cert — see #79
+- [ ] Extend the per-node Alloy instance to scrape Incus's native `/1.0/metrics` endpoint and remote_write to Grafana, alongside its existing syslog forwarding — see #80
 
 **Done when:** a freshly provisioned node is reachable over Tailscale and both its logs and its resource metrics (host + instance, CPU/memory/disk/network) show up in Grafana Cloud.

@@ -166,6 +166,28 @@ A more ambitious version of option 1 came up: make the internet-facing web app a
 
 Worth keeping from the discussion: prefer node-initiated outbound (option 1), and if a node ever does send actions, send *structured actions*, not shell commands. Revisit the whole idea only if multi-user or an untrusted-relay requirement ever materialises.
 
+#### Future direction (not designed or built): web app as a zero-knowledge network proxy
+
+Raised 2026-07-14 alongside the WireGuard phone-home work (see the Phase 3
+rejig in `docs/Roadmap.md`): once the web app has a persistent WireGuard
+tunnel to every managed node, it could also act as a transparent network
+*relay* between an operator and a node's Incus API — letting an operator
+reach a node without exposing it directly to the internet, without the web
+app itself needing to understand or terminate the traffic it's relaying.
+
+This is related to, but distinct from, the "end-to-end-encrypted command
+bus" addendum immediately above, and doesn't reopen that rejection:
+- That addendum was about a *command queue* — a control plane storing and
+  later delivering structured commands, which conflicts with 0.x's
+  diff-and-warn-only posture (§1).
+- This idea is a *transparent relay* — packets in, packets out, no storage,
+  no command semantics — sitting on top of the WireGuard tunnel once it
+  exists, closer to a bastion/jump host than a control plane.
+
+Not designed or built now. Revisit once the WireGuard tunnel itself is
+proven (Phase 3) and a concrete need for operator access through it shows
+up.
+
 
 ## 12. Persisting IPAM state
 
