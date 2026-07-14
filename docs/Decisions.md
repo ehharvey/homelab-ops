@@ -184,9 +184,88 @@ bus" addendum immediately above, and doesn't reopen that rejection:
   no command semantics — sitting on top of the WireGuard tunnel once it
   exists, closer to a bastion/jump host than a control plane.
 
-Not designed or built now. Revisit once the WireGuard tunnel itself is
-proven (Phase 3) and a concrete need for operator access through it shows
-up.
+**Expected sequencing:** after Phase 4 (`docs/Roadmap.md`), once WireGuard
+node connectivity (Phase 3) and logging/metrics (Phase 4) are both in
+place. Not designed or built now — captured here so the shape of the
+options survives until then.
+
+**Options considered so far (2026-07-14 discussion), none designed/built:**
+
+1. **Single shared WireGuard mesh** — web app is the hub, operator's
+   browser embeds a WireGuard client (e.g. a WASM implementation, since
+   browsers have no raw-socket access — a real, non-trivial dependency) and
+   joins the same mesh as the nodes. Operator authenticates to the node's
+   Incus API with their own client cert; the web app never gets that
+   private key. But the web app *is* a WireGuard endpoint on both hops, so
+   it necessarily decrypts to plaintext IP packets in the middle to
+   re-route between them — "zero-knowledge" here holds only because of the
+   inner Incus mTLS, not because of WireGuard. Worth being explicit that
+   this is what "zero-knowledge" would mean in this design, rather than
+   assuming the WireGuard layer itself hides anything from the app.
+
+2. **Nested/second WireGuard mesh** — operator and node share an inner
+   WireGuard network that the web app has no keys for and is never a peer
+   in; the web app just forwards opaque ciphertext (UDP) between the two,
+   blind to its contents. This is genuine network-layer zero-knowledge
+   (not just mTLS-dependent, as in option 1), and is the right shape *if*
+   the ambition is general operator access to arbitrary node-side services/
+   ports, not just the Incus API — an app-layer relay (option 3) doesn't
+   generalize to that. More moving parts than option 3: a second keypair/
+   config per node, and the web app still needs to broker addresses since
+   both sides likely still route through it as a relay for the
+   ciphertext-forwarding itself.
+
+3. **Plain TCP/L4 relay over the existing Phase 3 tunnel (recommended if
+   scope stays "reach one node's Incus API")** — no WireGuard in the
+   browser at all. The operator already has an authenticated HTTPS session
+   to the web app; the app does a CONNECT-style relay of that byte stream
+   to the node's Incus port over the WireGuard tunnel it already holds from
+   Phase 3, passing the operator's client-cert TLS handshake through
+   untouched rather than terminating it. Gets the property that actually
+   matters (web app never holds/needs the operator's private key, never
+   sees decrypted Incus traffic) with the least new infrastructure — no
+   browser-side WireGuard stack, no nested mesh, no NAT-traversal problem.
+
+4. **Web app as a Tailscale-style coordinator, operator and node connect
+   directly (rejected as a default approach)** — the web app hands each
+   side the other's WireGuard public key + candidate endpoints and steps
+   out of the data path once a direct UDP path forms, the way Tailscale's
+   control plane (or DERP as fallback) works. Rejected as the thing to
+   build ourselves: the entire reason nodes phone home to the web app
+   instead of being dialed directly is that a homelab node sits behind a
+   NAT/firewall with no public IP (`Architecture.md` § Incus Node
+   networking to Web App) — coordinating a "direct" connection doesn't
+   remove that constraint, it just attempts to hole-punch through the same
+   NAT, which fails outright for symmetric NATs (common on corporate
+   networks/some mobile carriers — exactly where a mobile operator is
+   likely to be connecting from). A robust version still needs a relay
+   fallback for when hole-punching fails, i.e. still needs option 3's relay
+   *plus* new STUN-like endpoint discovery, NAT-type detection, and
+   keepalive/session machinery on top — strictly more engineering than
+   option 3 alone, for a benefit (web app off the data path) that's
+   opportunistic rather than guaranteed. This is also a substantial
+   reimplementation of what Tailscale/headscale already do, cutting against
+   this project's established bias against rebuilding things Tailscale
+   already solved (§0, §8).
+
+   Worth reconsidering later, not as a hand-rolled coordinator but as
+   **live Tailscale enrollment for this one hop**: §8's rejection of
+   Tailscale for node connectivity was specifically that its authkey has no
+   *seed-time* config hook (§8 addendum, upstream issue #76) — a
+   bootstrapping constraint, not a runtime one. Phase 3's local app-manager
+   agent (`docs/Roadmap.md`) reconciles config live, post-boot, and could
+   enroll a node into Tailscale after the fact with no seed hook needed —
+   getting Tailscale's real, battle-tested coordination + DERP relay
+   fallback for operator access specifically, while the WireGuard seed
+   tunnel stays as the install-time bootstrap mechanism it actually solves.
+   Two tunnels for two different lifecycles, rather than one mechanism
+   trying to do both.
+
+**Current lean:** option 3 (plain relay) if scope stays Incus-API-only;
+revisit option 4's Tailscale-enrollment variant if broader operator access
+to arbitrary node services becomes a real requirement. Avoid option 4's
+hand-rolled-coordinator form and option 2 unless option 3 demonstrably
+doesn't cover the need.
 
 
 ## 12. Persisting IPAM state
