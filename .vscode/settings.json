@@ -4,5 +4,6 @@
     "[opentofu]": {
         "editor.defaultFormatter": "opentofu.vscode-opentofu"
     },
-    "vscode-lsp-mcp.autostart": true
+    "vscode-lsp-mcp.autostart": true,
+    "containers.containerCommand": "podman"
 }
