@@ -471,11 +471,37 @@ Run an agent on **every** node; exactly one is ever active (the leader),
 elected via an atomically-updated object stored in Incus itself, not a new
 dependency (etcd/Consul/etc.) or a new datastore.
 
+**The agent is not declared as a `kind: App` at all.** An earlier revision
+of this decision had the operator author one `App{type: agent, node: <n>}`
+entry per node — wrong on two counts: it puts a per-node bookkeeping burden
+on the operator for something that should just always be true of every
+node, and it overloads `App.Node` (meant to mean "the operator's placement
+choice") with something that's really "wherever the fleet's nodes are."
+Instead: a new singleton `kind: AgentConfig` document declares the agent's
+desired image once, fleet-wide; the leader synthesizes one `App`-shaped
+value per known `Instance` from it at reconcile time (never parsed from
+git as a literal document) and feeds those through the exact same
+`Renderer`/blue-green machinery as any real App. Adding a node to the
+fleet is enough to get an agent on it — nothing agent-specific needs
+authoring per node. See `docs/AppManager.md` § `kind: AgentConfig`.
+
+**This also removes `Node` from `kind: App` entirely** (not just for the
+agent): 0.x has no real placement logic yet, and pretending otherwise with
+a name-the-node field was premature. `Desired()` now builds every App's
+`InstancesPost` with no `Target`, so Incus's own scheduler decides — moot
+today (single-member cluster), and cheaper than building placement now
+just to throw it away later. The anticipated real mechanism, when
+placement actually matters (heterogeneous multi-member clusters), is
+Incus's own **cluster groups** — tag members with a capability, target
+creation at the group — not an operator naming individual nodes. See
+`docs/Out of Scope.md`.
+
 - **Coordination project.** A dedicated Incus project (e.g.
-  `homelab-ops-meta`) holds never-started, config-bearing instances — the
-  same "tag an Incus object, don't keep a separate store" philosophy #98
-  already uses for App generations, extended to fleet-wide coordination
-  state.
+  `homelab-ops-meta`) holds a single never-started, config-bearing
+  instance — the lease below, and nothing else (see "no desired-version
+  object" further down) — the same "tag an Incus object, don't keep a
+  separate store" philosophy #98 already uses for App generations,
+  extended to fleet-wide coordination state.
 - **Leader lease.** One object holds `owner`, `expiry`, and a monotonic
   `term` (fencing counter, bumped on each new acquisition). Every agent
   attempts to acquire-or-renew it every tick via Incus's ETag/`If-Match`
@@ -492,27 +518,35 @@ dependency (etcd/Consul/etc.) or a new datastore.
   design exists to avoid, for a scale this project doesn't operate at.
 - **Fleet-wide reconciliation is leader-only.** `ReconcileNode` (per #98)
   generalizes to `ReconcileFleet`: the leader iterates every declared App
-  regardless of `Node`, running the same per-App blue-green state machine
-  #98 already designed, using cluster-wide Incus reach instead of a single
-  node-local socket. Followers do not reconcile anything — they only
-  compete for the lease and keep their own instance's heartbeat alive (so
-  `Healthy()` still works whenever the leader evaluates that instance
-  during a blue-green transition). This is not a new liveness/watchdog
-  concept: ordinary instance disappearance is already covered by
-  `ReconcileFleet`'s existing zero-match → recreate branch, and Incus's
-  own restart policy is trusted for day-to-day process liveness inside an
-  already-converged instance.
-- **Incus state stays authoritative; the coordination project is hints
-  only.** Consistent with #98's existing invariant ("no distributed lock,
-  always re-derivable from `incus list` alone") — the lease and
-  desired-version objects exist to make election and version rollout
-  possible, not to become a second source of truth competing with live
-  Incus state or git.
-- **Fleet-wide blue-green upgrade, unified with normal reconciliation.**
-  A `desired-version` object (leader-written, once it observes a bump via
-  its own git poll) is what the *leader* checks against its own running
-  image — not a broadcast every agent acts on independently. The leader
-  creates every generation transition fleet-wide, including its own
+  (no `Node` filter — see above) plus every synthesized per-node agent
+  App, running the same per-App blue-green state machine #98 already
+  designed, using cluster-wide Incus reach instead of a single node-local
+  socket. Followers do not reconcile anything — they only compete for the
+  lease and keep their own instance's heartbeat alive (so `Healthy()`
+  still works whenever the leader evaluates that instance during a
+  blue-green transition). This is not a new liveness/watchdog concept:
+  ordinary instance disappearance is already covered by `ReconcileFleet`'s
+  existing zero-match → recreate branch, and Incus's own restart policy is
+  trusted for day-to-day process liveness inside an already-converged
+  instance.
+- **Incus state stays authoritative; the coordination project is a hint,
+  and it's just the lease.** Consistent with #98's existing invariant ("no
+  distributed lock, always re-derivable from `incus list` alone") — the
+  lease exists to make election possible, not to become a second source of
+  truth competing with live Incus state or git. There is deliberately no
+  second "desired version" object (see next bullet): once only the leader
+  ever acts, nothing else needs a mirror of git's declared version to read.
+- **Fleet-wide blue-green upgrade, unified with normal reconciliation —
+  no separate object needed.** The leader detects its own staleness the
+  *same generic way* it detects any App's version bump: its own
+  synthesized agent App's live image tag vs. `AgentConfig.Image`, freshly
+  read from its own git sync each tick. (An earlier revision of this
+  decision had a leader-written `desired-version` object in the
+  coordination project for this — dropped once "every agent watches it and
+  self-replaces" was already rejected in favor of leader-driven creation
+  fleet-wide: with no other reader left, the object had no purpose beyond
+  what the leader's own git-synced config already gives it directly.) The
+  leader creates every generation transition fleet-wide, including its own
   replacement, as part of one ordinary `ReconcileFleet` pass; a follower
   that crashes without a replacement is still covered, since nothing
   depends on a follower noticing its own staleness. Once the leader sees

@@ -16,7 +16,7 @@ This page tracks work that is out-of-scope, but still worth documenting.
 - Supporting more than IncusOS as a managed-node target. Two directions are planned but not yet built (see `Decisions.md` § Multi-OS support): plain Debian w/ Incus, installed via a systemd-repart-based helper OS with a pre-install hardware-registration/confirmation flow; and Talos (Kubernetes nodes), single-node install first, full cluster lifecycle (control-plane/worker roles, `talosctl bootstrap`) deferred further still. Both are blocked on the OS-target abstraction and node→app networking work described there.
 - DB-specific (or other renderer-specific) write-promotion wiring for `kind: App` beyond the generic `Renderer.Promote` seam (see #92, `docs/AppManager.md`)
 - Backup/restore for `kind: App` data/volumes
-- Multi-instance/scale-out per App; cross-node App placement/scheduling/bin-packing
+- Multi-instance/scale-out per App; cross-node App placement/scheduling/bin-packing. `kind: App` has no placement field at all in 0.x (no `node`, nothing) — Incus's own scheduler decides, which is moot on today's single-member cluster. When real placement is eventually needed, the intended mechanism is Incus's own cluster groups (tag members with a capability, target creation at the group), not an operator naming individual nodes — see `Decisions.md` § App Manager HA.
 - App-level dependency ordering (no "App B waits on App A" graph)
 - Automatic rollback after a successful App promotion (health-gating is strictly pre-promotion)
 - Orphaned-App teardown (App removed from git; live instances not auto-deleted)
