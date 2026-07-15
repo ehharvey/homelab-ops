@@ -417,6 +417,42 @@ deferral.
    end-to-end before adding the networking-dependent confirmation flow on
    top.
 
+## 16. `internal/incuslocal` vs. `internal/nodeprovision`: accepted duplication (#92)
+
+#92's local app-manager agent needs an Incus API client over its own host's
+forwarded unix socket (`internal/incuslocal`) — conceptually the same
+create-instance/wait-for-operation/decode-response shape `internal/
+nodeprovision` already implements for the web app's TLS-over-WireGuard-tunnel
+path. Should these share a common low-level helper now, or duplicate?
+
+### Options considered
+
+1. **Extract a shared low-level helper now** (e.g. `internal/incusapi`) that
+   both `nodeprovision` and `incuslocal` wrap, parameterized only by
+   transport (`*http.Client` construction) and auth (TLS client cert vs.
+   none). `nodeprovision`'s `createInstance`/`waitOperation`/`do` are already
+   three standalone, non-tangled unexported functions, so this would be a
+   small extraction, not a rewrite.
+2. **Accept the duplication for v1.** The two clients have genuinely
+   different transports (TLS-over-tunnel-dial vs. plain-unix-socket, no TLS
+   at all) and there are only two consumers today.
+
+### Answer
+
+Accept the duplication for v1 (option 2) — consistent with this repo's
+general anti-premature-abstraction bias (cf. §13's rejection of a validation
+library before a second consumer existed). Two consumers with genuinely
+different transports don't yet justify a shared abstraction; the
+create/wait/decode logic is small enough (a few dozen lines) that copying it
+once costs less than the wrong abstraction would.
+
+**When this gets revisited:** a third Incus-API-consuming package appears —
+the concrete candidate is #77's future Alloy renderer wanting to scrape
+`/1.0/metrics`. At that point, extract the shared create/wait/response-
+envelope-decode logic (already three standalone functions in
+`nodeprovision`) into a common low-level helper both `nodeprovision` and
+`incuslocal` wrap, rather than adding a third copy.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
@@ -428,3 +464,6 @@ deferral.
 - [IncusOS — Operations Center application](https://linuxcontainers.org/incus-os/docs/main/reference/applications/operations-center/)
 - [IncusOS — Download / flasher tool](https://linuxcontainers.org/incus-os/docs/main/getting-started/download/)
 - [Operations Center source (FuturFusion)](https://github.com/FuturFusion/operations-center)
+- [Nomad — `update` stanza](https://developer.hashicorp.com/nomad/docs/job-specification/update) (#92's blue-green reconciliation model — see `docs/AppManager.md`)
+- [Kubernetes — Deployment strategies (Recreate vs. RollingUpdate)](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy)
+- [Argo Rollouts — BlueGreen strategy](https://argo-rollouts.readthedocs.io/en/stable/features/bluegreen/)
