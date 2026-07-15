@@ -95,15 +95,16 @@ sequenceDiagram
     Note over Old,New: overlap window — both reconcile the<br/>same node against the same synced config
     Old->>Incus: poll trivial App (still applied)
     New->>Incus: poll trivial App (still applied)
-    New->>New: own Healthy check passes (heartbeat fresh)
-    Old->>Incus: poll gen N+1 Healthy → true
-    Old->>Incus: Promote(old=N, new=N+1) → retire N
-    Old->>Incus: delete gen N (itself)
-    Old->>Old: process exits
+    Old->>Old: self-recognition: I am gen N → stand down on this App
+    New->>New: self-recognition: I am gen N+1 → proceed
+    New->>New: poll own Healthy (heartbeat fresh) → true
+    New->>Incus: Promote(old=N, new=N+1) → retire N
+    New->>Incus: delete gen N
+    Incus--)Old: instance N torn down (old process ends)
     New->>Incus: continues reconciling alone
 ```
 
-Green's own `main()` never waits for a handoff signal from blue — it starts reconciling the instant it boots. For the bounded window until blue confirms green healthy and deletes itself, both processes are reconciling the same node concurrently. Concurrency safety during that window is mostly by construction: both compute the same answer from the same inputs each tick (idempotent, level-triggered), and Incus itself serializes/rejects duplicate-name creates and no-ops-with-error on deleting an already-gone instance — the only two operations two overlapping reconcilers could race on. No distributed lock is introduced: at-most-two-actors/one-host scope makes one unnecessary, and this project's minutes-scale RTO tolerance makes a redundant duplicate attempt free.
+Green's own `main()` never waits for a handoff signal from blue — it starts reconciling the instant it boots. Per the self-recognition rule above, **blue never deletes its own instance**: the moment green exists, blue stands down on this one App entirely (it keeps reconciling every other App normally, e.g. the trivial validation App, right up until it's torn down) while green polls its own health and, once healthy, promotes *itself* and deletes blue. Blue's container is torn down as a side effect of green's delete call — an involuntary teardown, not a graceful self-exit. (Blue does keep one fallback duty: if green never manages to promote before its own health deadline elapses — e.g. it crashes before completing the promote step — blue detects the stale candidate and reverts by deleting green, staying as the running instance itself. Blue still never deletes blue.) For the bounded window until green's delete call lands, both processes are reconciling the same node concurrently. Concurrency safety during that window is mostly by construction: both compute the same answer from the same inputs each tick (idempotent, level-triggered), and Incus itself serializes/rejects duplicate-name creates and no-ops-with-error on deleting an already-gone instance — the only two operations two overlapping reconcilers could race on. No distributed lock is introduced: at-most-two-actors/one-host scope makes one unnecessary, and this project's minutes-scale RTO tolerance makes a redundant duplicate attempt free.
 
 ## Prior art
 
