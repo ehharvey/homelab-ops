@@ -14,3 +14,10 @@ This page tracks work that is out-of-scope, but still worth documenting.
 - Standardized schema output for the fleet-definition format and/or the web app's REST API: JSON Schema generated from `internal/config`'s structs (editor autocomplete, CI validation of fleet YAML) and/or OpenAPI for the existing HTTP API (see `Architecture.md` § HTTP API). No GraphQL — the app's scope is simple CRUD-ish config management, not query-heavy enough to justify a schema-first GraphQL layer. This is the expected growth path for validation if it ever outgrows the hand-rolled `config.Validate` chosen in `Decisions.md` § Validation approach — generate the schema *from* the (typed `net/netip`) structs, rather than adopt a schema-DSL library.
 - Multi-user on web app. 0.x should focus on just 1 user for now. No auth needed.
 - Supporting more than IncusOS as a managed-node target. Two directions are planned but not yet built (see `Decisions.md` § Multi-OS support): plain Debian w/ Incus, installed via a systemd-repart-based helper OS with a pre-install hardware-registration/confirmation flow; and Talos (Kubernetes nodes), single-node install first, full cluster lifecycle (control-plane/worker roles, `talosctl bootstrap`) deferred further still. Both are blocked on the OS-target abstraction and node→app networking work described there.
+- DB-specific (or other renderer-specific) write-promotion wiring for `kind: App` beyond the generic `Renderer.Promote` seam (see #92, `docs/AppManager.md`)
+- Backup/restore for `kind: App` data/volumes
+- Multi-instance/scale-out per App; cross-node App placement/scheduling/bin-packing
+- App-level dependency ordering (no "App B waits on App A" graph)
+- Automatic rollback after a successful App promotion (health-gating is strictly pre-promotion)
+- Orphaned-App teardown (App removed from git; live instances not auto-deleted)
+- Operator-facing UI/API for App/rollout status (beyond `incus list`)
