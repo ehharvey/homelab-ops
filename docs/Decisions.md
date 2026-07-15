@@ -43,6 +43,8 @@ One repo per environment, public only for now (private/auth deferred); a later i
 ### Answers
 MAC address identifies a machine. Format is k8s-style — objects discriminated by a `kind:` key, merged together — as a simpler, higher-level format the app translates into install seeds, not a wrapper around them. 0.x focuses on single-node hosts; multi-node is evaluated later.
 
+**Correction (2026-07-15, see § App Manager HA below):** "single-node" here means the *fleet* 0.x actually provisions is one host — it does not mean Incus itself runs as a bare, non-clustered daemon. Incus is initialized as a **one-member cluster** from the start, precisely so the App Manager's leader-election/fleet-reconciliation design (which needs one Incus API surface reachable from every node) doesn't need a later migration. Growing to N members — and the operator workflow for adding them — is the part that's still deferred, not clustering itself.
+
 ## 3. USB installer generation (note 5)
 
 - Generated via the **flasher-tool** (Go CLI, `go install github.com/lxc/incus-os/incus-osd/cmd/flasher-tool`) invoked by the app, or via Operations Center's built-in image generation (see §0)?
@@ -452,6 +454,100 @@ the concrete candidate is #77's future Alloy renderer wanting to scrape
 envelope-decode logic (already three standalone functions in
 `nodeprovision`) into a common low-level helper both `nodeprovision` and
 `incuslocal` wrap, rather than adding a third copy.
+
+## 17. App Manager HA — leader/follower via Incus-native lease (#92)
+
+#98's original design ran exactly one app-manager agent for the whole
+0.x fleet (trivially "the one node" today), reconciling only that node's
+own Apps, with no leader concept — safety came from partitioning
+(`App.Node == nodeName`), not coordination. That leaves no HA story: if
+the one node running the agent goes down, nothing takes over, because
+Incus has no mechanism to relocate a stateless instance onto a healthy
+node without shared storage (ceph) backing it.
+
+### Decision
+
+Run an agent on **every** node; exactly one is ever active (the leader),
+elected via an atomically-updated object stored in Incus itself, not a new
+dependency (etcd/Consul/etc.) or a new datastore.
+
+- **Coordination project.** A dedicated Incus project (e.g.
+  `homelab-ops-meta`) holds never-started, config-bearing instances — the
+  same "tag an Incus object, don't keep a separate store" philosophy #98
+  already uses for App generations, extended to fleet-wide coordination
+  state.
+- **Leader lease.** One object holds `owner`, `expiry`, and a monotonic
+  `term` (fencing counter, bumped on each new acquisition). Every agent
+  attempts to acquire-or-renew it every tick via Incus's ETag/`If-Match`
+  conditional-write support — a CAS write either lands or it doesn't, so
+  "am I leader" must always be re-derived from the last successful write,
+  never from a locally cached flag (protects against clock skew or a
+  GC-style pause making two processes briefly believe they're leader).
+  The leader renews well before expiry (e.g. at 1/3 of the lease TTL)
+  specifically to make losing the lease to a false expiry a non-event
+  under normal operation.
+- **Exactly one leader, deliberately** — no multi-leader/sharded variant
+  was considered worth the complexity here; partitioning work across
+  multiple simultaneous leaders reintroduces the coordination problem this
+  design exists to avoid, for a scale this project doesn't operate at.
+- **Fleet-wide reconciliation is leader-only.** `ReconcileNode` (per #98)
+  generalizes to `ReconcileFleet`: the leader iterates every declared App
+  regardless of `Node`, running the same per-App blue-green state machine
+  #98 already designed, using cluster-wide Incus reach instead of a single
+  node-local socket. Followers do not reconcile anything — they only
+  compete for the lease and keep their own instance's heartbeat alive (so
+  `Healthy()` still works whenever the leader evaluates that instance
+  during a blue-green transition). This is not a new liveness/watchdog
+  concept: ordinary instance disappearance is already covered by
+  `ReconcileFleet`'s existing zero-match → recreate branch, and Incus's
+  own restart policy is trusted for day-to-day process liveness inside an
+  already-converged instance.
+- **Incus state stays authoritative; the coordination project is hints
+  only.** Consistent with #98's existing invariant ("no distributed lock,
+  always re-derivable from `incus list` alone") — the lease and
+  desired-version objects exist to make election and version rollout
+  possible, not to become a second source of truth competing with live
+  Incus state or git.
+- **Fleet-wide blue-green upgrade, unified with normal reconciliation.**
+  A `desired-version` object (leader-written, once it observes a bump via
+  its own git poll) is what the *leader* checks against its own running
+  image — not a broadcast every agent acts on independently. The leader
+  creates every generation transition fleet-wide, including its own
+  replacement, as part of one ordinary `ReconcileFleet` pass; a follower
+  that crashes without a replacement is still covered, since nothing
+  depends on a follower noticing its own staleness. Once the leader sees
+  its own image is stale, it **stops renewing** the lease rather than
+  voluntarily stepping down (self-recognition-rule-safe: it still never
+  deletes itself). Only an already-upgraded agent should attempt the next
+  acquisition; the new leader's first `ReconcileFleet` pass is what cleans
+  up old-generation agents fleet-wide — no separate cleanup mechanism.
+
+### Scope correction this forces: 0.x runs Incus as a single-member cluster
+
+The mechanism above needs one Incus API surface reachable from every
+node's agent — which only real Incus clustering provides (any member can
+target any other member; the lease/version objects live in the cluster's
+shared control-plane, reachable identically from wherever the leader
+happens to be running). §2 and `Architecture.md`/`Out of Scope.md`
+previously framed multi-node as wholesale deferred; that's corrected to:
+0.x initializes Incus as a **one-member cluster** from the start (not a
+bare daemon), so this design needs no later migration. Growing to N
+members — and the operator workflow for joining them — remains the
+deferred part.
+
+### Trade-offs accepted, not solved now
+
+- **Incus's own dqlite fault-tolerance needs an odd member count ≥3.** A
+  1-2 member cluster still gets this design's *agent* HA benefit once
+  more than one member exists, but the Incus control-plane itself stays a
+  single point of failure until then. Not a blocker for 0.x (one member
+  anyway) — revisit when a real multi-member cluster is on the table.
+- **Leader-to-node partitions.** If the leader loses reach to a specific,
+  still-alive node, that node's Apps go unreconciled until the partition
+  heals or the lease moves to an agent that can reach it. Accepted,
+  consistent with this project's existing minutes-scale-RTO tolerance
+  (`docs/AppManager.md`'s Prior-art section already frames this project's
+  HA bar that way).
 
 ## Other notes
 1. Track the commit hash nodes are running

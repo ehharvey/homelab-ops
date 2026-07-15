@@ -1,7 +1,7 @@
 # Out of Scope
 This page tracks work that is out-of-scope, but still worth documenting.
 
-- Multi-node clusters; revisit wrapping Operations Center once that's real
+- Running more than one Incus cluster member (0.x initializes Incus as a single-member cluster from the start — see `Decisions.md` § App Manager HA; scaling to N members, and the operator workflow for joining them, is deferred). Revisit wrapping Operations Center once real multi-member clustering is on the table.
 - GitOps auto-apply and rollback (today: diff-and-warn only)
 - Private repos, repo-sharing across environments
 - IPv6, DHCP/DNS write-back
