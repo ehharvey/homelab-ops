@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
 // Test fixtures construct netip-typed config values; these helpers keep the
@@ -95,11 +98,64 @@ func (f *fakeStore) Instance(_ context.Context, name string) (config.Instance, b
 	return i, ok, nil
 }
 
+// fakeTunnelSource is a no-op TunnelSource: enough for handlers/SyncOnce to
+// treat WireGuard as "configured" without a real in-process tunnel.
+type fakeTunnelSource struct {
+	pub      wireguard.PublicKey
+	endpoint string
+
+	upsertErr  error
+	upsertCall []struct {
+		pub      wireguard.PublicKey
+		tunnelIP netip.Addr
+	}
+}
+
+func (f *fakeTunnelSource) PublicKey() wireguard.PublicKey { return f.pub }
+func (f *fakeTunnelSource) Endpoint() string               { return f.endpoint }
+
+func (f *fakeTunnelSource) UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error {
+	f.upsertCall = append(f.upsertCall, struct {
+		pub      wireguard.PublicKey
+		tunnelIP netip.Addr
+	}{pub, tunnelIP})
+	return f.upsertErr
+}
+
+func (f *fakeTunnelSource) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("fakeTunnelSource: DialContext not implemented")
+}
+
+func (f *fakeTunnelSource) Close() error { return nil }
+
+// fakeCredentialStore is an in-memory nodeprovision.CredentialStore.
+type fakeCredentialStore struct {
+	mu    sync.Mutex
+	creds map[string]nodeprovision.Credential
+}
+
+func (f *fakeCredentialStore) InstanceCredential(_ context.Context, name string) (nodeprovision.Credential, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.creds[name]
+	return c, ok, nil
+}
+
+func (f *fakeCredentialStore) SetInstanceCredential(_ context.Context, name string, cred nodeprovision.Credential) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.creds == nil {
+		f.creds = make(map[string]nodeprovision.Credential)
+	}
+	f.creds[name] = cred
+	return nil
+}
+
 func TestHealthz(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, nil, nil, nil).ServeHTTP(rec, req)
+	New(nil, nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /healthz = %d, want %d", rec.Code, http.StatusOK)
@@ -110,7 +166,7 @@ func TestSyncNotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, nil, nil, nil).ServeHTTP(rec, req)
+	New(nil, nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /sync with nil syncer = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -128,7 +184,7 @@ func TestSyncSuccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil).ServeHTTP(rec, req)
+	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -171,7 +227,7 @@ func TestSyncWithDiff(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil).ServeHTTP(rec, req)
+	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -198,7 +254,7 @@ func TestSyncDiffReadFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil).ServeHTTP(rec, req)
+	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	// A failure reading prior state for the diff must not fail the sync.
 	if rec.Code != http.StatusOK {
@@ -223,7 +279,7 @@ func TestSyncFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, nil, nil, nil).ServeHTTP(rec, req)
+	New(syncer, nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("POST /sync with failing syncer = %d, want %d", rec.Code, http.StatusBadGateway)
@@ -240,7 +296,7 @@ func TestSyncStoreFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil).ServeHTTP(rec, req)
+	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /sync with failing store = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -262,7 +318,7 @@ func TestSyncOnceReturnsDiffToCaller(t *testing.T) {
 		{Name: "new-lan", CIDR: prefix("10.0.2.0/24")}, // added
 	}}
 
-	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
@@ -281,7 +337,7 @@ func TestSyncOnceReturnsDiffToCaller(t *testing.T) {
 
 func TestSyncOnceClassifiesErrors(t *testing.T) {
 	t.Run("sync failure wraps ErrSync", func(t *testing.T) {
-		_, err := SyncOnce(context.Background(), fakeSyncer{err: errors.New("clone failed")}, &fakeStore{}, time.Now())
+		_, err := SyncOnce(context.Background(), fakeSyncer{err: errors.New("clone failed")}, &fakeStore{}, nil, nil, time.Now())
 		if !errors.Is(err, ErrSync) {
 			t.Errorf("err = %v, want it to wrap ErrSync", err)
 		}
@@ -292,7 +348,7 @@ func TestSyncOnceClassifiesErrors(t *testing.T) {
 
 	t.Run("store failure wraps ErrStore", func(t *testing.T) {
 		syncer := fakeSyncer{cfg: config.Config{}, sha: "deadbeef"}
-		_, err := SyncOnce(context.Background(), syncer, &fakeStore{replaceErr: errors.New("disk full")}, time.Now())
+		_, err := SyncOnce(context.Background(), syncer, &fakeStore{replaceErr: errors.New("disk full")}, nil, nil, time.Now())
 		if !errors.Is(err, ErrStore) {
 			t.Errorf("err = %v, want it to wrap ErrStore", err)
 		}
@@ -313,7 +369,7 @@ func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 	}
 	store := &fakeStore{}
 
-	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
@@ -336,7 +392,7 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	}
 	store := &fakeStore{}
 
-	first, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha1"}, store, time.Now())
+	first, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha1"}, store, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("first SyncOnce: %v", err)
 	}
@@ -348,7 +404,7 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	store.networks = cfg.Networks
 	store.instances = first.Config.Instances
 
-	second, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha2"}, store, time.Now())
+	second, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha2"}, store, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("second SyncOnce: %v", err)
 	}
@@ -379,7 +435,7 @@ func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
 		},
 	}
 
-	_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+	_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
 	if !errors.Is(err, ErrIPAM) {
 		t.Fatalf("err = %v, want it to wrap ErrIPAM", err)
 	}
@@ -422,7 +478,7 @@ func TestSyncOnceIPAMFailures(t *testing.T) {
 			cfg := config.Config{Networks: []config.Network{lan}, Instances: tc.instances}
 			store := &fakeStore{}
 
-			_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+			_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
 			if !errors.Is(err, ErrIPAM) {
 				t.Fatalf("err = %v, want it to wrap ErrIPAM", err)
 			}
@@ -445,7 +501,7 @@ func TestSyncOnceValidationFailure(t *testing.T) {
 
 	t.Run("SyncOnce wraps ErrValidate and skips Replace", func(t *testing.T) {
 		store := &fakeStore{}
-		_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, time.Now())
+		_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
 		if !errors.Is(err, ErrValidate) {
 			t.Fatalf("err = %v, want it to wrap ErrValidate", err)
 		}
@@ -460,7 +516,7 @@ func TestSyncOnceValidationFailure(t *testing.T) {
 	t.Run("POST /sync maps ErrValidate to 502", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 		rec := httptest.NewRecorder()
-		New(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}, nil, nil).ServeHTTP(rec, req)
+		New(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}, nil, nil, nil, nil).ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadGateway {
 			t.Fatalf("POST /sync with invalid config = %d, want %d", rec.Code, http.StatusBadGateway)
 		}
@@ -493,7 +549,7 @@ func (p *concurrencyProbe) Sync(context.Context) (config.Config, string, error) 
 
 func TestServiceSyncSerializesCalls(t *testing.T) {
 	probe := &concurrencyProbe{}
-	svc := NewService(probe, nil, nil, nil) // nil store: exercise the lock without persistence
+	svc := NewService(probe, nil, nil, nil, nil, nil) // nil store: exercise the lock without persistence
 
 	var wg sync.WaitGroup
 	for range 10 {
@@ -515,7 +571,7 @@ func TestServiceSyncSerializesCalls(t *testing.T) {
 func TestSyncOnceNilStoreSkipsReplace(t *testing.T) {
 	cfg := config.Config{Networks: []config.Network{{Name: "dev-lan"}}}
 
-	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, nil, time.Now())
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, nil, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("SyncOnce with nil store: %v", err)
 	}
@@ -531,7 +587,7 @@ func TestStatusNotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, nil, nil, nil).ServeHTTP(rec, req)
+	New(nil, nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /status with nil store = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -542,7 +598,7 @@ func TestStatusNeverSynced(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, &fakeStore{synced: false}, nil, nil).ServeHTTP(rec, req)
+	New(nil, &fakeStore{synced: false}, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /status = %d, want %d", rec.Code, http.StatusOK)
@@ -563,7 +619,7 @@ func TestStatusSynced(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
-	New(nil, store, nil, nil).ServeHTTP(rec, req)
+	New(nil, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	var got statusResponse
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -583,7 +639,7 @@ func TestNetworksAndInstances(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/networks", nil)
 	rec := httptest.NewRecorder()
-	New(nil, store, nil, nil).ServeHTTP(rec, req)
+	New(nil, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /networks = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -597,7 +653,7 @@ func TestNetworksAndInstances(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/instances", nil)
 	rec = httptest.NewRecorder()
-	New(nil, store, nil, nil).ServeHTTP(rec, req)
+	New(nil, store, nil, nil, nil, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /instances = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -617,7 +673,7 @@ func TestNetworksInstancesEmptyReturnArray(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 
-		New(nil, &fakeStore{}, nil, nil).ServeHTTP(rec, req)
+		New(nil, &fakeStore{}, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s = %d, want %d", path, rec.Code, http.StatusOK)
@@ -633,7 +689,7 @@ func TestNetworksInstancesNotConfigured(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 
-		New(nil, nil, nil, nil).ServeHTTP(rec, req)
+		New(nil, nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("GET %s with nil store = %d, want %d", path, rec.Code, http.StatusServiceUnavailable)
@@ -654,7 +710,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		rec := httptest.NewRecorder()
 
-		New(nil, nil, nil, nil).ServeHTTP(rec, req)
+		New(nil, nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, http.StatusMethodNotAllowed)

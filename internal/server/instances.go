@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/seed"
 )
 
@@ -45,7 +46,7 @@ type instanceSeedResponse struct {
 	IncusYAML        string `json:"incus_yaml"`
 }
 
-func handleInstanceSeed(store Store, certs CertSource) http.HandlerFunc {
+func handleInstanceSeed(store Store, certs CertSource, tunnels TunnelSource, creds nodeprovision.CredentialStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
 			http.Error(w, "store not configured", http.StatusServiceUnavailable)
@@ -55,10 +56,14 @@ func handleInstanceSeed(store Store, certs CertSource) http.HandlerFunc {
 			http.Error(w, "cert source not configured (set CLIENT_CERT_PATH)", http.StatusServiceUnavailable)
 			return
 		}
+		if tunnels == nil {
+			http.Error(w, "wireguard not configured (set WIREGUARD_ENDPOINT)", http.StatusServiceUnavailable)
+			return
+		}
 
 		name := r.PathValue("name")
 
-		bundle, err := resolveInstanceSeed(r.Context(), store, certs, name)
+		bundle, err := resolveInstanceSeed(r.Context(), store, certs, tunnels, creds, name)
 		if err != nil {
 			writeResolveSeedError(w, r, name, err)
 			return
@@ -99,11 +104,12 @@ func handleInstanceSeed(store Store, certs CertSource) http.HandlerFunc {
 }
 
 // resolveInstanceSeed looks up name's Instance and its Network from store,
-// fetches the deployment's break-glass cert from certs, and renders the
-// seed bundle. Shared by handleInstanceSeed (which marshals the result to
-// JSON) and #39's future image route (which will seed.Write it to a temp
-// dir for flasher.Run instead).
-func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, name string) (seed.Bundle, error) {
+// fetches the deployment's break-glass cert from certs and its WireGuard
+// tunnel identity/credential from tunnels/creds, and renders the seed
+// bundle. Shared by handleInstanceSeed (which marshals the result to JSON)
+// and handleInstanceImage (which seed.Writes it to a temp dir for
+// flasher.Run instead).
+func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, tunnels TunnelSource, creds nodeprovision.CredentialStore, name string) (seed.Bundle, error) {
 	inst, ok, err := store.Instance(ctx, name)
 	if err != nil {
 		return seed.Bundle{}, fmt.Errorf("query instance %q: %w", name, err)
@@ -128,7 +134,18 @@ func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, nam
 		return seed.Bundle{}, fmt.Errorf("%w: read client cert: %w", errCertUnavailable, err)
 	}
 
-	bundle, err := seed.Render(net, inst, certPEM, seed.Options{})
+	cred, err := nodeprovision.EnsureCredential(ctx, creds, name)
+	if err != nil {
+		return seed.Bundle{}, fmt.Errorf("%w: mint wireguard/bootstrap identity for %q: %w", errSeedInvalid, name, err)
+	}
+	wg := &seed.WireGuard{
+		AppPublicKey:     tunnels.PublicKey(),
+		AppEndpoint:      tunnels.Endpoint(),
+		NodePrivateKey:   cred.WireGuardPrivateKey,
+		BootstrapCertPEM: cred.BootstrapCertPEM,
+	}
+
+	bundle, err := seed.Render(net, inst, certPEM, wg, seed.Options{})
 	if err != nil {
 		return seed.Bundle{}, fmt.Errorf("%w: render seed for instance %q: %w", errSeedInvalid, name, err)
 	}
@@ -160,7 +177,7 @@ func writeResolveSeedError(w http.ResponseWriter, r *http.Request, name string, 
 // resolveInstanceSeed and writeResolveSeedError for the same lookup and
 // error mapping as handleInstanceSeed, then seed.Write + the ImageBuilder
 // (flasher.Run) into throwaway temp paths.
-func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder) http.HandlerFunc {
+func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder, tunnels TunnelSource, creds nodeprovision.CredentialStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
 			http.Error(w, "store not configured", http.StatusServiceUnavailable)
@@ -174,10 +191,14 @@ func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder) ht
 			http.Error(w, "image generation not configured (set BASE_IMAGE_PATH)", http.StatusServiceUnavailable)
 			return
 		}
+		if tunnels == nil {
+			http.Error(w, "wireguard not configured (set WIREGUARD_ENDPOINT)", http.StatusServiceUnavailable)
+			return
+		}
 
 		name := r.PathValue("name")
 
-		bundle, err := resolveInstanceSeed(r.Context(), store, certs, name)
+		bundle, err := resolveInstanceSeed(r.Context(), store, certs, tunnels, creds, name)
 		if err != nil {
 			writeResolveSeedError(w, r, name, err)
 			return

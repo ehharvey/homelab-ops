@@ -26,4 +26,9 @@ COPY --from=flasher /go/bin/flasher-tool /flasher-tool
 # resolving "flasher-tool" from $PATH.
 ENV FLASHER_TOOL_PATH=/flasher-tool
 EXPOSE 8080
+# WireGuard's IANA-assigned UDP port. internal/wireguard terminates the
+# tunnel entirely in-process via a userspace network stack (no host TUN
+# device) — no NET_ADMIN or other added capability needed, just this one
+# plain UDP port.
+EXPOSE 51820/udp
 ENTRYPOINT ["/web"]

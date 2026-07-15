@@ -95,6 +95,11 @@ type Instance struct {
 	NIC          string     `yaml:"nic"`
 	Security     Security   `yaml:"security"`
 	Applications []string   `yaml:"applications"`
+	// TunnelIP is this instance's assigned address on the WireGuard overlay
+	// (internal/wireguard.OverlayCIDR) — always app-assigned
+	// (internal/wireguard.AssignTunnelIPs), never accepted from synced
+	// fleet YAML, unlike StaticIP.
+	TunnelIP netip.Addr `yaml:"-"`
 }
 
 // Config holds every Network and Instance document parsed from a fleet

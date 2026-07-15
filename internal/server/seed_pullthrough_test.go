@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/store"
 )
 
@@ -49,14 +50,14 @@ func staticIPLessFleet() config.Config {
 
 // fetchInstanceSeed drives the real seed handler and returns the decoded
 // response, failing the test on any non-200.
-func fetchInstanceSeed(t *testing.T, st Store, certs CertSource, name string) instanceSeedResponse {
+func fetchInstanceSeed(t *testing.T, st Store, certs CertSource, tunnels TunnelSource, creds nodeprovision.CredentialStore, name string) instanceSeedResponse {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/instances/"+name+"/seed", nil)
 	req.SetPathValue("name", name)
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(st, certs)(rec, req)
+	handleInstanceSeed(st, certs, tunnels, creds)(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /instances/%s/seed = %d, want %d (body %q)", name, rec.Code, http.StatusOK, rec.Body.String())
@@ -78,13 +79,14 @@ func TestSeedPullThroughAssignsIPForStaticIPLessInstance(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	tunnels := &fakeTunnelSource{}
 
 	// Real config.Validate + real ipam.Assign (auto-assign) + real store.Replace.
-	if _, err := SyncOnce(ctx, fakeSyncer{cfg: staticIPLessFleet(), sha: "commit1"}, st, time.Now()); err != nil {
+	if _, err := SyncOnce(ctx, fakeSyncer{cfg: staticIPLessFleet(), sha: "commit1"}, st, tunnels, st, time.Now()); err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
 
-	resp := fetchInstanceSeed(t, st, certs, "devnode1")
+	resp := fetchInstanceSeed(t, st, certs, tunnels, st, "devnode1")
 
 	// The assignment must have landed in the persisted snapshot, in-range.
 	inst, ok, err := st.Instance(ctx, "devnode1")
@@ -123,19 +125,20 @@ func TestSeedPullThroughIPStableAcrossResync(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	tunnels := &fakeTunnelSource{}
 
-	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit1"}, st, time.Now()); err != nil {
+	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit1"}, st, tunnels, st, time.Now()); err != nil {
 		t.Fatalf("first SyncOnce: %v", err)
 	}
-	first := fetchInstanceSeed(t, st, certs, "devnode1").NetworkYAML
+	first := fetchInstanceSeed(t, st, certs, tunnels, st, "devnode1").NetworkYAML
 
 	// Re-syncing the identical fleet must reuse the persisted prior address
 	// (SyncOnce feeds the prior snapshot into ipam.Assign), not hand out a new
 	// one — otherwise network.yaml would silently churn its IP every poll.
-	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit2"}, st, time.Now()); err != nil {
+	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit2"}, st, tunnels, st, time.Now()); err != nil {
 		t.Fatalf("second SyncOnce: %v", err)
 	}
-	second := fetchInstanceSeed(t, st, certs, "devnode1").NetworkYAML
+	second := fetchInstanceSeed(t, st, certs, tunnels, st, "devnode1").NetworkYAML
 
 	if first != second {
 		t.Errorf("network.yaml changed across re-sync:\nfirst:\n%s\nsecond:\n%s", first, second)

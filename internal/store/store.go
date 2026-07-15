@@ -8,12 +8,15 @@ import (
 	"database/sql"
 	"embed"
 	"encoding"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 	_ "modernc.org/sqlite" // pure-Go sqlite driver, registers "sqlite"
 )
 
@@ -106,7 +109,7 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 		}
 		if _, err := tx.ExecContext(ctx, replaceInstanceSQL,
 			i.Name, i.MAC, i.Network, asText(i.StaticIP), i.Disk, i.NIC,
-			boolToInt(i.Security.TPM), boolToInt(i.Security.SecureBoot), string(apps),
+			boolToInt(i.Security.TPM), boolToInt(i.Security.SecureBoot), string(apps), asText(i.TunnelIP),
 		); err != nil {
 			return fmt.Errorf("store instance %q: %w", i.Name, err)
 		}
@@ -231,8 +234,8 @@ func scanNetwork(r row) (config.Network, error) {
 func scanInstance(r row) (config.Instance, error) {
 	var i config.Instance
 	var tpm, secureBoot int
-	var staticIP, apps string
-	if err := r.Scan(&i.Name, &i.MAC, &i.Network, &staticIP, &i.Disk, &i.NIC, &tpm, &secureBoot, &apps); err != nil {
+	var staticIP, apps, tunnelIP string
+	if err := r.Scan(&i.Name, &i.MAC, &i.Network, &staticIP, &i.Disk, &i.NIC, &tpm, &secureBoot, &apps, &tunnelIP); err != nil {
 		return config.Instance{}, err
 	}
 	if err := i.StaticIP.UnmarshalText([]byte(staticIP)); err != nil {
@@ -243,7 +246,90 @@ func scanInstance(r row) (config.Instance, error) {
 	if err := json.Unmarshal([]byte(apps), &i.Applications); err != nil {
 		return config.Instance{}, fmt.Errorf("unmarshal applications for %q: %w", i.Name, err)
 	}
+	if err := i.TunnelIP.UnmarshalText([]byte(tunnelIP)); err != nil {
+		return config.Instance{}, fmt.Errorf("parse tunnel_ip for %q: %w", i.Name, err)
+	}
 	return i, nil
+}
+
+// WireGuardPrivateKey returns the web app's own persisted WireGuard
+// identity, or ok=false if none has been generated yet. Implements
+// internal/wireguard.IdentityStore.
+func (s *Store) WireGuardPrivateKey(ctx context.Context) (wireguard.PrivateKey, bool, error) {
+	var b64 string
+	err := s.db.QueryRowContext(ctx, getWireGuardIdentitySQL).Scan(&b64)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return wireguard.PrivateKey{}, false, nil
+		}
+		return wireguard.PrivateKey{}, false, fmt.Errorf("query wireguard identity: %w", err)
+	}
+	key, err := decodeKey(b64)
+	if err != nil {
+		return wireguard.PrivateKey{}, false, fmt.Errorf("decode wireguard identity: %w", err)
+	}
+	return key, true, nil
+}
+
+// SetWireGuardPrivateKey persists the web app's own WireGuard identity.
+// Implements internal/wireguard.IdentityStore.
+func (s *Store) SetWireGuardPrivateKey(ctx context.Context, key wireguard.PrivateKey) error {
+	if _, err := s.db.ExecContext(ctx, setWireGuardIdentitySQL, key.Base64()); err != nil {
+		return fmt.Errorf("store wireguard identity: %w", err)
+	}
+	return nil
+}
+
+// InstanceCredential returns name's persisted Credential, or ok=false if
+// none has been minted yet. Implements
+// internal/nodeprovision.CredentialStore.
+func (s *Store) InstanceCredential(ctx context.Context, name string) (nodeprovision.Credential, bool, error) {
+	var wgKeyB64, certPEM, keyPEM string
+	err := s.db.QueryRowContext(ctx, getInstanceCredentialSQL, name).Scan(&wgKeyB64, &certPEM, &keyPEM)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nodeprovision.Credential{}, false, nil
+		}
+		return nodeprovision.Credential{}, false, fmt.Errorf("query credential for %q: %w", name, err)
+	}
+	wgKey, err := decodeKey(wgKeyB64)
+	if err != nil {
+		return nodeprovision.Credential{}, false, fmt.Errorf("decode wireguard key for %q: %w", name, err)
+	}
+	return nodeprovision.Credential{
+		WireGuardPrivateKey: wgKey,
+		BootstrapCertPEM:    []byte(certPEM),
+		BootstrapKeyPEM:     []byte(keyPEM),
+	}, true, nil
+}
+
+// SetInstanceCredential persists name's Credential. Implements
+// internal/nodeprovision.CredentialStore.
+func (s *Store) SetInstanceCredential(ctx context.Context, name string, cred nodeprovision.Credential) error {
+	_, err := s.db.ExecContext(ctx, setInstanceCredentialSQL,
+		name, cred.WireGuardPrivateKey.Base64(), string(cred.BootstrapCertPEM), string(cred.BootstrapKeyPEM),
+		time.Now().UTC().Format(timeLayout),
+	)
+	if err != nil {
+		return fmt.Errorf("store credential for %q: %w", name, err)
+	}
+	return nil
+}
+
+// decodeKey parses a base64-encoded 32-byte key, the encoding both
+// wireguard_identity.private_key and instance_credentials.
+// wireguard_private_key use (wireguard.PrivateKey.Base64).
+func decodeKey(b64 string) (wireguard.PrivateKey, error) {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return wireguard.PrivateKey{}, err
+	}
+	if len(raw) != 32 {
+		return wireguard.PrivateKey{}, fmt.Errorf("key has length %d, want 32", len(raw))
+	}
+	var key wireguard.PrivateKey
+	copy(key[:], raw)
+	return key, nil
 }
 
 // asText renders a netip.Addr/netip.Prefix/config.Range to the string stored

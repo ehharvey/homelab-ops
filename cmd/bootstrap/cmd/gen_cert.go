@@ -2,9 +2,6 @@
 package cmd
 
 import (
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"os"
 
@@ -57,7 +54,7 @@ func runGenCert(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("write cert: %w", err)
 	}
 
-	fingerprint, err := fingerprintSHA256(pair.CertPEM)
+	fingerprint, err := cert.Fingerprint(pair.CertPEM)
 	if err != nil {
 		return fmt.Errorf("compute fingerprint: %w", err)
 	}
@@ -68,17 +65,4 @@ func runGenCert(cmd *cobra.Command, _ []string) error {
 	}
 
 	return nil
-}
-
-func fingerprintSHA256(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return "", fmt.Errorf("decode cert PEM")
-	}
-	c, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", fmt.Errorf("parse certificate: %w", err)
-	}
-	sum := sha256.Sum256(c.Raw)
-	return fmt.Sprintf("%x", sum), nil
 }

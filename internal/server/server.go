@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,8 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/configdiff"
 	"github.com/ehharvey/homelab-ops/internal/ipam"
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
 // Syncer pulls fleet config from its source and reports the resulting
@@ -55,6 +59,19 @@ type ImageBuilder interface {
 	Build(ctx context.Context, seedDir, outputPath string, logs io.Writer) error
 }
 
+// TunnelSource exposes the web app's own live in-process WireGuard tunnel
+// (internal/wireguard.Tunnel). nil means WireGuard isn't configured for
+// this deployment (WIREGUARD_ENDPOINT unset) — the seed/image routes then
+// report themselves unconfigured, mirroring CertSource/ImageBuilder's nil
+// convention.
+type TunnelSource interface {
+	PublicKey() wireguard.PublicKey
+	Endpoint() string
+	UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+	Close() error
+}
+
 // Service coordinates config syncs from one syncer into one store. It exists
 // so a manual POST /sync and cmd/web's background poller share a single
 // serialization point: the mutex below means their read-prior-then-replace
@@ -65,15 +82,18 @@ type Service struct {
 	store   Store
 	certs   CertSource
 	builder ImageBuilder
+	tunnels TunnelSource
+	creds   nodeprovision.CredentialStore
 	mu      sync.Mutex
 }
 
 // NewService builds a Service over syncer and store, either of which may be
 // nil (POST /sync and the read endpoints then report themselves unconfigured).
-// certs and builder may also be nil (the seed and image routes then report
-// themselves unconfigured).
-func NewService(syncer Syncer, store Store, certs CertSource, builder ImageBuilder) *Service {
-	return &Service{syncer: syncer, store: store, certs: certs, builder: builder}
+// certs, builder, tunnels, and creds may also be nil (the seed and image
+// routes then report themselves unconfigured; a nil tunnels also skips tunnel
+// peer reconciliation in SyncOnce).
+func NewService(syncer Syncer, store Store, certs CertSource, builder ImageBuilder, tunnels TunnelSource, creds nodeprovision.CredentialStore) *Service {
+	return &Service{syncer: syncer, store: store, certs: certs, builder: builder, tunnels: tunnels, creds: creds}
 }
 
 // Sync runs one serialized sync cycle at time now; see SyncOnce for the
@@ -81,14 +101,15 @@ func NewService(syncer Syncer, store Store, certs CertSource, builder ImageBuild
 func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return SyncOnce(ctx, s.syncer, s.store, now)
+	return SyncOnce(ctx, s.syncer, s.store, s.tunnels, s.creds, now)
 }
 
-// New builds the web app's HTTP handler. syncer, store, certs, and builder may
-// be nil, in which case POST /sync, the read endpoints, the seed route, and the
-// image route report themselves as unconfigured rather than failing /healthz.
-func New(syncer Syncer, store Store, certs CertSource, builder ImageBuilder) http.Handler {
-	return NewFromService(NewService(syncer, store, certs, builder))
+// New builds the web app's HTTP handler. syncer, store, certs, builder,
+// tunnels, and creds may be nil, in which case POST /sync, the read
+// endpoints, the seed route, and the image route report themselves as
+// unconfigured rather than failing /healthz.
+func New(syncer Syncer, store Store, certs CertSource, builder ImageBuilder, tunnels TunnelSource, creds nodeprovision.CredentialStore) http.Handler {
+	return NewFromService(NewService(syncer, store, certs, builder, tunnels, creds))
 }
 
 // NewFromService builds the handler around an existing Service, so a caller
@@ -101,8 +122,8 @@ func NewFromService(svc *Service) http.Handler {
 	mux.HandleFunc("GET /status", handleStatus(svc.store))
 	mux.HandleFunc("GET /networks", handleNetworks(svc.store))
 	mux.HandleFunc("GET /instances", handleInstances(svc.store))
-	mux.HandleFunc("POST /instances/{name}/seed", handleInstanceSeed(svc.store, svc.certs))
-	mux.HandleFunc("GET /instances/{name}/image", handleInstanceImage(svc.store, svc.certs, svc.builder))
+	mux.HandleFunc("POST /instances/{name}/seed", handleInstanceSeed(svc.store, svc.certs, svc.tunnels, svc.creds))
+	mux.HandleFunc("GET /instances/{name}/image", handleInstanceImage(svc.store, svc.certs, svc.builder, svc.tunnels, svc.creds))
 	return mux
 }
 
@@ -150,10 +171,11 @@ func newDiffCounts(d configdiff.Result) diffCounts {
 // map to 502) versus a persistence failure (ours, maps to 500). Callers use
 // errors.Is to tell them apart.
 var (
-	ErrSync     = errors.New("sync failed")
-	ErrValidate = errors.New("config validation failed")
-	ErrIPAM     = errors.New("ip assignment failed")
-	ErrStore    = errors.New("store failed")
+	ErrSync      = errors.New("sync failed")
+	ErrValidate  = errors.New("config validation failed")
+	ErrIPAM      = errors.New("ip assignment failed")
+	ErrWireGuard = errors.New("wireguard tunnel ip assignment failed")
+	ErrStore     = errors.New("store failed")
 )
 
 // SyncResult is the outcome of one successful SyncOnce: the synced commit,
@@ -167,18 +189,31 @@ type SyncResult struct {
 // SyncOnce runs one config-sync cycle, shared by POST /sync and cmd/web's
 // background poller so both surface the same diff warnings and IP
 // assignments: pull from syncer, semantically validate the parsed config
-// (config.Validate), assign/validate static_ips against the store's prior
-// snapshot (so auto-assigned addresses are stable across re-syncs — see
-// ipam.Assign), diff the result against that same prior snapshot (logging
-// warnings — the only place warnings are surfaced today, per Roadmap Phase 1),
-// then replace the stored snapshot at time now. A failure reading prior state
-// is logged and treated as no baseline — never failing the sync, since the
-// diff is informational and a missing baseline only means auto-assignment
-// can't reuse a prior address this one time. A nil store skips validation,
-// IPAM, the diff, and the replace (sync-only mode). Errors wrap ErrSync
+// (config.Validate), assign/validate static_ips (ipam.Assign) and WireGuard
+// tunnel IPs (wireguard.AssignTunnelIPs) against the store's prior
+// snapshot (so auto-assigned addresses are stable across re-syncs), diff
+// the result against that same prior snapshot (logging warnings — the only
+// place warnings are surfaced today, per Roadmap Phase 1), then replace the
+// stored snapshot at time now. A failure reading prior state is logged and
+// treated as no baseline — never failing the sync, since the diff is
+// informational and a missing baseline only means auto-assignment can't
+// reuse a prior address this one time. A nil store skips validation, IPAM,
+// the diff, and the replace (sync-only mode). Errors wrap ErrSync
 // (pull/parse), ErrValidate (gateway/range/static_ip semantics), ErrIPAM
-// (duplicate/out-of-range/exhausted static_ip), or ErrStore (persistence).
-func SyncOnce(ctx context.Context, syncer Syncer, store Store, now time.Time) (SyncResult, error) {
+// (duplicate/out-of-range/exhausted static_ip), ErrWireGuard (tunnel IP
+// pool exhausted), or ErrStore (persistence).
+//
+// When tunnels is non-nil, every synced instance is also reconciled onto
+// the web app's live WireGuard peer table after a successful Replace —
+// minting each instance's nodeprovision.Credential on first sight and
+// registering its public key/tunnel IP as a trusted peer, so a node's
+// tunnel can come up the moment it boots rather than needing a live
+// enrollment step. This is best-effort and logged, not fatal: it runs
+// after the snapshot is already durably stored, matching the existing
+// diff-and-warn posture rather than failing an otherwise-successful sync.
+// Peer removal for instances no longer present is not done here — see
+// docs/Out of Scope.md's existing cert-rotation/revocation deferral.
+func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSource, creds nodeprovision.CredentialStore, now time.Time) (SyncResult, error) {
 	cfg, sha, err := syncer.Sync(ctx)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("%w: %w", ErrSync, err)
@@ -204,6 +239,10 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, now time.Time) (S
 			return SyncResult{}, fmt.Errorf("%w: %w", ErrIPAM, err)
 		}
 
+		if err := wireguard.AssignTunnelIPs(cfg.Instances, oldCfg.Instances); err != nil {
+			return SyncResult{}, fmt.Errorf("%w: %w", ErrWireGuard, err)
+		}
+
 		if firstSync {
 			log.Printf("configdiff: first sync, %d networks / %d instances baseline", len(cfg.Networks), len(cfg.Instances))
 		} else {
@@ -219,9 +258,30 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, now time.Time) (S
 		if err := store.Replace(ctx, cfg, sha, now); err != nil {
 			return SyncResult{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}
+
+		if tunnels != nil {
+			reconcileTunnelPeers(ctx, tunnels, creds, cfg.Instances)
+		}
 	}
 
 	return SyncResult{Commit: sha, Config: cfg, Diff: diff}, nil
+}
+
+// reconcileTunnelPeers registers every instance in instances as a trusted
+// peer on tunnels, minting each one's nodeprovision.Credential on first
+// sight. Best-effort/logged — see SyncOnce's doc comment.
+func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) {
+	for _, inst := range instances {
+		cred, err := nodeprovision.EnsureCredential(ctx, creds, inst.Name)
+		if err != nil {
+			log.Printf("wireguard: mint credential for %q: %v", inst.Name, err)
+			continue
+		}
+		pub := wireguard.PublicKeyOf(cred.WireGuardPrivateKey)
+		if err := tunnels.UpsertPeer(pub, inst.TunnelIP); err != nil {
+			log.Printf("wireguard: register peer for %q: %v", inst.Name, err)
+		}
+	}
 }
 
 func handleSync(svc *Service) http.HandlerFunc {

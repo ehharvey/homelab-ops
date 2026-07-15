@@ -12,6 +12,7 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/cert"
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/seed"
 )
 
@@ -41,6 +42,7 @@ func sampleSeedInstance() config.Instance {
 		Disk:         "single",
 		NIC:          "single",
 		Applications: []string{"incus"},
+		TunnelIP:     addr("10.100.0.5"),
 	}
 }
 
@@ -63,12 +65,23 @@ func TestInstanceSeedSuccess(t *testing.T) {
 		instanceByName: map[string]config.Instance{inst.Name: inst},
 	}
 	certs := fakeCertSource{pem: certPEM}
+	tunnels := &fakeTunnelSource{endpoint: "203.0.113.1:51820"}
+
+	// Pre-seed the credential the handler will mint on first sight, so the
+	// "want" bundle below can be rendered with the exact same WireGuard
+	// keypair/cert the handler actually used instead of a fresh, unpredictable
+	// one — EnsureCredential never regenerates once a credential exists.
+	creds := &fakeCredentialStore{}
+	cred, err := nodeprovision.EnsureCredential(context.Background(), creds, inst.Name)
+	if err != nil {
+		t.Fatalf("EnsureCredential: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/instances/devnode0/seed", nil)
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, tunnels, creds)(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /instances/devnode0/seed = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
@@ -79,7 +92,13 @@ func TestInstanceSeedSuccess(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	wantBundle, err := seed.Render(net, inst, certPEM, seed.Options{})
+	wg := &seed.WireGuard{
+		AppPublicKey:     tunnels.PublicKey(),
+		AppEndpoint:      tunnels.Endpoint(),
+		NodePrivateKey:   cred.WireGuardPrivateKey,
+		BootstrapCertPEM: cred.BootstrapCertPEM,
+	}
+	wantBundle, err := seed.Render(net, inst, certPEM, wg, seed.Options{})
 	if err != nil {
 		t.Fatalf("seed.Render: %v", err)
 	}
@@ -123,7 +142,7 @@ func TestInstanceSeedUnknownInstance404s(t *testing.T) {
 	req.SetPathValue("name", "does-not-exist")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("POST /instances/does-not-exist/seed = %d, want %d", rec.Code, http.StatusNotFound)
@@ -142,7 +161,7 @@ func TestInstanceSeedMissingNetwork422s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("POST /instances/devnode0/seed (missing network) = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
@@ -164,7 +183,7 @@ func TestInstanceSeedRenderRejection422s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("POST /instances/devnode0/seed (unsupported disk) = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
@@ -179,7 +198,7 @@ func TestInstanceSeedInstanceStoreError500s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /instances/devnode0/seed (instance store error) = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -198,7 +217,7 @@ func TestInstanceSeedNetworkStoreError500s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /instances/devnode0/seed (network store error) = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -218,7 +237,7 @@ func TestInstanceSeedCertReadError503s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, certs)(rec, req)
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /instances/devnode0/seed (cert read error) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -232,7 +251,7 @@ func TestInstanceSeedStoreUnconfigured503s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(nil, certs)(rec, req)
+	handleInstanceSeed(nil, certs, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /instances/devnode0/seed (nil store) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -246,7 +265,7 @@ func TestInstanceSeedCertSourceUnconfigured503s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceSeed(store, nil)(rec, req)
+	handleInstanceSeed(store, nil, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /instances/devnode0/seed (nil cert source) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
