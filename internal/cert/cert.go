@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -74,6 +75,23 @@ func Generate(opts Options) (*Pair, error) {
 		CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 	}, nil
+}
+
+// Fingerprint computes certPEM's SHA-256 fingerprint over the raw DER
+// certificate bytes, hex-encoded — the same value Incus's own `incus
+// config trust` commands report, so it can be used directly with
+// DELETE /1.0/certificates/<fingerprint>.
+func Fingerprint(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("decode cert PEM")
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse certificate: %w", err)
+	}
+	sum := sha256.Sum256(c.Raw)
+	return fmt.Sprintf("%x", sum), nil
 }
 
 // Write persists the pair to <dir>/client.crt and <dir>/client.key. The key

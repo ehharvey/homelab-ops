@@ -49,10 +49,10 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 > agent instead of the always-on app driving Incus directly, the WireGuard
 > vs. Tailscale/NetBird seed-hook comparison).
 
-- [ ] Seed WireGuard connectivity between nodes and the web app: web app
+- [x] Seed WireGuard connectivity between nodes and the web app: web app
   generates its own identity + a per-node keypair at seed-render time,
   embedded into `network.yaml` (no live enrollment step, unlike
-  Tailscale/NetBird); resolves `docs/Decisions.md` §11 — see #91
+  Tailscale/NetBird); resolves `docs/Decisions.md` §11: DONE; see #91
 - [ ] Per-node app-manager agent, leader/follower HA: one agent instance
   per node, electing a single fleet-wide leader via an ETag-CAS lease
   stored in Incus itself (no new dependency) — the leader reconciles a new

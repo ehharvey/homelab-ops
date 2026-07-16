@@ -58,7 +58,7 @@ func TestInstanceImageSuccess(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceImage(store, certs, builder)(rec, req)
+	handleInstanceImage(store, certs, builder, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /instances/devnode0/image = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
@@ -94,7 +94,7 @@ func TestInstanceImageUnknownInstance404s(t *testing.T) {
 	req.SetPathValue("name", "does-not-exist")
 	rec := httptest.NewRecorder()
 
-	handleInstanceImage(store, certs, &fakeImageBuilder{})(rec, req)
+	handleInstanceImage(store, certs, &fakeImageBuilder{}, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET /instances/does-not-exist/image = %d, want %d", rec.Code, http.StatusNotFound)
@@ -110,7 +110,7 @@ func TestInstanceImageBuildError502s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceImage(store, certs, builder)(rec, req)
+	handleInstanceImage(store, certs, builder, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("GET /instances/devnode0/image (build error) = %d, want %d", rec.Code, http.StatusBadGateway)
@@ -128,7 +128,7 @@ func TestInstanceImageStoreUnconfigured503s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceImage(nil, certs, &fakeImageBuilder{})(rec, req)
+	handleInstanceImage(nil, certs, &fakeImageBuilder{}, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /instances/devnode0/image (nil store) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -140,7 +140,7 @@ func TestInstanceImageCertSourceUnconfigured503s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceImage(&fakeStore{}, nil, &fakeImageBuilder{})(rec, req)
+	handleInstanceImage(&fakeStore{}, nil, &fakeImageBuilder{}, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /instances/devnode0/image (nil cert source) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -154,9 +154,23 @@ func TestInstanceImageBuilderUnconfigured503s(t *testing.T) {
 	req.SetPathValue("name", "devnode0")
 	rec := httptest.NewRecorder()
 
-	handleInstanceImage(&fakeStore{}, certs, nil)(rec, req)
+	handleInstanceImage(&fakeStore{}, certs, nil, &fakeTunnelSource{}, &fakeCredentialStore{})(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /instances/devnode0/image (nil builder) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestInstanceImageTunnelUnconfigured503s(t *testing.T) {
+	certs := fakeCertSource{pem: sampleClientCertPEM(t)}
+
+	req := httptest.NewRequest(http.MethodGet, "/instances/devnode0/image", nil)
+	req.SetPathValue("name", "devnode0")
+	rec := httptest.NewRecorder()
+
+	handleInstanceImage(&fakeStore{}, certs, &fakeImageBuilder{}, nil, nil)(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /instances/devnode0/image (nil tunnel source) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }

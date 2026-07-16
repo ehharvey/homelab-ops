@@ -18,8 +18,8 @@ VALUES (?, ?, ?, ?, ?)`
 
 // -- name: ReplaceInstance :exec
 const replaceInstanceSQL = `
-INSERT OR REPLACE INTO instances (name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT OR REPLACE INTO instances (name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // -- name: UpsertSyncState :exec
 const upsertSyncStateSQL = `
@@ -39,8 +39,35 @@ SELECT name, cidr, gateway, dhcp_excluded_range, dns FROM networks WHERE name = 
 
 // -- name: ListInstances :many
 const listInstancesSQL = `
-SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications FROM instances ORDER BY name`
+SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances ORDER BY name`
 
 // -- name: GetInstance :one
 const getInstanceSQL = `
-SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications FROM instances WHERE name = ?`
+SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances WHERE name = ?`
+
+// -- name: GetWireGuardIdentity :one
+const getWireGuardIdentitySQL = `SELECT private_key FROM wireguard_identity WHERE id = 1`
+
+// -- name: SetWireGuardIdentity :exec
+const setWireGuardIdentitySQL = `
+INSERT INTO wireguard_identity (id, private_key) VALUES (1, ?)
+ON CONFLICT (id) DO UPDATE SET private_key = excluded.private_key`
+
+// -- name: GetInstanceCredential :one
+//
+//nolint:gosec // G101: SQL column names (wireguard_private_key/bootstrap_key_pem), not an embedded credential
+const getInstanceCredentialSQL = `
+SELECT wireguard_private_key, bootstrap_cert_pem, bootstrap_key_pem FROM instance_credentials WHERE instance_name = ?`
+
+// -- name: SetInstanceCredential :exec
+// ON CONFLICT DO NOTHING, not OR REPLACE: nodeprovision.EnsureCredential
+// relies on this only ever inserting once per instance_name, then
+// re-reading, to stay correct when a manual seed/image fetch races the
+// background sync poller's reconcile pass for the same brand-new
+// instance — see its doc comment.
+//
+//nolint:gosec // G101: SQL column names (wireguard_private_key/bootstrap_key_pem), not an embedded credential
+const setInstanceCredentialSQL = `
+INSERT INTO instance_credentials (instance_name, wireguard_private_key, bootstrap_cert_pem, bootstrap_key_pem, created_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (instance_name) DO NOTHING`

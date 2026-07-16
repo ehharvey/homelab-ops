@@ -13,6 +13,7 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/cert"
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
 func sampleClientCertPEM(t *testing.T) []byte {
@@ -50,7 +51,7 @@ func sampleInstance() config.Instance {
 }
 
 func TestRenderHappyPath(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestRenderDHCP(t *testing.T) {
 	inst := sampleInstance()
 	inst.StaticIP = netip.Addr{}
 
-	b, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{})
+	b, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestRenderRejectsStaticIPWithoutGateway(t *testing.T) {
 	net := sampleNetwork()
 	net.Gateway = netip.Addr{}
 
-	if _, err := Render(net, sampleInstance(), sampleClientCertPEM(t), Options{}); err == nil {
+	if _, err := Render(net, sampleInstance(), sampleClientCertPEM(t), nil, Options{}); err == nil {
 		t.Fatal("expected error for static_ip without a network gateway, got nil")
 	}
 }
@@ -125,7 +126,7 @@ func TestRenderRejectsNetworkMismatch(t *testing.T) {
 	inst := sampleInstance()
 	inst.Network = "other-lan"
 
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), nil, Options{}); err == nil {
 		t.Fatalf("expected error for mismatched network, got nil")
 	}
 }
@@ -134,7 +135,7 @@ func TestRenderRejectsUnsupportedDisk(t *testing.T) {
 	inst := sampleInstance()
 	inst.Disk = "raid1"
 
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), nil, Options{}); err == nil {
 		t.Fatalf("expected error for unsupported disk, got nil")
 	}
 }
@@ -143,7 +144,7 @@ func TestRenderRejectsUnsupportedNIC(t *testing.T) {
 	inst := sampleInstance()
 	inst.NIC = "bond0"
 
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), nil, Options{}); err == nil {
 		t.Fatalf("expected error for unsupported nic, got nil")
 	}
 }
@@ -152,13 +153,13 @@ func TestRenderRejectsUnsupportedApplication(t *testing.T) {
 	inst := sampleInstance()
 	inst.Applications = []string{"incus", "operations-center"}
 
-	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), nil, Options{}); err == nil {
 		t.Fatalf("expected error for unsupported application, got nil")
 	}
 }
 
 func TestRenderOptionsForwarded(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{ForceInstall: true, ForceReboot: true})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{ForceInstall: true, ForceReboot: true})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestRenderOptionsForwarded(t *testing.T) {
 func TestRenderIncusPreseedTrustsClientCert(t *testing.T) {
 	certPEM := sampleClientCertPEM(t)
 
-	b, err := Render(sampleNetwork(), sampleInstance(), certPEM, Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), certPEM, nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -206,14 +207,93 @@ func TestRenderIncusPreseedTrustsClientCert(t *testing.T) {
 	}
 }
 
+func TestRenderWithWireGuard(t *testing.T) {
+	inst := sampleInstance()
+	inst.TunnelIP = netip.MustParseAddr("10.100.0.5")
+
+	_, appPub, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair: %v", err)
+	}
+	nodePriv, _, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair: %v", err)
+	}
+	bootstrapCertPEM := sampleClientCertPEM(t)
+
+	wg := &WireGuard{
+		AppPublicKey:     appPub,
+		AppEndpoint:      "203.0.113.1:51820",
+		NodePrivateKey:   nodePriv,
+		BootstrapCertPEM: bootstrapCertPEM,
+	}
+
+	b, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), wg, Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	if len(b.Network.Wireguard) != 1 {
+		t.Fatalf("len(Network.Wireguard) = %d, want 1", len(b.Network.Wireguard))
+	}
+	wgIface := b.Network.Wireguard[0]
+	if len(wgIface.Addresses) != 1 || wgIface.Addresses[0] != "10.100.0.5/32" {
+		t.Errorf("Wireguard[0].Addresses = %v, want [10.100.0.5/32]", wgIface.Addresses)
+	}
+	if wgIface.PrivateKey != nodePriv.Base64() {
+		t.Errorf("Wireguard[0].PrivateKey = %q, want %q", wgIface.PrivateKey, nodePriv.Base64())
+	}
+	if len(wgIface.Peers) != 1 {
+		t.Fatalf("len(Wireguard[0].Peers) = %d, want 1", len(wgIface.Peers))
+	}
+	peer := wgIface.Peers[0]
+	if peer.PublicKey != appPub.Base64() {
+		t.Errorf("Peers[0].PublicKey = %q, want %q", peer.PublicKey, appPub.Base64())
+	}
+	if peer.Endpoint != "203.0.113.1:51820" {
+		t.Errorf("Peers[0].Endpoint = %q, want %q", peer.Endpoint, "203.0.113.1:51820")
+	}
+	if len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0] != wireguard.WebAppAddr.String()+"/32" {
+		t.Errorf("Peers[0].AllowedIPs = %v, want [%s/32]", peer.AllowedIPs, wireguard.WebAppAddr)
+	}
+	if peer.PersistentKeepalive != wireGuardPersistentKeepaliveSeconds {
+		t.Errorf("Peers[0].PersistentKeepalive = %d, want %d", peer.PersistentKeepalive, wireGuardPersistentKeepaliveSeconds)
+	}
+
+	certs := b.Incus.Preseed.Certificates
+	if len(certs) != 2 {
+		t.Fatalf("len(Preseed.Certificates) = %d, want 2 (break-glass + bootstrap)", len(certs))
+	}
+	if certs[1].Name != "node0-bootstrap" {
+		t.Errorf("Certificates[1].Name = %q, want %q", certs[1].Name, "node0-bootstrap")
+	}
+}
+
+func TestRenderWithWireGuardRequiresTunnelIP(t *testing.T) {
+	_, appPub, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair: %v", err)
+	}
+	nodePriv, _, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair: %v", err)
+	}
+	wg := &WireGuard{AppPublicKey: appPub, AppEndpoint: "203.0.113.1:51820", NodePrivateKey: nodePriv}
+
+	// sampleInstance has no TunnelIP set.
+	if _, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), wg, Options{}); err == nil {
+		t.Fatal("expected error for wireguard requested without a tunnel_ip, got nil")
+	}
+}
+
 func TestRenderRejectsInvalidCertPEM(t *testing.T) {
-	if _, err := Render(sampleNetwork(), sampleInstance(), []byte("not a cert"), Options{}); err == nil {
+	if _, err := Render(sampleNetwork(), sampleInstance(), []byte("not a cert"), nil, Options{}); err == nil {
 		t.Fatal("expected error for invalid client cert PEM, got nil")
 	}
 }
 
 func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -260,7 +340,7 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 }
 
 func TestWriteCreatesAllFourFiles(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -284,7 +364,7 @@ func TestWriteCreatesAllFourFiles(t *testing.T) {
 }
 
 func TestWriteRefusesOverwriteWithoutForce(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -299,7 +379,7 @@ func TestWriteRefusesOverwriteWithoutForce(t *testing.T) {
 }
 
 func TestWriteOverwritesWithForce(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), Options{})
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}

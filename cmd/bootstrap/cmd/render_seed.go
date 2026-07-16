@@ -78,7 +78,11 @@ func runRenderSeed(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("read client cert (run gen-cert first, or pass --cert): %w", err)
 	}
 
-	bundle, err := seed.Render(cfg.Networks[0], cfg.Instances[0], certPEM, seed.Options{
+	// No WireGuard config for the bootstrap CLI's node #0: the web app
+	// doesn't exist yet at bootstrap time to hold the other end of the
+	// tunnel (see docs/Architecture.md's Flow A vs. Flow B) — WireGuard is
+	// steady-state-provisioning-only, wired up by the web app itself.
+	bundle, err := seed.Render(cfg.Networks[0], cfg.Instances[0], certPEM, nil, seed.Options{
 		ForceInstall: renderSeedForceInstall,
 		ForceReboot:  renderSeedForceReboot,
 	})

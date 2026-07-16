@@ -3,10 +3,16 @@ services:
     build: .
     ports:
       - "8080:8080"
+      - "51820:51820/udp"
     environment:
       - PORT=8080
       - CONFIG_REPO_URL=git://config-repo/fleet.git
       - CONFIG_REPO_REF=main
+      - WIREGUARD_PORT=51820
+      # WIREGUARD_ENDPOINT deliberately unset here: this dev stack has no
+      # real node to tunnel to, so the tunnel stays unconfigured (see
+      # newTunnelSource) — scripts/validate-issue-91.sh exercises it
+      # against a real booted node instead.
     depends_on:
       - config-repo
 
