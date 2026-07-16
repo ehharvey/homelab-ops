@@ -273,7 +273,8 @@ func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP string, lis
 		// tunnel + client cert, not server-cert verification). This
 		// binary is test-only scaffolding for scripts/validate-issue-91.sh
 		// (see package doc) — never built into the production web app.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model // codeql[go/disabled-certificate-check] test-only harness, see comment above
+		// codeql[go/disabled-certificate-check]: test-only harness, see comment above
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model
 	}}
 
 	var lastErr error

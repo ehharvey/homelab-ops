@@ -90,7 +90,8 @@ func newHTTPClient(dial DialFunc, certPEM, keyPEM []byte) (*http.Client, error) 
 				// protect by pinning. Revisit if #92's agent-deployment
 				// flow ends up making repeated calls to the same node over
 				// time, where pinning would actually add protection.
-				InsecureSkipVerify: true, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model // codeql[go/disabled-certificate-check] trust comes from the WireGuard tunnel + client cert, not server-cert chain verification; see comment above
+				// codeql[go/disabled-certificate-check]: trust comes from the WireGuard tunnel + client cert, not server-cert chain verification; see comment above
+				InsecureSkipVerify: true, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model
 			},
 		},
 	}, nil
