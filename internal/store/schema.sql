@@ -30,5 +30,29 @@ CREATE TABLE IF NOT EXISTS instances (
     nic          TEXT NOT NULL,
     tpm          INTEGER NOT NULL, -- 0/1
     secure_boot  INTEGER NOT NULL, -- 0/1
-    applications TEXT NOT NULL -- JSON array of strings
+    applications TEXT NOT NULL, -- JSON array of strings
+    tunnel_ip    TEXT NOT NULL DEFAULT '' -- WireGuard overlay address, app-assigned (internal/wireguard.AssignTunnelIPs)
+);
+
+-- wireguard_identity holds the web app's own long-lived WireGuard private
+-- key (internal/wireguard.LoadOrGenerateIdentity): generated once on first
+-- run, persisted thereafter. Single row, like sync_state.
+CREATE TABLE IF NOT EXISTS wireguard_identity (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    private_key TEXT NOT NULL -- base64
+);
+
+-- instance_credentials holds each instance's minted-once WireGuard keypair
+-- and one-time Incus bootstrap client cert (internal/nodeprovision.
+-- EnsureCredential/Credential). Deliberately separate from `instances`:
+-- that table is fully deleted and reinserted on every sync (see Replace),
+-- and its contents are served directly by the unauthenticated
+-- GET /instances route — this table must survive sync churn and must never
+-- be reachable through that listing path.
+CREATE TABLE IF NOT EXISTS instance_credentials (
+    instance_name         TEXT NOT NULL PRIMARY KEY,
+    wireguard_private_key TEXT NOT NULL, -- base64
+    bootstrap_cert_pem    TEXT NOT NULL,
+    bootstrap_key_pem     TEXT NOT NULL,
+    created_at            TEXT NOT NULL -- RFC3339 UTC
 );

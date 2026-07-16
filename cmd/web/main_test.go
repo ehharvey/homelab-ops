@@ -32,7 +32,7 @@ func TestPollSyncRunsAtStartup(t *testing.T) {
 	defer st.Close() //nolint:errcheck // test cleanup
 
 	cs := &countingSyncer{}
-	svc := server.NewService(cs, st, nil, nil)
+	svc := server.NewService(cs, st, nil, nil, nil, nil)
 
 	// A long interval means only the startup sync can fire within the test
 	// window, so observing one sync proves pollSync doesn't wait for the
@@ -89,5 +89,41 @@ func TestNewCertSourceUnsetReturnsNil(t *testing.T) {
 
 	if cs := newCertSource(); cs != nil {
 		t.Errorf("newCertSource with CLIENT_CERT_PATH unset = %v, want nil", cs)
+	}
+}
+
+func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
+	t.Setenv("WIREGUARD_PORT", "0") // let the OS pick a free port
+
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck // test cleanup
+
+	ts, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820")
+	if err != nil {
+		t.Fatalf("newTunnelSource: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("newTunnelSource = nil, want non-nil")
+	}
+	defer ts.Close() //nolint:errcheck // test cleanup
+
+	if ts.Endpoint() != "203.0.113.1:51820" {
+		t.Errorf("Endpoint() = %q, want %q", ts.Endpoint(), "203.0.113.1:51820")
+	}
+
+	// A second call must reuse the persisted identity rather than minting a
+	// new one, so a restarted process keeps the same public key every node's
+	// seed already trusts.
+	ts2, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820")
+	if err != nil {
+		t.Fatalf("second newTunnelSource: %v", err)
+	}
+	defer ts2.Close() //nolint:errcheck // test cleanup
+
+	if ts.PublicKey() != ts2.PublicKey() {
+		t.Errorf("PublicKey() changed across newTunnelSource calls: %s != %s", ts.PublicKey(), ts2.PublicKey())
 	}
 }

@@ -152,7 +152,16 @@ We want to avoid putting Incus nodes on the public internet, so nodes need some 
 3. Both web app and nodes connect via WireGuard.
 
 ### Answer
-Not yet decided — revisit when Phase 2/3 needs nodes to talk back to the app.
+**Resolved 2026-07 by #91: option 3, WireGuard.** The web app generates and
+persists its own WireGuard identity on first run; `internal/seed.Render`
+mints a fresh per-node keypair at seed-render time and embeds it (plus a
+peer entry pointing at the web app) into that node's `network.yaml` — no
+live enrollment step, unlike option 2 (Tailscale), whose seed-time
+configuration hook doesn't exist yet (§8's addendum). Option 1 (a polling
+management container) is superseded rather than built — see § Web app's
+WireGuard tunnel module in `Architecture.md` for the resulting mechanism,
+and the "Future direction" subsection immediately below for what this
+tunnel unlocks next.
 
 
 

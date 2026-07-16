@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/flasher"
 	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
 func main() {
@@ -42,9 +46,24 @@ func run() error {
 	}
 	defer st.Close() //nolint:errcheck // best-effort cleanup on shutdown
 
+	// Unlike the other optional sources (cert/image builder, which degrade to
+	// "route reports itself unconfigured"), a *set* WIREGUARD_ENDPOINT
+	// expresses explicit operator intent to run the tunnel — failing to
+	// start it is fatal, not silently degraded. An unset WIREGUARD_ENDPOINT
+	// leaves tunnelSrc as a true nil server.TunnelSource.
+	var tunnelSrc server.TunnelSource
+	if endpoint := os.Getenv("WIREGUARD_ENDPOINT"); endpoint != "" {
+		ts, err := newTunnelSource(ctx, st, endpoint)
+		if err != nil {
+			return fmt.Errorf("start wireguard tunnel: %w", err)
+		}
+		tunnelSrc = ts
+		defer tunnelSrc.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	}
+
 	// One Service shared between the HTTP handler and the background poller so
 	// their syncs serialize through a single lock.
-	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder())
+	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder(), tunnelSrc, st)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -201,3 +220,65 @@ func (b flasherBuilder) Build(ctx context.Context, seedDir, outputPath string, l
 		Stderr:      logs,
 	})
 }
+
+// newTunnelSource builds the web app's in-process WireGuard tunnel, bound
+// to endpoint (the operator-supplied host:port nodes dial to reach this
+// deployment — see run()'s WIREGUARD_ENDPOINT check, which only calls this
+// when it's set). Always returns either a non-nil server.TunnelSource or a
+// non-nil error — unlike newCertSource/newImageBuilder's nil-means-
+// unconfigured convention, "unconfigured" is decided by the caller before
+// this runs, since a *set* WIREGUARD_ENDPOINT that then fails to start is
+// fatal (see run()'s comment). The identity persists in st (internal/
+// wireguard.LoadOrGenerateIdentity), so it survives restarts without a new
+// file-based deployment config surface. WIREGUARD_PORT overrides the UDP
+// listen port (default 51820, WireGuard's IANA-assigned port).
+func newTunnelSource(ctx context.Context, st *store.Store, endpoint string) (server.TunnelSource, error) {
+	priv, err := wireguard.LoadOrGenerateIdentity(ctx, st)
+	if err != nil {
+		return nil, fmt.Errorf("load wireguard identity: %w", err)
+	}
+	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: wireguardPort(), LocalAddr: wireguard.WebAppAddr})
+	if err != nil {
+		return nil, fmt.Errorf("start tunnel: %w", err)
+	}
+	return wireguardTunnelSource{tun: tun, endpoint: endpoint}, nil
+}
+
+// wireguardPort reports the configured WireGuard UDP listen port from
+// WIREGUARD_PORT, or 51820 (WireGuard's IANA-assigned default) if unset or
+// invalid.
+func wireguardPort() int {
+	raw := os.Getenv("WIREGUARD_PORT")
+	if raw == "" {
+		return 51820
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		//nolint:gosec // G706: raw is an operator-supplied env var (not untrusted input) and %q quotes it
+		log.Printf("invalid WIREGUARD_PORT %q, using default 51820: %v", raw, err)
+		return 51820
+	}
+	return port
+}
+
+// wireguardTunnelSource implements server.TunnelSource over a live
+// *wireguard.Tunnel plus the operator-supplied endpoint nodes dial to
+// reach it (the tunnel itself has no way to learn its own externally
+// reachable address, e.g. behind NAT).
+type wireguardTunnelSource struct {
+	tun      *wireguard.Tunnel
+	endpoint string
+}
+
+func (t wireguardTunnelSource) PublicKey() wireguard.PublicKey { return t.tun.PublicKey() }
+func (t wireguardTunnelSource) Endpoint() string               { return t.endpoint }
+
+func (t wireguardTunnelSource) UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error {
+	return t.tun.UpsertPeer(pub, tunnelIP)
+}
+
+func (t wireguardTunnelSource) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return t.tun.DialContext(ctx, network, address)
+}
+
+func (t wireguardTunnelSource) Close() error { return t.tun.Close() }

@@ -19,6 +19,7 @@ import (
 	incusseed "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api/seed"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
 // Options configures behavior that has no equivalent in the fleet
@@ -27,6 +28,30 @@ import (
 type Options struct {
 	ForceInstall bool
 	ForceReboot  bool
+}
+
+// wireGuardPersistentKeepaliveSeconds keeps a node's NAT mapping to the web
+// app alive (docs/Roadmap.md #91's NAT-survival requirement) — set on the
+// node's peer entry for the web app, since the node is the side expected to
+// sit behind NAT, not the other way around.
+const wireGuardPersistentKeepaliveSeconds = 25
+
+// WireGuard carries every input Render needs to embed WireGuard tunnel
+// config into an instance's seed: the web app's own live identity/endpoint
+// (constant across a deployment) and this instance's persisted per-node
+// credential (unique per instance, from nodeprovision.EnsureCredential).
+// Passing a nil *WireGuard to Render means this instance's seed carries no
+// WireGuard config at all — e.g. the bootstrap CLI's render-seed, used for
+// node #0 before any web app (and therefore any tunnel) exists yet.
+type WireGuard struct {
+	AppPublicKey   wireguard.PublicKey
+	AppEndpoint    string // host:port a node dials to reach the web app
+	NodePrivateKey wireguard.PrivateKey
+	// BootstrapCertPEM is preseeded as a second trusted Incus client cert,
+	// alongside clientCertPEM, so the web app can authenticate over the
+	// tunnel with a credential whose private key it actually holds (unlike
+	// the break-glass one — see docs/Decisions.md §4).
+	BootstrapCertPEM []byte
 }
 
 // Bundle holds the four rendered seed documents.
@@ -48,8 +73,9 @@ var supportedApplications = map[string]bool{"incus": true}
 // PEM-encoded bootstrap client certificate (gen-cert's client.crt); it is
 // preseeded into Incus's own trust store so the node trusts it on first
 // boot — without this, "the bootstrap cert authenticates against it" can
-// never become true.
-func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts Options) (Bundle, error) {
+// never become true. wg is optional (see WireGuard's doc) — nil renders a
+// seed with no WireGuard config at all.
+func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *WireGuard, opts Options) (Bundle, error) {
 	if inst.Network != net.Name {
 		return Bundle{}, fmt.Errorf("instance %q targets network %q, not %q", inst.Name, inst.Network, net.Name)
 	}
@@ -111,12 +137,36 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 		netConfig.DNS = &incusapi.SystemNetworkDNS{Nameservers: nameservers}
 	}
 
+	var bootstrapCertPEM []byte
+	if wg != nil {
+		if !inst.TunnelIP.IsValid() {
+			return Bundle{}, fmt.Errorf("instance %q: wireguard requested but no tunnel_ip assigned", inst.Name)
+		}
+		netConfig.Wireguard = []incusapi.SystemNetworkWireguard{{
+			Name:       "wg0",
+			Addresses:  []string{fmt.Sprintf("%s/32", inst.TunnelIP)},
+			PrivateKey: wg.NodePrivateKey.Base64(),
+			// Tagging wg0 "management" mirrors eth0's role above, on the
+			// (unverified against IncusOS's own docs — confirmed only by a
+			// real-VM boot, see scripts/validate-issue-91.sh) assumption
+			// that this is what makes Incus's API listen on it.
+			Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
+			Peers: []incusapi.SystemNetworkWireguardPeer{{
+				PublicKey:           wg.AppPublicKey.Base64(),
+				Endpoint:            wg.AppEndpoint,
+				AllowedIPs:          []string{fmt.Sprintf("%s/32", wireguard.WebAppAddr)},
+				PersistentKeepalive: wireGuardPersistentKeepaliveSeconds,
+			}},
+		}}
+		bootstrapCertPEM = wg.BootstrapCertPEM
+	}
+
 	applications := make([]incusseed.Application, 0, len(inst.Applications))
 	for _, app := range inst.Applications {
 		applications = append(applications, incusseed.Application{Name: app})
 	}
 
-	incusPreseed, err := renderIncusPreseed(inst.Name, clientCertPEM)
+	incusPreseed, err := renderIncusPreseed(inst.Name, clientCertPEM, bootstrapCertPEM)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("render incus.yaml: %w", err)
 	}
@@ -130,29 +180,51 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, opts
 }
 
 // renderIncusPreseed builds the Incus seed file that preconfigures Incus to
-// trust certName's client certificate before first boot. Incus's
-// CertificatesPost.Certificate field is base64-encoded raw X.509 (DER), not
-// PEM, so the PEM wrapper is stripped first.
-func renderIncusPreseed(certName string, clientCertPEM []byte) (incusseed.Incus, error) {
-	block, _ := pem.Decode(clientCertPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return incusseed.Incus{}, fmt.Errorf("decode client certificate: not a PEM-encoded certificate")
+// trust certName's client certificate before first boot, plus a second
+// bootstrapCertPEM-derived trusted cert when non-nil — the one-time
+// credential nodeprovision.CreateInstance authenticates with over the
+// WireGuard tunnel, distinct from the standing break-glass cert (see
+// WireGuard's doc comment and docs/Decisions.md §4).
+func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte) (incusseed.Incus, error) {
+	certs := []lxcapi.CertificatesPost{}
+
+	clientEntry, err := certEntry(certName, clientCertPEM)
+	if err != nil {
+		return incusseed.Incus{}, fmt.Errorf("client certificate: %w", err)
+	}
+	certs = append(certs, clientEntry)
+
+	if len(bootstrapCertPEM) > 0 {
+		bootstrapEntry, err := certEntry(certName+"-bootstrap", bootstrapCertPEM)
+		if err != nil {
+			return incusseed.Incus{}, fmt.Errorf("bootstrap certificate: %w", err)
+		}
+		certs = append(certs, bootstrapEntry)
 	}
 
 	return incusseed.Incus{
 		ApplyDefaults: true,
 		Preseed: &lxcapi.InitPreseed{
 			InitLocalPreseed: lxcapi.InitLocalPreseed{
-				Certificates: []lxcapi.CertificatesPost{
-					{
-						CertificatePut: lxcapi.CertificatePut{
-							Name:        certName,
-							Type:        "client",
-							Certificate: base64.StdEncoding.EncodeToString(block.Bytes),
-						},
-					},
-				},
+				Certificates: certs,
 			},
+		},
+	}, nil
+}
+
+// certEntry builds one trusted-client-certificate preseed entry from a PEM
+// cert. Incus's CertificatesPost.Certificate field is base64-encoded raw
+// X.509 (DER), not PEM, so the PEM wrapper is stripped first.
+func certEntry(name string, certPEM []byte) (lxcapi.CertificatesPost, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return lxcapi.CertificatesPost{}, fmt.Errorf("decode certificate: not a PEM-encoded certificate")
+	}
+	return lxcapi.CertificatesPost{
+		CertificatePut: lxcapi.CertificatePut{
+			Name:        name,
+			Type:        "client",
+			Certificate: base64.StdEncoding.EncodeToString(block.Bytes),
 		},
 	}, nil
 }
