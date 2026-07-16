@@ -89,8 +89,16 @@ func newHTTPClient(dial DialFunc, certPEM, keyPEM []byte) (*http.Client, error) 
 				// one-shot dial-create-revoke with no repeat connection to
 				// protect by pinning. Revisit if #92's agent-deployment
 				// flow ends up making repeated calls to the same node over
-				// time, where pinning would actually add protection.
-				// codeql[go/disabled-certificate-check]: trust comes from the WireGuard tunnel + client cert, not server-cert chain verification; see comment above
+				// time, where pinning would actually add protection. A
+				// longer-term real fix — an ACME-issued node cert from a
+				// self-hosted CA the web app trusts — is tracked in
+				// docs/Out of Scope.md.
+				//
+				// The CodeQL alert this triggers (go/disabled-certificate-check)
+				// is dismissed manually in GitHub's UI: inline codeql[...]
+				// suppression comments don't appear to be supported for Go's
+				// default query suite (confirmed by trying two placements,
+				// both ignored).
 				InsecureSkipVerify: true, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model
 			},
 		},

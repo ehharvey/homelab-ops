@@ -272,8 +272,10 @@ func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP string, lis
 		// comment for the full reasoning: trust comes from the WireGuard
 		// tunnel + client cert, not server-cert verification). This
 		// binary is test-only scaffolding for scripts/validate-issue-91.sh
-		// (see package doc) — never built into the production web app.
-		// codeql[go/disabled-certificate-check]: test-only harness, see comment above
+		// (see package doc) — never built into the production web app. The
+		// CodeQL alert this triggers is dismissed manually in GitHub's UI —
+		// see internal/nodeprovision/provision.go's identical comment for
+		// why inline suppression comments didn't work.
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model
 	}}
 
