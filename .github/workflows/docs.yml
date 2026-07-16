@@ -1,0 +1,51 @@
+name: Docs
+
+# Parses every ```mermaid block in docs/ and fails if one of them doesn't.
+#
+# Why: docs/AppManager.md's self-upgrade sequence diagram never rendered on
+# GitHub between #105 (which added it) and #111 (which fixed it) — the page
+# showed "Unable to render rich display / Parse error" where the diagram should
+# have been. #106 was opened specifically to correct that same diagram's logic,
+# so it was read and reviewed while silently not displaying at all: reviewing a
+# diagram's *source* in a PR diff gives no signal about whether it *renders*.
+# See #112.
+#
+# Its own file rather than a job in ci.yml, following sync-wiki.yml's precedent
+# for docs-scoped concerns: ci.yml has no path filters and runs on every PR,
+# whereas this only needs to run when docs (or the checker itself) change —
+# it pulls a chromium-based image, so it isn't free.
+#
+# Unlike sync-wiki.yml this also runs on pull_request: a diagram that doesn't
+# parse should block the PR, not be discovered after it lands on main.
+
+# The two path lists are duplicated rather than shared via a YAML anchor:
+# anchors aren't supported by GitHub's workflow parser, and a workflow that
+# fails to parse just silently doesn't run — the exact failure shape this
+# check exists to catch. Keep the two lists in sync by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/lint-mermaid.sh"
+      - "Makefile"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/lint-mermaid.sh"
+      - "Makefile"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mermaid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Same entry point as a developer runs locally — the script pins the
+      # mermaid-cli image itself, so there's no toolchain to set up here.
+      - run: make lint-docs
