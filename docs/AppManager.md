@@ -165,7 +165,7 @@ sequenceDiagram
     Note over Old,Incus: node A now has both gen N (old leader, self) and gen N+1 (candidate)<br/>every other node's agent member gets the same candidate-creation treatment
     Old->>Old: notices its own member's image is now stale<br/>(same generic check ReconcileFleet already ran)
     Old->>Old: stop renewing lease (self-recognition: never delete self)
-    Note over Old,New: lease expires; New (already running new image, e.g. on node B) wins next CAS acquisition
+    Note over Old,New: lease expires — New (already running new image, e.g. on node B) wins next CAS acquisition
     New->>New: becomes leader
     New->>Incus: ReconcileFleet resumes every in-flight App from live state alone
     New->>Incus: node A's agent member is "two matches" (N, N+1) → poll N+1 healthy → Promote → delete N
