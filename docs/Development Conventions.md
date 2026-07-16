@@ -112,9 +112,10 @@ Established by `internal/configsync` and `internal/store`:
 ## Linting & CI
 
 - `golangci-lint` config lives in `.golangci.yml` at the repo root. Start from `default: standard` and add linters deliberately rather than maximal strictness — e.g. `gosec` is non-negotiable for any package handling key material, but noisy style linters (`cyclop`, `dupl`, `funlen`, `wsl`, etc.) are left off a young codebase to avoid PR friction.
-- `Makefile` targets: `build`, `test` (`-race -cover`), `lint`, `fmt`, `tidy`, `clean`. Plain Make — no justfile/task-runner, since Make is already in the devcontainer base image.
+- `Makefile` targets: `build`, `test` (`-race -cover`), `lint`, `lint-docs`, `fmt`, `tidy`, `clean`. Plain Make — no justfile/task-runner, since Make is already in the devcontainer base image.
 - CI (`.github/workflows/ci.yml`) runs two parallel jobs on push/PR to `main`: `build-test` (`go build` + `go test`) and `lint` (`golangci-lint-action`).
 - `make lint` runs `golangci-lint` via the official `golangci/golangci-lint` Docker image (pinned to a specific tag in the `Makefile`'s `LINT_IMAGE` var) rather than a locally installed binary — no toolchain setup needed beyond Docker, and the version is pinned in one place instead of relying on whatever happens to be on a contributor's `$PATH`.
+- **`make lint-docs` proves `docs/`'s mermaid diagrams actually parse** (`scripts/lint-mermaid.sh`, run in CI by `.github/workflows/docs.yml` when `docs/**` changes). It follows `make lint`'s shape exactly — the official `mermaid-cli` image, pinned in one place, no local toolchain beyond Docker, so a Go repo gains no `package.json`. This exists because reviewing a diagram's *source* in a PR diff tells you nothing about whether it *renders*: `docs/AppManager.md`'s sequence diagram showed a parse error instead of a diagram on GitHub from #105 until #111, and #106 reviewed and corrected that very diagram's logic in between without anyone noticing it wasn't displaying. Same lesson as `CLAUDE.md`'s issue-#5 note (a passing test suite that still shipped a silently dropped seed file), applied to docs.
 
 ## Generated artifacts never get committed
 

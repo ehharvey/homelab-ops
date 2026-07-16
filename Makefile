@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt tidy clean vendor-incusos docker-build dev validate-sprint-3
+.PHONY: build test lint lint-docs fmt tidy clean vendor-incusos docker-build dev validate-sprint-3
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -14,6 +14,12 @@ test:
 
 lint:
 	docker run --rm -v $(CURDIR):/app -w /app $(LINT_IMAGE) golangci-lint run ./...
+
+# Proves docs/'s mermaid diagrams actually parse — a broken one renders as an
+# error box on GitHub, which reviewing the source in a diff won't catch (see
+# scripts/lint-mermaid.sh and #112).
+lint-docs:
+	./scripts/lint-mermaid.sh
 
 fmt:
 	$(GO) fmt ./...
