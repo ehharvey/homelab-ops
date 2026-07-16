@@ -582,6 +582,29 @@ deferred part.
   consistent with this project's existing minutes-scale-RTO tolerance
   (`docs/AppManager.md`'s Prior-art section already frames this project's
   HA bar that way).
+- **A bad agent version can cause leadership churn, not just a bad
+  rollout.** The pre-promotion health gate now requires *sustained*
+  health (`docs/AppManager.md`'s `healthy-since` tag / `MinHealthyDuration`
+  — Nomad's `min_healthy_time`), which catches a candidate that's flaky
+  enough to flap during the health-poll window. It doesn't catch a
+  candidate that's stable for longer than `MinHealthyDuration` and only
+  starts failing *after* promotion (no post-promotion monitoring or
+  auto-rollback exists — see "Automatic rollback after a successful App
+  promotion" in `docs/Out of Scope.md`). For the agent's own self-upgrade
+  specifically, a version bad enough to pass the gate but crash-loop once
+  leading could cause real churn: it wins the lease, crash-loops, fails to
+  renew, an old-version follower (if any still exist, un-promoted) or
+  another already-upgraded-but-different instance re-contests the lease,
+  and so on — until an operator reverts `AgentConfig.Image` in git. Not
+  unsafe (no single instance ever gets stuck broken; the self-recognition
+  rule still holds throughout) but not silent either. Accepted rather than
+  building full post-promotion auto-rollback (which would need old
+  generations retained post-promotion, continuous monitoring, and a
+  per-renderer reversibility story — a materially bigger feature than this
+  project's scale warrants). Recovery is already available with no new
+  mechanism: reverting `AgentConfig.Image` (or any App's `image`) in git is
+  itself just another forward version bump through the same blue-green
+  algorithm, not a distinct "rollback" capability.
 
 ## Other notes
 1. Track the commit hash nodes are running
