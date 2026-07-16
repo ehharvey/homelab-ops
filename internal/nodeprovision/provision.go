@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	lxcapi "github.com/lxc/incus/v7/shared/api"
 
@@ -131,6 +132,18 @@ func createInstance(ctx context.Context, client *http.Client, addr string, req l
 
 func waitOperation(ctx context.Context, client *http.Client, addr, operationID string) error {
 	url := fmt.Sprintf("https://%s/1.0/operations/%s/wait", addr, operationID)
+	// A cheap, defensive addition: if ctx carries a deadline, tell Incus
+	// about it too via ?timeout= (seconds), so the server-side wait and
+	// our own context deadline stay aligned instead of relying solely on
+	// the client-side ctx cancellation to unblock this call. No effect
+	// today (the only caller, cmd/validate-91-harness, always passes a
+	// bounded context anyway) — matters once #92 grows a second caller
+	// with a looser one.
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			url += fmt.Sprintf("?timeout=%d", int(remaining.Seconds()))
+		}
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("build wait request: %w", err)

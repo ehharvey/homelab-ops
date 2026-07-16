@@ -130,22 +130,32 @@ func (f *fakeTunnelSource) Close() error { return nil }
 
 // fakeCredentialStore is an in-memory nodeprovision.CredentialStore.
 type fakeCredentialStore struct {
-	mu    sync.Mutex
-	creds map[string]nodeprovision.Credential
+	mu      sync.Mutex
+	creds   map[string]nodeprovision.Credential
+	readErr error // if set, InstanceCredential returns this instead of a lookup
 }
 
 func (f *fakeCredentialStore) InstanceCredential(_ context.Context, name string) (nodeprovision.Credential, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return nodeprovision.Credential{}, false, f.readErr
+	}
 	c, ok := f.creds[name]
 	return c, ok, nil
 }
 
+// SetInstanceCredential mirrors internal/store's real ON CONFLICT DO
+// NOTHING semantics (insert once per name) — see
+// internal/nodeprovision's identical fake for why.
 func (f *fakeCredentialStore) SetInstanceCredential(_ context.Context, name string, cred nodeprovision.Credential) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.creds == nil {
 		f.creds = make(map[string]nodeprovision.Credential)
+	}
+	if _, exists := f.creds[name]; exists {
+		return nil
 	}
 	f.creds[name] = cred
 	return nil
@@ -581,6 +591,105 @@ func TestSyncOnceNilStoreSkipsReplace(t *testing.T) {
 	if !res.Diff.Empty() {
 		t.Errorf("Diff = %+v, want empty (no store to diff against)", res.Diff)
 	}
+}
+
+// TestReconcileTunnelPeersUpsertsEachInstance is a focused test on
+// reconcileTunnelPeers directly — the mechanism that makes "no live
+// enrollment step" true for WireGuard: every synced instance must end up
+// registered as a trusted peer on the live tunnel with its minted
+// credential's public key and its assigned tunnel IP. Previously only
+// exercised incidentally by SyncOnce-level tests, which never asserted on
+// fakeTunnelSource's upsertCall/upsertErr fields despite those fields
+// existing specifically for this.
+func TestReconcileTunnelPeersUpsertsEachInstance(t *testing.T) {
+	tunnels := &fakeTunnelSource{}
+	creds := &fakeCredentialStore{}
+	instances := []config.Instance{
+		{Name: "node-a", TunnelIP: addr("10.100.0.2")},
+		{Name: "node-b", TunnelIP: addr("10.100.0.3")},
+	}
+
+	reconcileTunnelPeers(context.Background(), tunnels, creds, instances)
+
+	if len(tunnels.upsertCall) != 2 {
+		t.Fatalf("len(upsertCall) = %d, want 2", len(tunnels.upsertCall))
+	}
+	for i, inst := range instances {
+		cred, ok, err := creds.InstanceCredential(context.Background(), inst.Name)
+		if err != nil || !ok {
+			t.Fatalf("credential for %q = ok:%v err:%v, want minted", inst.Name, ok, err)
+		}
+		wantPub := wireguard.PublicKeyOf(cred.WireGuardPrivateKey)
+		call := tunnels.upsertCall[i]
+		if call.pub != wantPub {
+			t.Errorf("upsertCall[%d].pub = %s, want %s (the minted credential's public key)", i, call.pub, wantPub)
+		}
+		if call.tunnelIP != inst.TunnelIP {
+			t.Errorf("upsertCall[%d].tunnelIP = %s, want %s", i, call.tunnelIP, inst.TunnelIP)
+		}
+	}
+}
+
+// TestReconcileTunnelPeersContinuesPastUpsertError proves the
+// logged-and-continue posture the doc comment on SyncOnce/
+// reconcileTunnelPeers describes: one instance's UpsertPeer failure must
+// not stop later instances in the same reconcile pass from being
+// registered.
+func TestReconcileTunnelPeersContinuesPastUpsertError(t *testing.T) {
+	tunnels := &fakeTunnelSource{upsertErr: errors.New("device busy")}
+	creds := &fakeCredentialStore{}
+	instances := []config.Instance{
+		{Name: "node-a", TunnelIP: addr("10.100.0.2")},
+		{Name: "node-b", TunnelIP: addr("10.100.0.3")},
+	}
+
+	reconcileTunnelPeers(context.Background(), tunnels, creds, instances)
+
+	if len(tunnels.upsertCall) != 2 {
+		t.Fatalf("len(upsertCall) = %d, want 2 (an UpsertPeer error must not stop the reconcile loop)", len(tunnels.upsertCall))
+	}
+}
+
+// TestReconcileTunnelPeersContinuesPastCredentialError mirrors the above
+// for EnsureCredential failing on one instance.
+func TestReconcileTunnelPeersContinuesPastCredentialError(t *testing.T) {
+	tunnels := &fakeTunnelSource{}
+	creds := &credentialStoreFailingFor{name: "node-a", err: errors.New("disk full")}
+	instances := []config.Instance{
+		{Name: "node-a", TunnelIP: addr("10.100.0.2")},
+		{Name: "node-b", TunnelIP: addr("10.100.0.3")},
+	}
+
+	reconcileTunnelPeers(context.Background(), tunnels, creds, instances)
+
+	// node-a's EnsureCredential fails, so it must produce no UpsertPeer
+	// call — but node-b, later in the same slice, must still be reached
+	// and registered rather than the loop aborting after node-a's error.
+	if len(tunnels.upsertCall) != 1 {
+		t.Fatalf("len(upsertCall) = %d, want 1 (node-b, reached after node-a's credential error)", len(tunnels.upsertCall))
+	}
+	if tunnels.upsertCall[0].tunnelIP != addr("10.100.0.3") {
+		t.Errorf("upsertCall[0].tunnelIP = %s, want node-b's 10.100.0.3", tunnels.upsertCall[0].tunnelIP)
+	}
+}
+
+// credentialStoreFailingFor is a nodeprovision.CredentialStore that fails
+// InstanceCredential for exactly one instance name and behaves like a
+// normal in-memory store for every other name — used to prove
+// reconcileTunnelPeers's loop keeps going past one instance's error
+// instead of aborting, which a store that fails unconditionally for every
+// name can't distinguish from "aborted after the first failure".
+type credentialStoreFailingFor struct {
+	name string
+	err  error
+	fakeCredentialStore
+}
+
+func (c *credentialStoreFailingFor) InstanceCredential(ctx context.Context, name string) (nodeprovision.Credential, bool, error) {
+	if name == c.name {
+		return nodeprovision.Credential{}, false, c.err
+	}
+	return c.fakeCredentialStore.InstanceCredential(ctx, name)
 }
 
 func TestStatusNotConfigured(t *testing.T) {

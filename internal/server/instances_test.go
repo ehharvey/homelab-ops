@@ -224,6 +224,33 @@ func TestInstanceSeedNetworkStoreError500s(t *testing.T) {
 	}
 }
 
+// TestInstanceSeedCredentialStoreError500s pins that an EnsureCredential
+// failure (a CredentialStore/sqlite fault, never bad fleet data) maps to
+// 500, not the 422 errSeedInvalid otherwise produces — the two lookups
+// right above it in resolveInstanceSeed (store.Instance/store.Network) are
+// already covered by the two tests above this one; this is the same
+// coverage for the credential lookup added alongside them.
+func TestInstanceSeedCredentialStoreError500s(t *testing.T) {
+	net := sampleSeedNetwork()
+	inst := sampleSeedInstance()
+	store := &fakeStore{
+		networkByName:  map[string]config.Network{net.Name: net},
+		instanceByName: map[string]config.Instance{inst.Name: inst},
+	}
+	certs := fakeCertSource{pem: sampleClientCertPEM(t)}
+	creds := &fakeCredentialStore{readErr: errors.New("disk full")}
+
+	req := httptest.NewRequest(http.MethodPost, "/instances/devnode0/seed", nil)
+	req.SetPathValue("name", "devnode0")
+	rec := httptest.NewRecorder()
+
+	handleInstanceSeed(store, certs, &fakeTunnelSource{}, creds)(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /instances/devnode0/seed (credential store error) = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestInstanceSeedCertReadError503s(t *testing.T) {
 	net := sampleSeedNetwork()
 	inst := sampleSeedInstance()

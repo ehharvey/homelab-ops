@@ -60,8 +60,14 @@ const getInstanceCredentialSQL = `
 SELECT wireguard_private_key, bootstrap_cert_pem, bootstrap_key_pem FROM instance_credentials WHERE instance_name = ?`
 
 // -- name: SetInstanceCredential :exec
+// ON CONFLICT DO NOTHING, not OR REPLACE: nodeprovision.EnsureCredential
+// relies on this only ever inserting once per instance_name, then
+// re-reading, to stay correct when a manual seed/image fetch races the
+// background sync poller's reconcile pass for the same brand-new
+// instance — see its doc comment.
 //
 //nolint:gosec // G101: SQL column names (wireguard_private_key/bootstrap_key_pem), not an embedded credential
 const setInstanceCredentialSQL = `
-INSERT OR REPLACE INTO instance_credentials (instance_name, wireguard_private_key, bootstrap_cert_pem, bootstrap_key_pem, created_at)
-VALUES (?, ?, ?, ?, ?)`
+INSERT INTO instance_credentials (instance_name, wireguard_private_key, bootstrap_cert_pem, bootstrap_key_pem, created_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (instance_name) DO NOTHING`

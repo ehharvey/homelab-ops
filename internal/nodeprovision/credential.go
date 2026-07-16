@@ -40,6 +40,12 @@ type Credential struct {
 // unauthenticated GET /instances route serves directly — see
 // docs/Decisions.md's security note on this issue: secret material must
 // never become reachable through that generic listing path.
+//
+// SetInstanceCredential must insert at most once per name and silently
+// discard a second call for a name that already has a persisted
+// credential (internal/store's implementation does this via
+// ON CONFLICT DO NOTHING, not a replace) — EnsureCredential's safety
+// under concurrent calls for the same name depends on this.
 type CredentialStore interface {
 	InstanceCredential(ctx context.Context, name string) (Credential, bool, error)
 	SetInstanceCredential(ctx context.Context, name string, cred Credential) error
@@ -47,7 +53,12 @@ type CredentialStore interface {
 
 // bootstrapCertValidityDays is short: this cert is used once, immediately
 // after its instance's node boots, then revoked — it is not meant to be a
-// standing credential the way the break-glass cert is.
+// standing credential the way the break-glass cert is. Since
+// EnsureCredential never regenerates once minted, a node imaged from a
+// credential that then sits unflashed for longer than this would fail its
+// one-time bootstrap Incus auth on first real use — accepted for now
+// given how far out that edge case is; revisit if operators start
+// pre-building images well ahead of flashing them.
 const bootstrapCertValidityDays = 30
 
 // EnsureCredential returns name's persisted Credential, minting a fresh
@@ -55,6 +66,22 @@ const bootstrapCertValidityDays = 30
 // that name and persisting the result. Never regenerates on later calls:
 // a changed keypair would silently invalidate whatever's already been
 // baked into a possibly-already-flashed image.
+//
+// Safe under concurrent calls for the same name — this function is called
+// from two paths with no shared lock between them (a manual
+// POST /instances/{name}/seed can race the background sync poller's
+// reconcile pass for a brand-new instance). The check-then-act here isn't
+// atomic on its own, so SetInstanceCredential's underlying insert is
+// (INSERT ... ON CONFLICT DO NOTHING — see internal/store): whichever
+// concurrent caller's insert lands first wins, the other's is silently
+// discarded rather than overwriting it, and every caller re-reads
+// afterward to return the one credential that actually persisted. Without
+// this, two callers could each mint a *different* keypair/cert for the
+// same never-before-seen instance and both write via a last-write-wins
+// replace, leaving whichever one already got returned to its caller (and
+// possibly already baked into a flashed image) silently mismatched with
+// what the store — and therefore reconcileTunnelPeers's UpsertPeer, and
+// any future CreateInstance call — actually holds.
 func EnsureCredential(ctx context.Context, store CredentialStore, name string) (Credential, error) {
 	if cred, ok, err := store.InstanceCredential(ctx, name); err != nil {
 		return Credential{}, fmt.Errorf("read credential for %q: %w", name, err)
@@ -83,5 +110,18 @@ func EnsureCredential(ctx context.Context, store CredentialStore, name string) (
 	if err := store.SetInstanceCredential(ctx, name, cred); err != nil {
 		return Credential{}, fmt.Errorf("persist credential for %q: %w", name, err)
 	}
-	return cred, nil
+
+	// SetInstanceCredential only ever inserts once per name — if a
+	// concurrent caller already won this race, cred above was just
+	// discarded in favor of theirs. Re-read to return whichever credential
+	// actually ended up persisted, so every caller (winner or loser)
+	// returns the same, single answer.
+	stored, ok, err := store.InstanceCredential(ctx, name)
+	if err != nil {
+		return Credential{}, fmt.Errorf("read credential for %q after insert: %w", name, err)
+	}
+	if !ok {
+		return Credential{}, fmt.Errorf("credential for %q missing immediately after insert", name)
+	}
+	return stored, nil
 }

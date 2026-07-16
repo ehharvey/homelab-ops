@@ -134,9 +134,16 @@ func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, tun
 		return seed.Bundle{}, fmt.Errorf("%w: read client cert: %w", errCertUnavailable, err)
 	}
 
+	// Unlike the network/cert lookups above, a failure here is never bad
+	// fleet data — EnsureCredential's only failure modes are a
+	// CredentialStore (sqlite) error or a crypto/rand/cert-generation
+	// failure, both genuine server-side faults. Left unwrapped (no
+	// errSeedInvalid) so it falls through to writeResolveSeedError's 500
+	// default, matching how the store.Instance/store.Network errors above
+	// are already handled.
 	cred, err := nodeprovision.EnsureCredential(ctx, creds, name)
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("%w: mint wireguard/bootstrap identity for %q: %w", errSeedInvalid, name, err)
+		return seed.Bundle{}, fmt.Errorf("mint wireguard/bootstrap identity for %q: %w", name, err)
 	}
 	wg := &seed.WireGuard{
 		AppPublicKey:     tunnels.PublicKey(),
