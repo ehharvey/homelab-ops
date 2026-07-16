@@ -797,6 +797,28 @@ proxy         →  routing, health-checked against the DB layer  (seconds)
   primary backend, one to the replicas, health-checked against the DB layer's
   own API, client picks its port) over query-parsing read/write splitters.
   Stateless, no query-parsing failure mode, standard.
+- **The proxy is a separate `kind: App` that *references* the database — not
+  a role inside some grouped "deployment" unit.** This is what the prior art
+  does: CloudNativePG models `Cluster` and `Pooler` as two separate CRDs, with
+  the Pooler naming its cluster; Patroni + HAProxy is the same split. Neither
+  groups the roles into one object. What the topology actually needs from this
+  project, then, isn't composition — it's the two smaller things in
+  `docs/Out of Scope.md`: a **stable endpoint** for the proxy (clients have to
+  reach it somewhere), and a **cross-App reference** (the proxy has to know
+  which instances to health-check). Both are deferred; neither is a grouping
+  primitive. See also the composition entry there for why `kind: Deployment`
+  isn't the answer even when those land.
+- **Blue-green sits at the *member* level here, not the cluster level.** Two
+  colors of a stateful cluster means two clusters, which means forked data —
+  blue kept taking writes while green was being health-checked. That's why
+  class 3 is one long-lived cluster with replicas rolled one at a time and the
+  writer switched over last: the cluster itself never has a version color, its
+  members do. The exception is a **major-version** upgrade, where physical
+  replication can't cross the boundary at all (16 → 17): there you really do
+  stand up a second cluster, logically replicate into it, and swap the proxy —
+  cluster-level blue-green, with the proxy as the swap point. That's a
+  deliberate, planned operation with a stop-writes moment, not something a
+  reconcile loop should ever infer from an image-tag diff.
 - **Kubernetes is two classes, not one.** Workers are class 4 (green joins,
   blue drains — easy). The control plane and etcd are class 5, where adding a
   candidate member is itself a quorum event and version skew, not health, is

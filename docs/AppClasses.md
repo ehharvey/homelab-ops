@@ -7,6 +7,8 @@ Purpose
 
 This is a reference doc: `docs/AppManager.md` owns the mechanism (lease, reconcile algorithm, blue-green state machine), and this doc classifies the workloads that mechanism runs. Nothing here is implemented in 0.x beyond the `agent` renderer — classes 3–6 exist to be designed against, not built now (see `docs/Decisions.md` § Stateful app support and `docs/Out of Scope.md`).
 
+**Scope:** every class here describes *one App's* cutover shape. Relationships between Apps — ordering, references, grouping several roles into one unit — are a different axis this taxonomy doesn't cover and `kind: App` can't express; see § Composition below.
+
 ## The axis: what does blue/green overlap cost
 
 The reconcile algorithm's whole shape is "create a candidate alongside the current instance, health-check it, promote or revert". That only makes sense if the two generations can coexist. So the question that determines what a renderer's `Promote` must do is not *who writes* — it's **can blue and green run at the same time, and what does it cost when they do**.
@@ -87,6 +89,14 @@ Placement itself stays deferred (`docs/Out of Scope.md`). When it lands, the int
 
 Worth noting for whoever revisits that rule: Kubernetes *does* allow the equivalent combination — a DaemonSet with a `nodeSelector` means "one per node **in this group**" — so per-node-within-a-group is a coherent thing to want. If it's ever wanted, the mutual-exclusion rule is what to revisit, not `replicas`' shape.
 
+## Composition: what this taxonomy deliberately doesn't cover
+
+Every class above describes **one App's** cutover shape. None of them says anything about *relationships between Apps* — and `kind: App` has no way to express one.
+
+This matters most for the topology the classes were partly written for: a proxy in front of a database is a proxy App (class 1, or 6 — see the endpoint question above) *and* a database App (class 3), not one "deployment" containing both. `replicas` doesn't help here — it's **homogeneous** fan-out (N copies of one image, one renderer, differing only by ordinal), not heterogeneous composition. Several roles means several Apps, related only by convergence.
+
+That's the same split the prior art lands on rather than a limitation being worked around: CloudNativePG models `Cluster` and `Pooler` as separate CRDs with the Pooler naming its cluster; Patroni + HAProxy keeps the proxy separate too. What such a topology actually needs from this project is a **stable endpoint** and a **cross-App reference**, both of which are small, both deferred (`docs/Out of Scope.md`) — not a grouping construct. See that doc's composition entry for why a `kind: Deployment` isn't the answer even once those land, and for the Kubernetes revisit trigger.
+
 ## Version skew: why "image differs" is not enough
 
 The reconcile algorithm detects a version bump generically — declared `image` differs from the live instance's `user.homelab-ops.image` tag — and hands the renderer nothing but the fact that it differs. For classes 1, 2, 4 and 6 that's sufficient. For classes 3 and 5 the *kind* of change matters, and the design currently can't express it:
@@ -114,7 +124,7 @@ So a generic system wouldn't cover 1–6; it'd cover 1, 2, 4 and 6, which are th
 | `agent` | 2 | per-node | the one renderer 0.x ships (#98) |
 | Alloy | 2 | per-node | Phase 4 (#77) |
 | web app | 6 | 1 | migrating it into the fleet is out of scope |
-| DB proxy | 1 or 6 | fixed N | unresolved — see the endpoint question above |
+| DB proxy | 1 or 6 | fixed N | a *separate* App from the database, not a role within it — unresolved pending the endpoint and cross-App-reference questions above |
 | database | 3 | fixed N ≥ 3 | direction only (`Decisions.md` § Stateful app support) |
 | k8s workers | 4 | fixed N | direction only |
 | k8s control plane | 5 | fixed N ≥ 3 | direction only |
