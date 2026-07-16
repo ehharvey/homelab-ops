@@ -53,14 +53,23 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   generates its own identity + a per-node keypair at seed-render time,
   embedded into `network.yaml` (no live enrollment step, unlike
   Tailscale/NetBird); resolves `docs/Decisions.md` §11 — see #91
-- [ ] Local per-node app-manager agent: Incus instance with the host's own
-  Incus socket forwarded in, polls the fleet config git repo directly,
-  reconciles a new `kind: App` object via a small renderer registry —
-  proven by managing itself (blue-green self-upgrade) — see #92
+- [ ] Per-node app-manager agent, leader/follower HA: one agent instance
+  per node, electing a single fleet-wide leader via an ETag-CAS lease
+  stored in Incus itself (no new dependency) — the leader reconciles a new
+  `kind: App` object across the whole fleet via a small renderer registry,
+  proven by managing its own fleet (blue-green self-upgrade, driven
+  fleet-wide by whichever agent is leader) — see #92,
+  `docs/Decisions.md` § App Manager HA
 
 **Done when:** a managed node has a persistent WireGuard tunnel to the web
-app, and a local app-manager agent that can deploy and upgrade itself
-(blue-green) from git-declared config.
+app, and a per-node app-manager agent fleet that elects a single leader,
+deploys and upgrades itself (blue-green, fleet-wide) from git-declared
+config, and survives losing the specific agent instance currently holding
+leadership — another already-running agent takes over within the lease
+TTL with no reconciliation gap. (0.x provisions one physical node only,
+so this proves the lease/election mechanism itself, not genuine
+node-death fault tolerance — that needs real multi-member Incus
+clustering, deferred; see `docs/Decisions.md` § App Manager HA.)
 
 ## Phase 4 — Tailscale, logging + metrics
 
