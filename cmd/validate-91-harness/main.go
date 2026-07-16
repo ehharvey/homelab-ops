@@ -264,8 +264,16 @@ func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP string, lis
 	defer cancel()
 
 	client := &http.Client{Transport: &http.Transport{
-		DialContext:     tun.DialContext,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: probing an Incus node's self-signed API, same trust model as validate-issue-5.sh's probe
+		DialContext: tun.DialContext,
+		// Probing an Incus node's self-signed API with no CA to
+		// chain-verify against — same trust model as
+		// validate-issue-5.sh's `curl -k` probe and
+		// internal/nodeprovision's identical choice (see its longer
+		// comment for the full reasoning: trust comes from the WireGuard
+		// tunnel + client cert, not server-cert verification). This
+		// binary is test-only scaffolding for scripts/validate-issue-91.sh
+		// (see package doc) — never built into the production web app.
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model // codeql[go/disabled-certificate-check] test-only harness, see comment above
 	}}
 
 	var lastErr error

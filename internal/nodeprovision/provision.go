@@ -72,12 +72,25 @@ func newHTTPClient(dial DialFunc, certPEM, keyPEM []byte) (*http.Client, error) 
 			TLSClientConfig: &tls.Config{
 				Certificates: []tls.Certificate{tlsCert},
 				// The node's Incus server cert is self-signed with no
-				// well-known CA to chain-verify against — the same trust
-				// model every other direct-to-Incus call in this repo
-				// already uses (identity here comes from mutual TLS's
-				// client-cert side, governed by Incus's own trust-store
-				// preseed, not from verifying the server's certificate).
-				InsecureSkipVerify: true, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model
+				// well-known CA to chain-verify against, and the seed never
+				// tells the web app what that cert will be (it only
+				// configures which *client* certs the node trusts) — there
+				// is no fingerprint to pin here. Real identity/authorization
+				// for this connection comes from two other layers instead:
+				// the WireGuard tunnel itself (dial is only reachable
+				// through a handshake already authenticated by the node's
+				// pre-registered public key) and the client cert below
+				// (which Incus's own trust-store preseed governs). This
+				// matches every other direct-to-Incus call in this repo
+				// (e.g. validate-issue-5.sh's `curl -k`).
+				//
+				// TOFU-style fingerprint pinning was considered and
+				// rejected for this specific call: CreateInstance is a
+				// one-shot dial-create-revoke with no repeat connection to
+				// protect by pinning. Revisit if #92's agent-deployment
+				// flow ends up making repeated calls to the same node over
+				// time, where pinning would actually add protection.
+				InsecureSkipVerify: true, //nolint:gosec // G402: matches this repo's existing direct-to-Incus trust model // codeql[go/disabled-certificate-check] trust comes from the WireGuard tunnel + client cert, not server-cert chain verification; see comment above
 			},
 		},
 	}, nil
