@@ -6,7 +6,7 @@ Synthesized from the resolved decisions in `Decisions.md`. This is the 0.x shape
 
 0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Decisions) but dropped because:
 - Operations Center expects a trusted client cert in its own seed before it'll talk to anyone — for node #0 there's nothing yet to provide that, so it doesn't remove the bootstrap problem, it just relocates it.
-- Multi-*member* clustering (Operations Center's main value-add) is explicitly out of scope for 0.x anyway — 0.x's single Incus cluster member exists for the App Manager's leader-election design (see below), not to build out real multi-node fleet management.
+- Multi-*member* clustering (Operations Center's main value-add) is explicitly out of scope for 0.x anyway — 0.x's single Incus cluster member exists for the App Manager's leader-election design (`docs/AppManager.md`, `Decisions.md` § App Manager HA), not to build out real multi-node fleet management.
 
 So for 0.x, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Wrapping Operations Center is revisited once real multi-member clustering is actually on the table.
 
@@ -64,10 +64,21 @@ nic: single            # 0.x default; multi-nic override deferred
 security:
   tpm: false           # configurable per §6
   secure_boot: true     # configurable per §6
-applications: [incus]
+applications: [incus]  # IncusOS seed applications — unrelated to `kind: App` below
+---
+kind: App
+name: agent
+type: agent            # renderer-registry key
+replicas: per-node     # how many: a count, or `per-node`. Omitted → 1. Never *where*
+image:
+  server: https://ghcr.io
+  protocol: oci
+  alias: ehharvey/homelab-ops/agent:latest
 ```
 
 This is illustrative, not a finalized schema — exact field names are an implementation step, not an open question that needs more discussion first.
+
+`kind: App` is the app-manager agent's unit of work (see `docs/AppManager.md` for the schema, the renderer registry and the blue-green reconcile algorithm; `docs/AppClasses.md` for the classes of App a renderer implements). Note the collision to keep straight: `Instance.applications` is the IncusOS *seed* applications list (`applications.yaml`, `[incus]`), which has nothing to do with `kind: App`.
 
 `static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Decisions §5).
 

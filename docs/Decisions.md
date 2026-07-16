@@ -492,7 +492,14 @@ value per known `Instance` from it at reconcile time (never parsed from
 git as a literal document) and feeds those through the exact same
 `Renderer`/blue-green machinery as any real App. Adding a node to the
 fleet is enough to get an agent on it — nothing agent-specific needs
-authoring per node. See `docs/AppManager.md` § `kind: AgentConfig`.
+authoring per node.
+
+> **Superseded — see "Follow-up: cardinality replaces `kind: AgentConfig`"
+> at the end of this section.** The reasoning above stands, but its
+> conclusion doesn't: the per-node shape isn't agent-specific, so it became
+> `replicas: per-node` on an ordinary `kind: App` and `AgentConfig` was
+> dropped before either was built. The rest of this section is unaffected —
+> read "the agent's synthesized App" for "`AgentConfig`" throughout.
 
 **This also removes `Node` from `kind: App` entirely** (not just for the
 agent): 0.x has no real placement logic yet, and pretending otherwise with
@@ -612,16 +619,230 @@ deferred part.
   leading could cause real churn: it wins the lease, crash-loops, fails to
   renew, an old-version follower (if any still exist, un-promoted) or
   another already-upgraded-but-different instance re-contests the lease,
-  and so on — until an operator reverts `AgentConfig.Image` in git. Not
+  and so on — until an operator reverts the agent App's `image` in git. Not
   unsafe (no single instance ever gets stuck broken; the self-recognition
   rule still holds throughout) but not silent either. Accepted rather than
   building full post-promotion auto-rollback (which would need old
   generations retained post-promotion, continuous monitoring, and a
   per-renderer reversibility story — a materially bigger feature than this
   project's scale warrants). Recovery is already available with no new
-  mechanism: reverting `AgentConfig.Image` (or any App's `image`) in git is
+  mechanism: reverting any App's `image` in git — the agent's included — is
   itself just another forward version bump through the same blue-green
   algorithm, not a distinct "rollback" capability.
+
+### Follow-up: cardinality replaces `kind: AgentConfig`
+
+The decision above introduced a singleton `kind: AgentConfig` to declare the
+agent's image fleet-wide, on the reasoning that the agent's placement (every
+node, always) and authorship (one fleet-wide value) "don't fit `App`'s
+per-instance-declared shape at all." That reasoning is correct — and it is
+**equally true of Alloy** (#77), which is explicitly per-node, is already
+slated to be an app-manager renderer (`type: alloy`), and would otherwise
+need a `kind: AlloyConfig` of its own. The shape isn't agent-specific; it's a
+DaemonSet, and it already has two consumers.
+
+So `AgentConfig` is dropped and its job moves onto `kind: App` as a
+cardinality field:
+
+```yaml
+kind: App
+name: agent
+type: agent
+replicas: per-node   # or a fixed count; omitted → 1
+image: {...}
+```
+
+The leader synthesizes one App-shaped value per known `Instance` for every
+App declaring `replicas: per-node` — the same synthesis the earlier revision
+did, no longer hardcoded to `Type: "agent"`. The agent becomes an ordinary
+`App` again, `#92`'s "the agent is not a `kind: App`" invariant is retired,
+and the fleet-definition schema is **three** kinds rather than four (§13's
+"schema count stays at 2" was already stale; this makes it stale by one
+less, not two). `replicas` is parsed by a small `encoding.TextUnmarshaler`
+type in `internal/config`, exactly as `Range` already is for
+`dhcp_excluded_range` (§ Validation approach) — `"per-node"` and `"3"` both
+land as a typed value at parse time, and an omitted field is a valid zero
+meaning 1.
+
+**Three things that have already been conflated once, kept apart here:**
+
+- **Cardinality** — *how many*. `replicas`. In scope now.
+- **Placement** — *where*. Deferred. When it lands, the mechanism is Incus's
+  own cluster groups via a **separate** field, invalid in combination with
+  `replicas: per-node`, not an operator naming individual nodes.
+- **`App.Node`** — deleted in the pass above precisely because it was both at
+  once ("the operator's placement choice", overloaded with "wherever the
+  fleet's nodes are"). That deletion is not reopened here; it's what reserves
+  the placement field's shape.
+
+`replicas` must not inherit `Node`'s conflation, which is why the placement
+field is named as separate now rather than discovered later as an overload.
+
+**One consequence for the reconcile algorithm**, and the reason this is
+settled before #97/#98 are built rather than after: the per-App state machine
+becomes keyed by `(App, member)` rather than by `App`. The existing
+zero/one/two-match logic is unchanged — it just becomes the inner loop — plus
+a `max_parallel: 1` rule (never act on two members of one App in a tick).
+That's a cheap change now and a migration once the code exists; everything
+else multi-instance workloads need is genuinely additive (see § Stateful app
+support).
+
+## 18. App classes, and why the renderer registry stays curated (#92)
+
+`Renderer` is the seam for per-App-type cutover behavior, but nothing in the
+design said which cutover shapes actually exist, or which one a new renderer
+should be implementing. `docs/AppClasses.md` now names six (stateless;
+lease-guarded singleton; asymmetric handover; symmetric scale-out; quorum
+member; exclusive), classified by what blue/green *overlap* costs rather than
+by write topology. This section records what follows from that taxonomy: who
+gets to add an App type, and how.
+
+The obvious generalization is to make the class declarative — an operator
+writes `class: symmetric-scaleout`, brings any image, and gets the cutover
+choreography for free without writing Go.
+
+### Decision
+
+**The registry stays curated: a new App type is a Go renderer, explicitly
+registered, compiled into the agent image.** Not a declarative `class:` field.
+
+- **The taxonomy itself says a generic system wouldn't cover the classes that
+  would justify one.** The line is whether cutover requires handing over
+  authoritative state. Classes 1/2/4/6 don't — the only app-specific
+  questions are "is it healthy?" and "how do you stop it gracefully?", both
+  probe-shaped and genuinely declarative. Classes 3 and 5 do, and that's
+  irreducible choreography (who's the writer, is the candidate caught up, is
+  a switchover safe now, does quorum survive the member add). So "generic"
+  would cover 1/2/4/6 — exactly the four where a Go renderer is a handful of
+  lines anyway.
+- **Kubernetes already ran this experiment.** Probes and lifecycle hooks are
+  declarative and cover Deployments/DaemonSets/StatefulSets; the ecosystem
+  then produced CloudNativePG, Zalando's postgres-operator and etcd-operator
+  — code, per app — for precisely classes 3 and 5. The declarative primitives
+  were not enough, and the convergence was on operators.
+- **"Fixed list" costs ~nothing here, for two project-specific reasons.**
+  0.x is single-user with no auth (`docs/Out of Scope.md`), so the operator
+  *is* the developer — "pick from a fixed list" means "write a small Go file
+  in a repo you own". And § App Manager HA's self-upgrade mechanism already
+  makes shipping a renderer routine: write it, build the agent image, bump
+  the agent App's `image` in git. That last step is an ordinary blue-green
+  agent upgrade — the exact flow the leader/follower design exists to make
+  safe and validated (#103). The marginal cost of a renderer is low *because
+  of* the design already committed to.
+- **A declarative `class:` field is a lie-vector the curated model doesn't
+  have.** It lets an operator declare class 4 for a class 3 app — two writers,
+  data loss, reconciler cheerfully cooperating — and nothing in the schema can
+  detect the mismatch. A renderer author can't make that mistake by accident;
+  the class is implicit in the code they wrote.
+- **The taxonomy still earns its keep as shared Go, not as a config enum** —
+  an embeddable no-op `Promote` for classes 1/2, a destructive-update helper
+  for class 6, a drain hook for class 4. Reuse without a DSL. This also keeps
+  `App.Params` typed per-renderer rather than degenerating into a config
+  language.
+
+**Nothing is foreclosed: the declarative model is a strict subset of the
+curated one.** If bringing your own stateless app without touching Go is ever
+wanted, it arrives as *one more registered renderer* — `type:
+generic-stateless`, reading its probe config from `params` — not a redesign
+and not a second execution model. The option is free until exercised;
+choosing generic now would instead commit to a framework serving about six
+callers, against §13/§16's standing anti-premature-abstraction bias.
+
+**When this gets revisited:** the first time someone who *can't* build and
+push the agent image needs to add an App type — i.e. multi-user
+(`docs/Out of Scope.md`), or a published/shared distribution of this project.
+Until then the fixed list has a cost of roughly zero.
+
+## 19. Stateful app support (databases, Kubernetes) — direction, not yet built
+
+Raised while checking whether the App Manager design is *tolerant* of the
+workloads this project eventually wants — a SQL database (ideally a stateless
+proxy directing to a writer and readers) and Kubernetes. Neither is being
+built now. This records the shape they'd take and what actually blocks them,
+so the design isn't accidentally foreclosed. See `docs/AppClasses.md` for the
+class vocabulary used throughout.
+
+### Direction
+
+**Three layers, and the boundary between them is the whole design.**
+
+```
+app manager   →  places instances, gates image upgrades       (tick: minutes)
+DB-native HA  →  replication, write-leader election, failover  (seconds)
+proxy         →  routing, health-checked against the DB layer  (seconds)
+```
+
+- **The app manager elects a reconciler. It must never elect the write
+  leader.** Those are different leases with different failure semantics, and
+  conflating them is how you get split-brain and lost writes. The corollary
+  is just as load-bearing: the proxy discovers the current writer by
+  health-checking the DB layer directly, never by reading app-manager state.
+  This project's minutes-scale RTO (§ App Manager HA) is fine for "an
+  instance died, recreate it" and catastrophic for "the writer died, route
+  around it" — so the data plane must not sit on the reconcile tick.
+- **The proxy+replicas topology is what makes a database tractable at all.**
+  With replication, a replica's data lives in the *cluster*, not the
+  instance, so a new generation rebuilds its state from its peers and
+  create-candidate/health-check/retire becomes safe again. At N=1 there's no
+  blue-green at all (class 6, destructive in-place). Multi-instance isn't a
+  nice-to-have here — it's the precondition for a safe upgrade path.
+- **Where consensus lives decides the App count.** Postgres + Patroni needs
+  an external DCS — a 4th App, etcd, the exact dependency § App Manager HA
+  went out of its way to avoid for the agent's own lease. MariaDB + Galera
+  and CockroachDB own consensus internally and need no DCS. That's a real
+  trade against Patroni's maturity, not a settled call. **Do not** back
+  Patroni's DCS with the agent's Incus-CAS lease: technically possible,
+  and a bad idea for a correctness-critical component.
+- **Routing shape**: prefer HAProxy's two-frontend pattern (one port to the
+  primary backend, one to the replicas, health-checked against the DB layer's
+  own API, client picks its port) over query-parsing read/write splitters.
+  Stateless, no query-parsing failure mode, standard.
+- **The proxy is a separate `kind: App` that *references* the database — not
+  a role inside some grouped "deployment" unit.** This is what the prior art
+  does: CloudNativePG models `Cluster` and `Pooler` as two separate CRDs, with
+  the Pooler naming its cluster; Patroni + HAProxy is the same split. Neither
+  groups the roles into one object. What the topology actually needs from this
+  project, then, isn't composition — it's the two smaller things in
+  `docs/Out of Scope.md`: a **stable endpoint** for the proxy (clients have to
+  reach it somewhere), and a **cross-App reference** (the proxy has to know
+  which instances to health-check). Both are deferred; neither is a grouping
+  primitive. See also the composition entry there for why `kind: Deployment`
+  isn't the answer even when those land.
+- **Blue-green sits at the *member* level here, not the cluster level.** Two
+  colors of a stateful cluster means two clusters, which means forked data —
+  blue kept taking writes while green was being health-checked. That's why
+  class 3 is one long-lived cluster with replicas rolled one at a time and the
+  writer switched over last: the cluster itself never has a version color, its
+  members do. The exception is a **major-version** upgrade, where physical
+  replication can't cross the boundary at all (16 → 17): there you really do
+  stand up a second cluster, logically replicate into it, and swap the proxy —
+  cluster-level blue-green, with the proxy as the swap point. That's a
+  deliberate, planned operation with a stop-writes moment, not something a
+  reconcile loop should ever infer from an image-tag diff.
+- **Kubernetes is two classes, not one.** Workers are class 4 (green joins,
+  blue drains — easy). The control plane and etcd are class 5, where adding a
+  candidate member is itself a quorum event and version skew, not health, is
+  what makes a member unsafe to admit.
+
+### Prerequisites (why this isn't buildable yet)
+
+- **Real multi-member Incus clustering.** Three replicas on one physical node
+  is theater — the same critique § App Manager HA already levels at 0.x's own
+  leader failover. The value only lands at ≥3 members, which is also what
+  Incus's own dqlite quorum needs. So this is gated behind work already
+  deferred, not behind anything about the App Manager. Note **ceph is not
+  required**: local storage per replica plus app-level replication is the
+  entire point, and it sidesteps the shared-storage dependency § App Manager
+  HA cites as why the agent can't be relocated.
+- **Persistent volumes on `kind: App`.** The schema has no volume field, and
+  a class-3 renderer needs one (readers get a fresh volume per generation and
+  re-replicate; the writer is switched over, never replaced). Out of scope.
+- **Version-skew classification.** "The image string differs" is too coarse:
+  Postgres physical replication requires matching major versions, so 16 → 17
+  can't blue-green at all. Out of scope.
+- **Backup.** Replication is not backup — a `DROP TABLE` replicates
+  perfectly. Orthogonal to all of the above (a sidecar plus `params`), but it
+  has to exist before anything real depends on a managed database.
 
 ## Other notes
 1. Track the commit hash nodes are running
@@ -637,3 +858,7 @@ deferred part.
 - [Nomad — `update` stanza](https://developer.hashicorp.com/nomad/docs/job-specification/update) (#92's blue-green reconciliation model — see `docs/AppManager.md`)
 - [Kubernetes — Deployment strategies (Recreate vs. RollingUpdate)](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy)
 - [Argo Rollouts — BlueGreen strategy](https://argo-rollouts.readthedocs.io/en/stable/features/bluegreen/)
+- [Kubernetes — Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) (§18: the precedent for code-per-app on classes 3/5, vs. declarative probes/hooks for the rest)
+- [CloudNativePG](https://cloudnative-pg.io/) and [Zalando postgres-operator](https://github.com/zalando/postgres-operator) (§18: what the ecosystem converged on for class-3 Postgres, rather than declarative config)
+- [Patroni — DCS requirements](https://patroni.readthedocs.io/en/latest/) (§19: the external-DCS dependency Galera/CockroachDB avoid)
+- [Kubernetes — version skew policy](https://kubernetes.io/releases/version-skew-policy/) (§19 / `docs/AppClasses.md`: why "the image string differs" is too coarse a signal for classes 3/5)
