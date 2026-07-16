@@ -64,8 +64,12 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 **Done when:** a managed node has a persistent WireGuard tunnel to the web
 app, and a per-node app-manager agent fleet that elects a single leader,
 deploys and upgrades itself (blue-green, fleet-wide) from git-declared
-config, and survives losing the node currently hosting the leader — a
-follower takes over within the lease TTL with no reconciliation gap.
+config, and survives losing the specific agent instance currently holding
+leadership — another already-running agent takes over within the lease
+TTL with no reconciliation gap. (0.x provisions one physical node only,
+so this proves the lease/election mechanism itself, not genuine
+node-death fault tolerance — that needs real multi-member Incus
+clustering, deferred; see `docs/Decisions.md` § App Manager HA.)
 
 ## Phase 4 — Tailscale, logging + metrics
 

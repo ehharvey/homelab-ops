@@ -571,11 +571,19 @@ deferred part.
 
 ### Trade-offs accepted, not solved now
 
-- **Incus's own dqlite fault-tolerance needs an odd member count ≥3.** A
-  1-2 member cluster still gets this design's *agent* HA benefit once
-  more than one member exists, but the Incus control-plane itself stays a
-  single point of failure until then. Not a blocker for 0.x (one member
-  anyway) — revisit when a real multi-member cluster is on the table.
+- **0.x proves the lease/election mechanism, not genuine node-death
+  fault tolerance.** 0.x provisions one physical node only (§2) — so
+  today's "leader failover" is necessarily multiple agent *instances*
+  contesting the lease on that single Incus member (proving the
+  ETag-CAS/renewal/handoff logic is correct), not survival of an actual
+  node's loss. Real node-level HA additionally needs Incus's own dqlite
+  fault-tolerance, which needs an odd member count ≥3; a 1-2 member
+  cluster gets none of that (the control-plane itself is a single point
+  of failure until ≥3 members exist). Not a blocker for 0.x (one member
+  anyway, and the mechanism is what's being validated at this stage) —
+  revisit both the done-when criteria and the ≥3-member requirement once
+  a real multi-member cluster is on the table. See #92's done-when and
+  `scripts/validate-issue-92.sh` (#103) for how this is validated today.
 - **Leader-to-node partitions.** If the leader loses reach to a specific,
   still-alive node, that node's Apps go unreconciled until the partition
   heals or the lease moves to an agent that can reach it. Accepted,

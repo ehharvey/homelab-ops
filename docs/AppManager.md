@@ -82,6 +82,8 @@ A dedicated Incus project (e.g. `homelab-ops-meta`) holds a single never-started
 
 Any agent, wherever it happens to run, needs to read/write the same lease object and reach every node's instances — which only works if Incus is initialized as a cluster (even a one-member one, as 0.x runs today) rather than a bare per-node daemon. See `docs/Decisions.md` § App Manager HA for the corrected single-node framing this implies.
 
+**What 0.x actually validates.** 0.x provisions one physical node only, so there's only ever one real Incus cluster member — "leader failover" in this phase means multiple agent *instances* (one per declared `Instance`, all colocated on that single member) contesting the lease, proving the acquire/renew/handoff mechanism itself. It does not prove surviving the loss of an actual physical node, which additionally needs Incus's own dqlite fault-tolerance (an odd member count ≥3) once real multi-member clustering lands — see `docs/Decisions.md` § App Manager HA's trade-offs and #92's done-when.
+
 ## Reconcile algorithm (leader-only, fleet-wide)
 
 No local store for the agent: the durable record is Incus itself, via `user.*` config keys and instance naming (`<app.name>-g<generation>`, e.g. `agent-node0-g0`/`agent-node0-g1` — directly legible in `incus list`). This mirrors "the runtime is the source of truth" (Nomad's allocation table, Kubernetes' live Pod list) rather than a separate cache the agent has to keep in sync.
