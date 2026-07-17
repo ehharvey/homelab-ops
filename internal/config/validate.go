@@ -40,7 +40,10 @@ func (is Issues) Error() string {
 // address fields is already guaranteed by net/netip's TextUnmarshaler at parse
 // time; Validate covers the relationships between fields: name non-empty, CIDR
 // present, gateway/DNS/static-IP/DHCP-range membership in the CIDR, and a
-// static IP falling inside its network's DHCP-excluded (static) range.
+// static IP falling inside its network's DHCP-excluded (static) range. For an
+// App it covers the required fields Parse can't enforce (yaml.v3 has no notion
+// of a required key, so an omitted `replicas:` reaches here as a zero value)
+// and at most one per-node App per renderer type.
 //
 // It returns all issues found rather than stopping at the first, so an
 // operator fixing a bad commit sees every problem at once.
@@ -114,6 +117,42 @@ func Validate(c Config) Issues {
 			add(path+".static_ip", fmt.Sprintf("%s collides with the network address", inst.StaticIP))
 		case ok && inst.StaticIP == broadcast:
 			add(path+".static_ip", fmt.Sprintf("%s collides with the broadcast address", inst.StaticIP))
+		}
+	}
+
+	appFirstIndex := make(map[string]int, len(c.Apps))
+	perNodeFirstIndex := make(map[string]int, len(c.Apps))
+	for i, a := range c.Apps {
+		path := fmt.Sprintf("apps[%d]", i)
+
+		if strings.TrimSpace(a.Name) == "" {
+			add(path+".name", "must not be empty")
+		} else if j, ok := appFirstIndex[a.Name]; ok {
+			add(path+".name", fmt.Sprintf("%q is already defined by apps[%d]", a.Name, j))
+		} else {
+			appFirstIndex[a.Name] = i
+		}
+		// Type is required, but deliberately not checked against any renderer
+		// registry: config is a leaf package with no knowledge of which
+		// renderers a given binary registered. That check belongs at reconcile
+		// time, skipped per-App rather than failing the whole sync.
+		if strings.TrimSpace(a.Type) == "" {
+			add(path+".type", "must not be empty")
+		}
+		if strings.TrimSpace(a.Image.Alias) == "" && strings.TrimSpace(a.Image.Fingerprint) == "" {
+			add(path+".image", "must set alias or fingerprint")
+		}
+		// replicas is required, so the zero value (an omitted field) is an
+		// issue here alongside an explicit 0 or a negative — all three mean the
+		// same thing to an operator, and one message covers them.
+		if r := a.Replicas; !r.PerNode && r.Count < 1 {
+			add(path+".replicas", fmt.Sprintf("must be %q or a positive count", perNode))
+		} else if r.PerNode {
+			if j, ok := perNodeFirstIndex[a.Type]; ok {
+				add(path+".replicas", fmt.Sprintf("a per-node app of type %q is already defined by apps[%d]", a.Type, j))
+			} else {
+				perNodeFirstIndex[a.Type] = i
+			}
 		}
 	}
 

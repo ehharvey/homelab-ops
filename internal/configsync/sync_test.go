@@ -4,12 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	"github.com/ehharvey/homelab-ops/internal/config"
 )
 
 const fixtureYAML = `
@@ -143,4 +146,50 @@ func TestSyncErrors(t *testing.T) {
 			t.Error("Sync with a nonexistent ref: got nil error")
 		}
 	})
+}
+
+// Sync hand-recombines each file's parsed Config into the aggregate, so a new
+// document kind has to be added to that loop explicitly — this pins that Apps
+// accumulate across files rather than the last file winning.
+func TestSyncAccumulatesAppsAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	repo := initFixtureRepo(t, dir)
+	commitFixtureFile(t, repo, dir, "agent.yaml", `
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  alias: ehharvey/homelab-ops/agent:latest
+`)
+	commitFixtureFile(t, repo, dir, "web.yaml", `
+kind: App
+name: web-frontend
+type: some-renderer
+replicas: 3
+image:
+  alias: some/image:latest
+`)
+
+	s := &Syncer{RepoURL: dir, Ref: DefaultRef}
+	cfg, _, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	got := make(map[string]config.Replicas, len(cfg.Apps))
+	for _, a := range cfg.Apps {
+		got[a.Name] = a.Replicas
+	}
+	want := map[string]config.Replicas{
+		"agent":        {PerNode: true},
+		"web-frontend": {Count: 3},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Apps = %+v, want %+v", got, want)
+	}
+	// The other kinds must still survive alongside the new one.
+	if len(cfg.Networks) != 1 || len(cfg.Instances) != 1 {
+		t.Errorf("Networks/Instances = %d/%d, want 1/1", len(cfg.Networks), len(cfg.Instances))
+	}
 }

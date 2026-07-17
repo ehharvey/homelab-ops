@@ -191,3 +191,99 @@ func issueContains(issues Issues, path, substr string) bool {
 	}
 	return false
 }
+
+// validApp is a fully-populated, semantically-valid App used as the baseline
+// that the per-field tests below mutate.
+func validApp() App {
+	return App{
+		Name:     "web-frontend",
+		Type:     "some-renderer",
+		Replicas: Replicas{Count: 1},
+		Image:    ImageRef{Server: "https://ghcr.io", Protocol: "oci", Alias: "some/image:latest"},
+	}
+}
+
+func TestValidateAcceptsGoodApp(t *testing.T) {
+	if issues := Validate(Config{Apps: []App{validApp()}}); !issues.Empty() {
+		t.Fatalf("Validate() = %v, want no issues", issues)
+	}
+}
+
+func TestValidateAppIssues(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*App)
+		wantPath string
+	}{
+		{"empty name", func(a *App) { a.Name = "" }, "apps[0].name"},
+		{"whitespace name", func(a *App) { a.Name = "  " }, "apps[0].name"},
+		{"empty type", func(a *App) { a.Type = "" }, "apps[0].type"},
+		{"no alias or fingerprint", func(a *App) { a.Image = ImageRef{Server: "https://ghcr.io", Protocol: "oci"} }, "apps[0].image"},
+		// replicas is required, so all three of these mean the same thing.
+		{"replicas omitted", func(a *App) { a.Replicas = Replicas{} }, "apps[0].replicas"},
+		{"replicas zero", func(a *App) { a.Replicas = Replicas{Count: 0} }, "apps[0].replicas"},
+		{"replicas negative", func(a *App) { a.Replicas = Replicas{Count: -1} }, "apps[0].replicas"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := validApp()
+			tc.mutate(&a)
+			issues := Validate(Config{Apps: []App{a}})
+			if !hasPath(issues, tc.wantPath) {
+				t.Fatalf("Validate() = %v, want an issue at %q", issues, tc.wantPath)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsFingerprintOnlyImage(t *testing.T) {
+	a := validApp()
+	a.Image = ImageRef{Fingerprint: "abc123"}
+	if issues := Validate(Config{Apps: []App{a}}); !issues.Empty() {
+		t.Fatalf("Validate() = %v, want no issues", issues)
+	}
+}
+
+func TestValidateRejectsDuplicateAppName(t *testing.T) {
+	cfg := Config{Apps: []App{validApp(), validApp()}}
+	issues := Validate(cfg)
+	if !issueContains(issues, "apps[1].name", "already defined by apps[0]") {
+		t.Fatalf("Validate() = %v, want a duplicate-name issue at apps[1].name", issues)
+	}
+}
+
+// An empty name is reported as empty, not additionally as a duplicate of the
+// other empty one — mirroring the Network rule.
+func TestValidateDoesNotDoubleReportDuplicateEmptyAppNames(t *testing.T) {
+	a, b := validApp(), validApp()
+	a.Name, b.Name = "", ""
+	issues := Validate(Config{Apps: []App{a, b}})
+	if issueContains(issues, "apps[1].name", "already defined") {
+		t.Fatalf("Validate() = %v, want no duplicate-name issue for empty names", issues)
+	}
+}
+
+// The rule the superseded "at most one kind: AgentConfig" singleton became:
+// two per-node Apps of one type would race to manage the same node.
+func TestValidateRejectsSecondPerNodeAppOfSameType(t *testing.T) {
+	a, b := validApp(), validApp()
+	a.Name, b.Name = "agent", "agent-2"
+	a.Type, b.Type = "agent", "agent"
+	a.Replicas, b.Replicas = Replicas{PerNode: true}, Replicas{PerNode: true}
+	issues := Validate(Config{Apps: []App{a, b}})
+	if !issueContains(issues, "apps[1].replicas", `a per-node app of type "agent" is already defined by apps[0]`) {
+		t.Fatalf("Validate() = %v, want a duplicate per-node issue at apps[1].replicas", issues)
+	}
+}
+
+// Per-node is a general shape, not an agent special case: the agent and Alloy
+// both declare it, and they must coexist.
+func TestValidateAcceptsPerNodeAppsOfDifferentTypes(t *testing.T) {
+	a, b := validApp(), validApp()
+	a.Name, b.Name = "agent", "alloy"
+	a.Type, b.Type = "agent", "alloy"
+	a.Replicas, b.Replicas = Replicas{PerNode: true}, Replicas{PerNode: true}
+	if issues := Validate(Config{Apps: []App{a, b}}); !issues.Empty() {
+		t.Fatalf("Validate() = %v, want no issues", issues)
+	}
+}

@@ -86,7 +86,7 @@ echo
 echo "== 2. The first background poll establishes a baseline (no warnings yet) =="
 # No POST /sync anywhere: this log line can only come from the poll loop.
 wait_log "background poll logs the first sync as a baseline" \
-  "configdiff: first sync, 1 networks / 1 instances baseline"
+  "configdiff: first sync, 1 networks / 1 instances / 1 apps baseline"
 
 echo
 echo "== 3. A pushed YAML change produces diff warnings on the next poll =="
@@ -111,6 +111,15 @@ cidr: 10.0.2.0/24
 gateway: 10.0.2.1
 dhcp_excluded_range: 10.0.2.200-10.0.2.250
 dns: [10.0.2.1]
+---
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  server: https://ghcr.io
+  protocol: oci
+  alias: ehharvey/homelab-ops/agent:latest
 EOF
   git add fleet.yaml
   git commit -m "validate-config-sync-poll: change dev-lan, add extra-lan, drop devnode0" >/dev/null
