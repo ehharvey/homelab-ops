@@ -648,7 +648,7 @@ cardinality field:
 kind: App
 name: agent
 type: agent
-replicas: per-node   # or a fixed count; omitted → 1
+replicas: per-node   # or a fixed count; required
 image: {...}
 ```
 
@@ -661,8 +661,13 @@ and the fleet-definition schema is **three** kinds rather than four (§13's
 less, not two). `replicas` is parsed by a small `encoding.TextUnmarshaler`
 type in `internal/config`, exactly as `Range` already is for
 `dhcp_excluded_range` (§ Validation approach) — `"per-node"` and `"3"` both
-land as a typed value at parse time, and an omitted field is a valid zero
-meaning 1.
+land as a typed value at parse time. The field is **required**, settled when
+#97 implemented it: an earlier revision of this section had an omitted field
+be a valid zero meaning 1, but yaml.v3 never calls `UnmarshalText` for an
+absent key, so an omitted `replicas:` and a typo'd `replicas: 0` reach
+`Validate` as the same zero value — indistinguishable. Defaulting would have
+made `0` silently mean 1; requiring it makes both one error, and writing
+`replicas: 1` costs an operator nothing.
 
 **Three things that have already been conflated once, kept apart here:**
 
