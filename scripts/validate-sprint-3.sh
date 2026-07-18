@@ -172,6 +172,19 @@ echo
 echo "== 2. Bring up the web app configured to build real images =="
 BASE_IMAGE_ABS="$(cd "$(dirname "$INCUSOS_BASE_IMAGE")" && pwd)/$(basename "$INCUSOS_BASE_IMAGE")"
 export BASE_IMAGE_ABS
+# WIREGUARD_ENDPOINT is required alongside the cert and base image: #107 gated
+# both the seed and image routes on it ("wireguard not configured"), and this
+# script never set it. It is a *config* gate, not a hardware one —
+# internal/wireguard runs the tunnel over netstack.CreateNetTUN +
+# conn.NewDefaultBind() (userspace, no NET_ADMIN, an unprivileged
+# net.ListenUDP), and resolveInstanceSeed mints the node credential offline
+# without dialing anything. So a loopback endpoint satisfies it; the port is
+# already published by docker-compose.yml. See #129, which fixed the same defect
+# in validate-issue-38.sh and -39.sh, and docs/Decisions.md §20.
+#
+# Note this makes tunnel startup FATAL rather than degraded (see cmd/web/main.go
+# — a *set* endpoint expresses operator intent), so the stack will fail to come
+# up if 51820 is already bound. That is the correct failure: loud, not silent.
 cat >"$OVERRIDE" <<'EOF'
 services:
   web:
@@ -181,6 +194,7 @@ services:
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
       - BASE_IMAGE_PATH=/data/incusos-base.img
+      - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 
 check "docker compose up --build succeeds" compose up --build -d
