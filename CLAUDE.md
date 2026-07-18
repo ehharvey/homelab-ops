@@ -18,16 +18,21 @@ Guidance for Claude Code working in this repo. Full context lives in
 
 ## Conventions (see docs/Development Conventions.md for full detail/rationale)
 
-- One branch per GitHub issue: `eharvey/#<n>`. PRs use a Plan/Test plan
-  body and `Closes #<n>` — don't close issues manually.
+- One branch per GitHub issue: `eharvey/#<n>`, landing as **exactly one
+  commit** — `main` is rebase-only, so N branch commits become N commits on
+  main. Enforced by `.githooks/pre-push` (install: `make hooks`) and the
+  required `one-commit` check in `.github/workflows/pr-shape.yml`.
+- Write the Plan/Test plan sections and `Closes #<n>` in the *commit message
+  body*; `make ship` runs `gh pr create --fill`, which copies them into the PR.
+  Don't close issues manually.
 - Core logic lives in `internal/<package>/`, decoupled from CLI/cobra
   concerns; `cmd/bootstrap/cmd/` is one file per subcommand, self-registered
   via `init()`.
 - Prefer stdlib, or vendoring one small file, over importing a large module
   for one piece of logic (see `internal/cert`, `internal/third_party/incusos`).
 - When a `Roadmap.md` checklist item is finished, check it off in
-  `docs/Roadmap.md` in its own commit, annotated with the closing issue
-  number.
+  `docs/Roadmap.md` in the *same* commit as the work, annotated with the
+  closing issue number (it used to want its own commit; see #119).
 - Generated artifacts (certs, keys, seeds, images) are gitignored under
   `bootstrap-output/` and `*.img` — never commit them.
 - `//nolint:gosec` directives here suppress *real* findings (e.g. G304 file
