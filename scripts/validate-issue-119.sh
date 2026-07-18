@@ -111,21 +111,33 @@ gh pr create --head "$BRANCH" --base main \
 PR_OPEN=1
 echo "=== opened throwaway PR, waiting for one-commit to report"
 
+# Polls the check run for a SPECIFIC head SHA, not the PR.
+#
+# `gh pr checks` is PR-level, and right after a force-push it still reports the
+# previous run's terminal state — the run for the new head hasn't registered
+# yet. Reading that stale FAILURE as authoritative is what made this script
+# fail on a branch that was in fact correctly green (#122). Anchoring to the
+# SHA makes "no run yet" distinguishable from "run finished", which is the
+# whole difference.
 await_check() {
-	local want=$1 i state
+	local sha=$1 want=$2 i line status conclusion
 	for i in $(seq 1 60); do
-		state=$(gh pr checks "$BRANCH" --json name,state \
-			--jq '.[] | select(.name=="one-commit") | .state' 2>/dev/null || true)
-		case "$state" in
-			"$want") return 0 ;;
-			FAILURE|SUCCESS) fail "one-commit reported $state, wanted $want" ;;
-		esac
+		line=$(gh api "repos/$REPO/commits/$sha/check-runs" \
+			--jq '.check_runs[] | select(.name=="one-commit") | "\(.status) \(.conclusion)"' \
+			2>/dev/null | head -1)
+		status=${line%% *}
+		conclusion=${line##* }
+
+		if [ "$status" = "completed" ]; then
+			[ "$conclusion" = "$want" ] && return 0
+			fail "one-commit on ${sha:0:8} concluded '$conclusion', wanted '$want'"
+		fi
 		sleep 5
 	done
-	fail "timed out waiting for one-commit to report $want (last: ${state:-none})"
+	fail "timed out waiting for one-commit on ${sha:0:8} (last: ${line:-no run yet})"
 }
 
-await_check FAILURE
+await_check "$(git rev-parse HEAD)" failure
 pass "one-commit went red on the 2-commit PR"
 
 # --- 3. the merge is actually blocked --------------------------------------
@@ -141,7 +153,7 @@ git reset -q --soft "$BASE_REF"
 git commit -qm "chore: validate-119 throwaway (squashed)"
 git push -q --force-with-lease origin "$BRANCH"
 
-await_check SUCCESS
+await_check "$(git rev-parse HEAD)" success
 pass "one-commit went green after the squash"
 
 echo
