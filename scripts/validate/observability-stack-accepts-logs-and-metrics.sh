@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -104,14 +104,14 @@ echo "== 3. Push a marker log line directly to Loki's push API and query it back
 marker="homelab-ops-validate-82-$(date +%s)"
 ts_ns=$(date +%s%N)
 payload=$(jq -n --arg ts "$ts_ns" --arg line "$marker" \
-  '{streams: [{stream: {job: "validate-issue-82"}, values: [[$ts, $line]]}]}')
+  '{streams: [{stream: {job: "observability-stack"}, values: [[$ts, $line]]}]}')
 check "pushed marker log line to Loki" \
   curl -sf -o /dev/null -X POST http://localhost:3100/loki/api/v1/push \
   -H "Content-Type: application/json" -d "$payload"
 
 # Log-selector queries (as opposed to metric queries like count_over_time)
 # are only served by query_range, not the instant /query endpoint.
-query_encoded=$(jq -rn --arg q '{job="validate-issue-82"}' '$q|@uri')
+query_encoded=$(jq -rn --arg q '{job="observability-stack"}' '$q|@uri')
 filter='[.data.result[].values[][1]] | index("MARKER") != null'
 filter="${filter/MARKER/$marker}"
 wait_json "Loki query returns the pushed marker line" \

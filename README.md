@@ -22,7 +22,7 @@ browsability; never edit the wiki directly.
        ./bin/bootstrap render-seed --file fleet.yaml --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed
        ./bin/bootstrap build-image --image ./incusos-base.img --output ./bootstrap-output/img/node0.img
 
-   `dd` the result onto a USB stick, or run `scripts/validate-issue-5.sh` to
+   `dd` the result onto a USB stick, or run `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` to
    boot it in a real Incus VM and confirm install + cert trust end-to-end
    without real hardware.
 4. See [`docs/Quickstart.md`](docs/Quickstart.md) for the full walkthrough,

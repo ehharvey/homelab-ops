@@ -4,27 +4,27 @@
 # time network.yaml is rendered via POST /instances/{name}/seed — and that the
 # assigned address is stable across re-syncs (does not churn each poll).
 #
-# Unlike validate-issue-36.sh (which asserts an *explicit* static_ip renders),
+# Unlike seed-route-renders-static-ip.sh (which asserts an *explicit* static_ip renders),
 # this drives the static_ip-less path end-to-end through the running app: real
 # config.Parse of a static_ip-less YAML -> POST /sync -> IPAM auto-assign ->
 # SQLite -> seed route. That's coverage the Go integration test can't give (its
 # fakeSyncer bypasses config.Parse, the git remote, and the HTTP app).
 #
-# NOTE: unlike validate-issue-36.sh / -41.sh, there is no red->green fix here.
+# NOTE: unlike seed-route-renders-static-ip.sh / -41.sh, there is no red->green fix here.
 # #38's wiring is inherited from #35 (IPAM) and #36 (seed route); this script is
 # a regression guard that would only fail if that pull-through were later broken.
 #
 # It deliberately does NOT touch the committed dev/git-fixture/fleet.yaml (shared
-# by validate-config-sync-poll.sh / validate-issue-21.sh / -22.sh, which assert
+# by background-poll-warns-on-config-diff.sh / store-retains-synced-fleet.sh / -22.sh, which assert
 # exact instance counts). Instead it pushes its own fleet into the config-repo
-# git server at runtime, the same way validate-config-sync-poll.sh does.
+# git server at runtime, the same way background-poll-warns-on-config-diff.sh does.
 #
 # Intended to run INSIDE the devcontainer, from the repo root. Requires docker
 # compose, jq, and go.
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -37,7 +37,7 @@ export CERT_DIR
 OVERRIDE="$(mktemp /tmp/compose-issue38-override.XXXXXX.yml)"
 
 # The seed route 503s without a CertSource, so mount an operator cert at
-# CLIENT_CERT_PATH exactly as validate-issue-36.sh does.
+# CLIENT_CERT_PATH exactly as seed-route-renders-static-ip.sh does.
 #
 # WIREGUARD_ENDPOINT is required for the same reason: #107 added a second gate
 # to this route ("wireguard not configured"), and this script never set it, so
@@ -101,7 +101,7 @@ if [ ! -x "$BOOTSTRAP_BIN" ]; then
   echo "ERROR: bootstrap binary not built or not executable: $BOOTSTRAP_BIN" >&2
   exit 2
 fi
-check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "validate-issue-38"
+check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "seed-route-renders-ipam-address"
 
 echo
 echo "== 2. Bring up the real stack with the cert mounted =="
@@ -124,7 +124,7 @@ compose exec -T config-repo sh -c '
   git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-work
   cd /tmp/validate-work
   git config user.email dev@homelab-ops.local
-  git config user.name "validate-issue-38"
+  git config user.name "seed-route-renders-ipam-address"
   cat > fleet.yaml <<EOF
 kind: Network
 name: dev-lan
@@ -145,7 +145,7 @@ security:
 applications: [incus]
 EOF
   git add fleet.yaml
-  git commit -m "validate-issue-38: static_ip-less devnode1" >/dev/null
+  git commit -m "seed-route-renders-ipam-address: static_ip-less devnode1" >/dev/null
   git push origin main >/dev/null 2>&1
 ' >/dev/null 2>&1
 check "pushed a static_ip-less fleet to the fixture repo" \

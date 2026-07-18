@@ -4,7 +4,7 @@
 # on each request (no caching — docs/Decisions.md §3).
 #
 # Drives the real docker compose stack (web + dev/git-fixture git remote) and
-# hits the route with curl, following validate-issue-36.sh's pattern: the web
+# hits the route with curl, following seed-route-renders-static-ip.sh's pattern: the web
 # app's deployment config (the break-glass cert AND the base IncusOS image) is
 # supplied via a scoped compose override written here, NOT a permanent
 # docker-compose.yml change. The web image built by `compose up --build` is the
@@ -13,7 +13,7 @@
 #
 # The image checks need a real base IncusOS raw image: point INCUSOS_BASE_IMAGE
 # at a local copy. Those checks skip with a clear message if it's unset/missing
-# (same convention as validate-issue-5.sh). A real IncusOS image injects the
+# (same convention as node-boots-and-trusts-bootstrap-cert.sh). A real IncusOS image injects the
 # seed in place at a fixed offset, so the output is the SAME size as the base —
 # this asserts that equality plus the presence of the seeded MAC in the output
 # bytes (absent from the base), and stops at "structurally a seeded disk image":
@@ -21,14 +21,14 @@
 #
 # The route may not exist yet — until #39 lands, expect the image checks to fail
 # with a 404/503 against GET /instances/.../image (same convention as
-# validate-issue-36.sh before #36 landed).
+# seed-route-renders-static-ip.sh before #36 landed).
 #
 # Intended to run INSIDE the devcontainer, from the repo root. Requires docker
 # compose, curl, jq, go, and openssl.
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -135,7 +135,7 @@ if [ ! -x "$BOOTSTRAP_BIN" ]; then
   echo "ERROR: bootstrap binary not built or not executable: $BOOTSTRAP_BIN" >&2
   exit 2
 fi
-check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "validate-issue-39"
+check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "image-route-streams-seeded-image"
 
 echo
 echo "== 2. Bring up the real stack (web image carries flasher-tool) =="

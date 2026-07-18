@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"
@@ -50,7 +50,7 @@ check() {
 # about the rule under test. Demonstrated rather than assumed: renaming --file
 # to --fleetfile makes render-seed exit non-zero with "unknown flag", which the
 # old helper scored as three PASSes and this one reports as three FAILs naming
-# the mismatch. Unlike validate-issue-39.sh's equivalent false pass, this one
+# the mismatch. Unlike image-route-streams-seeded-image.sh's equivalent false pass, this one
 # had no neighbouring assertion to catch it, so the script would have gone
 # fully green. See #115.
 expect_render_seed_rejects() {

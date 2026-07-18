@@ -1,6 +1,6 @@
 # Dev-only fixture: Prometheus scrapes itself and remote_writes those same
 # samples back to its own --web.enable-remote-write-receiver endpoint, so
-# scripts/validate-issue-82.sh can prove the remote_write receiver path
+# scripts/validate/observability-stack-accepts-logs-and-metrics.sh can prove the remote_write receiver path
 # actually works without needing a real Alloy/remote-write client.
 global:
   scrape_interval: 5s

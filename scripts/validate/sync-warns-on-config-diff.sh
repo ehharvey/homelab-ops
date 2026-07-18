@@ -17,7 +17,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -89,7 +89,7 @@ docker compose exec -T config-repo sh -c '
   git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-work
   cd /tmp/validate-work
   git config user.email dev@homelab-ops.local
-  git config user.name "validate-issue-22"
+  git config user.name "sync-warns-on-config-diff"
   cat > fleet.yaml <<EOF
 kind: Network
 name: dev-lan
@@ -106,7 +106,7 @@ dhcp_excluded_range: 10.0.2.200-10.0.2.250
 dns: [10.0.2.1]
 EOF
   git add fleet.yaml
-  git commit -m "validate-issue-22: change dev-lan, add extra-lan, drop devnode0" >/dev/null
+  git commit -m "sync-warns-on-config-diff: change dev-lan, add extra-lan, drop devnode0" >/dev/null
   git push origin main >/dev/null 2>&1
 ' >/dev/null 2>&1
 check "pushed a second commit to the fixture repo" docker compose exec -T config-repo test -d /tmp/validate-work
@@ -138,7 +138,7 @@ docker compose exec -T config-repo sh -c '
   git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-bad
   cd /tmp/validate-bad
   git config user.email dev@homelab-ops.local
-  git config user.name "validate-issue-22"
+  git config user.name "sync-warns-on-config-diff"
   cat > fleet.yaml <<EOF
 kind: Network
 name: dev-lan
@@ -148,7 +148,7 @@ dhcp_excluded_range: 10.0.1.200-10.0.1.250
 dns: [10.0.1.1]
 EOF
   git add fleet.yaml
-  git commit -m "validate-issue-22: gateway outside cidr (must fail validation)" >/dev/null
+  git commit -m "sync-warns-on-config-diff: gateway outside cidr (must fail validation)" >/dev/null
   git push origin main >/dev/null 2>&1
 ' >/dev/null 2>&1
 check "pushed an invalid third commit to the fixture repo" docker compose exec -T config-repo test -d /tmp/validate-bad

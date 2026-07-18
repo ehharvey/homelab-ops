@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm vendor-incusos docker-build dev validate-sprint-3
+.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm vendor-incusos docker-build dev
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -51,5 +51,3 @@ docker-build:
 dev:
 	docker compose up --build
 
-validate-sprint-3:
-	./scripts/validate-sprint-3.sh

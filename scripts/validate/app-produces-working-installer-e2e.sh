@@ -5,14 +5,14 @@
 #
 # This is the sprint-closing script and a hybrid of the two existing
 # validation families:
-#   - Web-app family (validate-issue-38.sh/-39.sh): drive the running app via
+#   - Web-app family (seed-route-renders-ipam-address.sh/-39.sh): drive the running app via
 #     docker compose + curl to *produce* the .img — no bootstrap CLI in the
 #     provisioning path.
-#   - Bootstrap/Phase-0 family (validate-issue-5.sh): stream that .img onto
+#   - Bootstrap/Phase-0 family (node-boots-and-trusts-bootstrap-cert.sh): stream that .img onto
 #     the real homelab-host Incus remote, boot a VM, and prove cert trust
 #     over HTTPS.
 #
-# Unlike validate-issue-39.sh (which deliberately stops at "structurally a
+# Unlike image-route-streams-seeded-image.sh (which deliberately stops at "structurally a
 # seeded disk image" and defers the full boot-and-cert-trust check here),
 # this always boots a real Incus VM off the web-app-produced image — no
 # skip-as-fail: it hard-fails if homelab-host or INCUSOS_BASE_IMAGE are
@@ -22,12 +22,12 @@
 # Requires: docker compose, curl, jq, go, openssl, incus. Needs the real
 # "homelab-host" Incus remote / "homelab-dev" project / "home-lan" network
 # set up by .devcontainer/scripts/2-setup-dev-network.sh, and a real bootable
-# INCUSOS_BASE_IMAGE (same one validate-issue-5.sh needs). The image route
+# INCUSOS_BASE_IMAGE (same one node-boots-and-trusts-bootstrap-cert.sh needs). The image route
 # copies the multi-GB base image into the container's /tmp per request, so
 # the devcontainer host needs enough writable disk.
 #
-# Don't run concurrently with validate-issue-5.sh: both drive real VMs on the
-# same live home-lan bridge / homelab-host remote, and validate-issue-5.sh
+# Don't run concurrently with node-boots-and-trusts-bootstrap-cert.sh: both drive real VMs on the
+# same live home-lan bridge / homelab-host remote, and node-boots-and-trusts-bootstrap-cert.sh
 # hardcodes STATIC_IP=192.168.1.201 — the same address IPAM will hand node1
 # here.
 #
@@ -35,7 +35,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -60,10 +60,10 @@ PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
 NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
 POOL="default"
 MAC="aa:bb:cc:dd:ee:40"
-VM_NAME="validate-sprint-3-$$"
-WRITER_NAME="validate-sprint-3-writer-$$"
-PROBE_NAME="validate-sprint-3-probe-$$"
-SEED_VOL="validate-sprint-3-seeded-img-$$"
+VM_NAME="validate-installer-$$"
+WRITER_NAME="validate-installer-writer-$$"
+PROBE_NAME="validate-installer-probe-$$"
+SEED_VOL="validate-installer-seeded-img-$$"
 
 compose() {
   docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" "$@"
@@ -166,7 +166,7 @@ if [ ! -x "$BOOTSTRAP_BIN" ]; then
   echo "ERROR: bootstrap binary not built or not executable: $BOOTSTRAP_BIN" >&2
   exit 2
 fi
-check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "validate-sprint-3"
+check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "app-produces-working-installer-e2e"
 
 echo
 echo "== 2. Bring up the web app configured to build real images =="
@@ -180,7 +180,7 @@ export BASE_IMAGE_ABS
 # net.ListenUDP), and resolveInstanceSeed mints the node credential offline
 # without dialing anything. So a loopback endpoint satisfies it; the port is
 # already published by docker-compose.yml. See #129, which fixed the same defect
-# in validate-issue-38.sh and -39.sh, and docs/Decisions.md §20.
+# in seed-route-renders-ipam-address.sh and -39.sh, and docs/Decisions.md §20.
 #
 # Note this makes tunnel startup FATAL rather than degraded (see cmd/web/main.go
 # — a *set* endpoint expresses operator intent), so the stack will fail to come
@@ -214,7 +214,7 @@ compose exec -T config-repo sh -c '
   git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-work
   cd /tmp/validate-work
   git config user.email dev@homelab-ops.local
-  git config user.name "validate-sprint-3"
+  git config user.name "app-produces-working-installer-e2e"
   cat > fleet.yaml <<EOF
 kind: Network
 name: home-lan
@@ -246,7 +246,7 @@ security:
 applications: [incus]
 EOF
   git add fleet.yaml
-  git commit -m "validate-sprint-3: static_ip-less node0/node1 on home-lan" >/dev/null
+  git commit -m "app-produces-working-installer-e2e: static_ip-less node0/node1 on home-lan" >/dev/null
   git push origin main >/dev/null 2>&1
 ' >/dev/null 2>&1
 check "pushed a static_ip-less two-node fleet to the fixture repo" \
@@ -344,7 +344,7 @@ check "downloaded .img is a plausibly-sized disk image (>= 1 MiB)" \
 # the assertion to make here.
 #
 # This replaces a `cmp -s` check — byte-identical to the one in
-# validate-issue-39.sh — that asserted the download merely *differed* from the
+# image-route-streams-seeded-image.sh — that asserted the download merely *differed* from the
 # base. That passed whenever the two files were not byte-identical, which a
 # 40-byte 503 error body trivially is not, so it reported PASS for the exact
 # failure mode it existed to catch. See #115.
@@ -366,7 +366,7 @@ img_bytes=$(stat -c%s "$out_img")
 vol_gib=$(((img_bytes + (1 << 30) - 1) / (1 << 30)))
 
 # Stream node0.img onto the remote as a block-type custom volume, via a
-# disposable "writer" VM — see validate-issue-5.sh's header comment for why a
+# disposable "writer" VM — see node-boots-and-trusts-bootstrap-cert.sh's header comment for why a
 # plain `disk source=<local path>` device can't be used against a remote
 # target.
 check "seed .img streamed onto $REMOTE as a block volume" bash -c "

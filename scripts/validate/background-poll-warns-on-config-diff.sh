@@ -7,7 +7,7 @@
 # Both paths now go through server.SyncOnce, so a background poll logs the
 # same added/changed/removed warnings a manual sync does.
 #
-# Unlike validate-issue-22.sh, this script NEVER calls POST /sync: it sets
+# Unlike sync-warns-on-config-diff.sh, this script NEVER calls POST /sync: it sets
 # CONFIG_SYNC_INTERVAL (via a compose override) and proves the warnings come
 # from the poll loop alone. Drives the real `docker compose` stack (web + the
 # dev/git-fixture config-repo).
@@ -17,7 +17,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -96,7 +96,7 @@ docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" exec -T config-r
   git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-work
   cd /tmp/validate-work
   git config user.email dev@homelab-ops.local
-  git config user.name "validate-config-sync-poll"
+  git config user.name "background-poll-warns-on-config-diff"
   cat > fleet.yaml <<EOF
 kind: Network
 name: dev-lan
@@ -113,7 +113,7 @@ dhcp_excluded_range: 10.0.2.200-10.0.2.250
 dns: [10.0.2.1]
 EOF
   git add fleet.yaml
-  git commit -m "validate-config-sync-poll: change dev-lan, add extra-lan, drop devnode0" >/dev/null
+  git commit -m "background-poll-warns-on-config-diff: change dev-lan, add extra-lan, drop devnode0" >/dev/null
   git push origin main >/dev/null 2>&1
 ' >/dev/null 2>&1
 check "pushed a second commit to the fixture repo" \

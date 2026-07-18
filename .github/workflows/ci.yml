@@ -35,7 +35,7 @@ jobs:
   # distroless/static final stage. The image route (#39) shells out to it, but
   # no other CI job builds the Docker image — so a cgo/glibc/exec-format
   # regression (e.g. flasher-tool gaining a cgo dependency that no longer links
-  # static) would otherwise only surface when someone runs validate-issue-39.sh
+  # static) would otherwise only surface when someone runs image-route-streams-seeded-image.sh
   # by hand. distroless has no shell, so the binary is invoked directly via
   # --entrypoint rather than through `sh -c`.
   docker-smoke:

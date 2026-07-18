@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -88,7 +88,7 @@ docker compose exec -T config-repo sh -c '
   git clone --no-hardlinks /srv/git/fleet.git /tmp/validate-work
   cd /tmp/validate-work
   git config user.email dev@homelab-ops.local
-  git config user.name "validate-issue-21"
+  git config user.name "store-retains-synced-fleet"
   cat > fleet.yaml <<EOF
 kind: Network
 name: other-lan
@@ -98,7 +98,7 @@ dhcp_excluded_range: 10.1.0.200-10.1.0.250
 dns: [1.1.1.1]
 EOF
   git add fleet.yaml
-  git commit -m "validate-issue-21: replace fixture with other-lan" >/dev/null
+  git commit -m "store-retains-synced-fleet: replace fixture with other-lan" >/dev/null
   git push origin main >/dev/null 2>&1
 ' >/dev/null 2>&1
 check "pushed a second commit to the fixture repo" docker compose exec -T config-repo test -d /tmp/validate-work
