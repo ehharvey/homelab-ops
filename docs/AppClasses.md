@@ -74,7 +74,7 @@ Two ways to land here:
 
 *How many* instances an App has is independent of classes 1–6:
 
-- **Fixed N** (`replicas: 3`, or omitted → 1).
+- **Fixed N** (`replicas: 3`, or `replicas: 1` — the field is required, so a single-instance App says so outright).
 - **Per-node** (`replicas: per-node`) — one per known `kind: Instance`, synthesized fresh each tick from the fleet's node list. The DaemonSet shape.
 
 The agent is (class 2, per-node). Alloy (#77) is (class 2, per-node) — the same shape, which is why per-node is a property of `kind: App` rather than an agent-specific singleton kind (see `docs/Decisions.md` § App Manager HA, "Follow-up: cardinality replaces `kind: AgentConfig`"). A database is (class 3, fixed N).

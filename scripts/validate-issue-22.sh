@@ -79,7 +79,7 @@ check_json "POST /sync returns a commit SHA" "$sync1" '.commit | length > 0'
 check_json "first sync's diff counts are all zero" "$sync1" \
   '.diff | to_entries | all(.value == 0)'
 check_log "log records the first sync as a baseline, not a diff" \
-  "configdiff: first sync, 1 networks / 1 instances baseline"
+  "configdiff: first sync, 1 networks / 1 instances / 1 apps baseline"
 
 echo
 echo "== 3. A pushed YAML change produces a visible diff on the next sync =="
@@ -104,6 +104,15 @@ cidr: 10.0.2.0/24
 gateway: 10.0.2.1
 dhcp_excluded_range: 10.0.2.200-10.0.2.250
 dns: [10.0.2.1]
+---
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  server: https://ghcr.io
+  protocol: oci
+  alias: ehharvey/homelab-ops/agent:latest
 EOF
   git add fleet.yaml
   git commit -m "validate-issue-22: change dev-lan, add extra-lan, drop devnode0" >/dev/null
@@ -118,6 +127,10 @@ check_json "diff reports the changed network" "$sync2" '.diff.networks_changed =
 check_json "diff reports the removed instance" "$sync2" '.diff.instances_removed == 1'
 check_json "diff reports no spurious instance adds/changes" "$sync2" \
   '.diff.instances_added == 0 and .diff.instances_changed == 0'
+# The agent App is unchanged across both commits, so it must round-trip through
+# the real store's apps table and register as no diff at all.
+check_json "diff reports no spurious app adds/changes/removals" "$sync2" \
+  '.diff.apps_added == 0 and .diff.apps_changed == 0 and .diff.apps_removed == 0'
 
 check_log "log shows the added network as a human-readable warning" \
   "+ network extra-lan added"

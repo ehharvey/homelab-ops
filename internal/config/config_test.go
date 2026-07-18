@@ -193,3 +193,210 @@ name: [unterminated
 		t.Fatalf("expected error for malformed YAML, got nil")
 	}
 }
+
+// The agent is declared as an ordinary App — `type: agent` is not reserved,
+// and nothing about it is special-cased in the schema. This is the exact YAML
+// from docs/AppManager.md § replicas: per-node; an earlier revision of the
+// design gave the agent its own `kind: AgentConfig`, and this pins that the
+// replacement really does parse as a plain document.
+func TestParseAgentApp(t *testing.T) {
+	const fleet = `
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  server: https://ghcr.io
+  protocol: oci
+  alias: ehharvey/homelab-ops/agent:latest
+`
+	cfg, err := Parse(strings.NewReader(fleet))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := App{
+		Name:     "agent",
+		Type:     "agent",
+		Replicas: Replicas{PerNode: true},
+		Image: ImageRef{
+			Server:   "https://ghcr.io",
+			Protocol: "oci",
+			Alias:    "ehharvey/homelab-ops/agent:latest",
+		},
+	}
+	if len(cfg.Apps) != 1 {
+		t.Fatalf("len(Apps) = %d, want 1", len(cfg.Apps))
+	}
+	if got := cfg.Apps[0]; !reflect.DeepEqual(got, want) {
+		t.Errorf("Apps[0] = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseAppWithCountAndParams(t *testing.T) {
+	const fleet = `
+kind: App
+name: web-frontend
+type: some-renderer
+replicas: 3
+image:
+  fingerprint: abc123
+params:
+  LOG_LEVEL: debug
+  EXTRA: "1"
+`
+	cfg, err := Parse(strings.NewReader(fleet))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := App{
+		Name:     "web-frontend",
+		Type:     "some-renderer",
+		Replicas: Replicas{Count: 3},
+		Image:    ImageRef{Fingerprint: "abc123"},
+		Params:   map[string]string{"LOG_LEVEL": "debug", "EXTRA": "1"},
+	}
+	if got := cfg.Apps[0]; !reflect.DeepEqual(got, want) {
+		t.Errorf("Apps[0] = %+v, want %+v", got, want)
+	}
+}
+
+// params is opaque renderer passthrough, so strict decoding must NOT reach
+// inside it — arbitrary keys are the point. Contrast TestParseRejectsUnknownAppField.
+func TestParseAcceptsOpaqueParams(t *testing.T) {
+	const fleet = `
+kind: App
+name: web-frontend
+type: some-renderer
+replicas: 1
+image:
+  alias: some/image:latest
+params:
+  anything_at_all: yes-really
+`
+	if _, err := Parse(strings.NewReader(fleet)); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+}
+
+func TestParseRejectsUnknownAppField(t *testing.T) {
+	const fleet = `
+kind: App
+name: web-frontend
+type: some-renderer
+replicas: 1
+imagee:
+  alias: some/image:latest
+`
+	if _, err := Parse(strings.NewReader(fleet)); err == nil {
+		t.Fatalf("expected error for unknown field, got nil")
+	}
+}
+
+// Strictness must reach into the nested ImageRef mapping too: a typo'd
+// `aliass` would otherwise leave the image unresolvable at reconcile time
+// rather than failing loudly here.
+func TestParseRejectsUnknownImageField(t *testing.T) {
+	const fleet = `
+kind: App
+name: web-frontend
+type: some-renderer
+replicas: 1
+image:
+  aliass: some/image:latest
+`
+	if _, err := Parse(strings.NewReader(fleet)); err == nil {
+		t.Fatalf("expected error for unknown nested field, got nil")
+	}
+}
+
+// yaml.v3 has no notion of a required key: an omitted `replicas:` never calls
+// Replicas.UnmarshalText, so it reaches Validate as a zero value rather than a
+// parse error. That's precisely why the required-ness rule lives in Validate
+// (see TestValidateAppIssues), and this pins the premise it rests on.
+func TestParseAppWithoutReplicasIsStructurallyValid(t *testing.T) {
+	const fleet = `
+kind: App
+name: web-frontend
+type: some-renderer
+image:
+  alias: some/image:latest
+`
+	cfg, err := Parse(strings.NewReader(fleet))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := cfg.Apps[0].Replicas, (Replicas{}); got != want {
+		t.Errorf("Replicas = %+v, want the zero value %+v", got, want)
+	}
+}
+
+func TestReplicasUnmarshalText(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		want    Replicas
+		wantErr bool
+	}{
+		{"empty is the zero value", "", Replicas{}, false},
+		{"per-node", "per-node", Replicas{PerNode: true}, false},
+		{"count", "3", Replicas{Count: 3}, false},
+		{"surrounding space is trimmed", "  per-node  ", Replicas{PerNode: true}, false},
+		// Zero and negative counts parse: whether a count is meaningful is a
+		// semantic question, and Validate answers it (mirroring Range, which
+		// parses a start-after-end range and lets Validate reject it).
+		{"zero parses, Validate rejects it", "0", Replicas{Count: 0}, false},
+		{"negative parses, Validate rejects it", "-1", Replicas{Count: -1}, false},
+		{"unparseable", "abc", Replicas{}, true},
+		{"per node without the hyphen", "per node", Replicas{}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got Replicas
+			err := got.UnmarshalText([]byte(tc.text))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("UnmarshalText(%q) = %+v, want an error", tc.text, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("UnmarshalText(%q): %v", tc.text, err)
+			}
+			if got != tc.want {
+				t.Errorf("UnmarshalText(%q) = %+v, want %+v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// The store round-trips Replicas through a TEXT column via MarshalText, so
+// every value — including the zero one — must survive it unchanged.
+func TestReplicasMarshalTextRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		r    Replicas
+		want string
+	}{
+		{"zero", Replicas{}, ""},
+		{"per-node", Replicas{PerNode: true}, "per-node"},
+		{"count", Replicas{Count: 3}, "3"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := tc.r.MarshalText()
+			if err != nil {
+				t.Fatalf("MarshalText: %v", err)
+			}
+			if string(b) != tc.want {
+				t.Fatalf("MarshalText() = %q, want %q", b, tc.want)
+			}
+			var got Replicas
+			if err := got.UnmarshalText(b); err != nil {
+				t.Fatalf("UnmarshalText(%q): %v", b, err)
+			}
+			if got != tc.r {
+				t.Errorf("round-trip = %+v, want %+v", got, tc.r)
+			}
+		})
+	}
+}

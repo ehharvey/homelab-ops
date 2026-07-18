@@ -37,6 +37,7 @@ type Store interface {
 	LastSync(ctx context.Context) (commit string, syncedAt time.Time, ok bool, err error)
 	Networks(ctx context.Context) ([]config.Network, error)
 	Instances(ctx context.Context) ([]config.Instance, error)
+	Apps(ctx context.Context) ([]config.App, error)
 	Network(ctx context.Context, name string) (config.Network, bool, error)
 	Instance(ctx context.Context, name string) (config.Instance, bool, error)
 }
@@ -152,6 +153,9 @@ type diffCounts struct {
 	InstancesAdded   int `json:"instances_added"`
 	InstancesChanged int `json:"instances_changed"`
 	InstancesRemoved int `json:"instances_removed"`
+	AppsAdded        int `json:"apps_added"`
+	AppsChanged      int `json:"apps_changed"`
+	AppsRemoved      int `json:"apps_removed"`
 }
 
 func newDiffCounts(d configdiff.Result) diffCounts {
@@ -162,6 +166,9 @@ func newDiffCounts(d configdiff.Result) diffCounts {
 		InstancesAdded:   len(d.AddedInstances),
 		InstancesChanged: len(d.ChangedInstances),
 		InstancesRemoved: len(d.RemovedInstances),
+		AppsAdded:        len(d.AddedApps),
+		AppsChanged:      len(d.ChangedApps),
+		AppsRemoved:      len(d.RemovedApps),
 	}
 }
 
@@ -244,13 +251,15 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 		}
 
 		if firstSync {
-			log.Printf("configdiff: first sync, %d networks / %d instances baseline", len(cfg.Networks), len(cfg.Instances))
+			log.Printf("configdiff: first sync, %d networks / %d instances / %d apps baseline",
+				len(cfg.Networks), len(cfg.Instances), len(cfg.Apps))
 		} else {
 			diff = configdiff.Diff(oldCfg, cfg)
 			if !diff.Empty() {
-				log.Printf("configdiff: %d/%d/%d networks added/changed/removed, %d/%d/%d instances added/changed/removed:\n%s",
+				log.Printf("configdiff: %d/%d/%d networks added/changed/removed, %d/%d/%d instances added/changed/removed, %d/%d/%d apps added/changed/removed:\n%s",
 					len(diff.AddedNetworks), len(diff.ChangedNetworks), len(diff.RemovedNetworks),
 					len(diff.AddedInstances), len(diff.ChangedInstances), len(diff.RemovedInstances),
+					len(diff.AddedApps), len(diff.ChangedApps), len(diff.RemovedApps),
 					strings.Join(diff.Lines(), "\n"))
 			}
 		}
@@ -332,7 +341,11 @@ func readSnapshot(ctx context.Context, store Store) (cfg config.Config, firstSyn
 	if err != nil {
 		return config.Config{}, false, fmt.Errorf("query instances: %w", err)
 	}
-	return config.Config{Networks: networks, Instances: instances}, false, nil
+	apps, err := store.Apps(ctx)
+	if err != nil {
+		return config.Config{}, false, fmt.Errorf("query apps: %w", err)
+	}
+	return config.Config{Networks: networks, Instances: instances, Apps: apps}, false, nil
 }
 
 type statusResponse struct {
