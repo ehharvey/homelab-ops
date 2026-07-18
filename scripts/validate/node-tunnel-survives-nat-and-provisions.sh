@@ -18,7 +18,7 @@
 # while building this script, and the plan going forward is to stop using it
 # rather than repair it in place). This script creates and tears down its
 # own network/instances entirely within the default project, alongside
-# validate-issue-5.sh's "home-lan" network, which it reuses read-only.
+# node-boots-and-trusts-bootstrap-cert.sh's "home-lan" network, which it reuses read-only.
 #
 # Requires a real, bootable base IncusOS raw image — like #5, point
 # INCUSOS_BASE_IMAGE at a local copy; the node-boot-dependent sections are
@@ -48,7 +48,7 @@
 # - node0's only change versus #5's topology: one extra static route to
 #   wan-sim via the gateway's home-lan address, appended onto the rendered
 #   seed after the real seed.Render call (not a production Render feature).
-# - The harness (cmd/validate-91-harness) drives the create-instance
+# - The harness (cmd/validate-tunnel-harness) drives the create-instance
 #   mechanism from a third container on home-lan, with its own throwaway
 #   WireGuard identity appended as a second test-only peer on node0's seed
 #   — proving the mechanism over *a* tunnel, not re-proving NAT traversal
@@ -56,7 +56,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK_DIR="$(mktemp -d)"
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -67,24 +67,24 @@ PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
 LAN_NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
 # Bridge network names become real host-level interface names (ip link),
 # capped at 15 characters — keep this short.
-WAN_NETWORK="wan91-$$"
+WAN_NETWORK="valwan-$$"
 POOL="default"
 STATIC_IP="192.168.1.202"
 MAC="aa:bb:cc:dd:ee:02"
 WAN_CIDR="10.200.0.0/24"
 WAN_GATEWAY_ADDR="10.200.0.1"
 
-VM_NAME="validate-91-node0-$$"
-WRITER_NAME="validate-91-writer-$$"
-PROBE_NAME="validate-91-probe-$$"
-GATEWAY_NAME="validate-91-gw-$$"
-WEBAPP_NAME="validate-91-webapp-$$"
-HARNESS_NAME="validate-91-harness-$$"
-SEED_VOL="validate-91-seeded-img-$$"
+VM_NAME="validate-tunnel-node0-$$"
+WRITER_NAME="validate-tunnel-writer-$$"
+PROBE_NAME="validate-tunnel-probe-$$"
+GATEWAY_NAME="validate-tunnel-gw-$$"
+WEBAPP_NAME="validate-tunnel-webapp-$$"
+HARNESS_NAME="validate-tunnel-harness-$$"
+SEED_VOL="validate-tunnel-seeded-img-$$"
 
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
 WEB_BIN="$WORK_DIR/web"
-HARNESS_BIN="$WORK_DIR/validate-91-harness"
+HARNESS_BIN="$WORK_DIR/validate-tunnel-harness"
 
 # WireGuard UDP port both the webapp and the conntrack-tuning target on the
 # gateway care about.
@@ -159,7 +159,7 @@ check "incus client installed" command -v incus
 check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
 check "web app builds (CGO_ENABLED=0, matching the real Docker image)" \
   bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$WEB_BIN' ./cmd/web"
-check "validate-91-harness builds" go -C "$ROOT_DIR" build -o "$HARNESS_BIN" ./cmd/validate-91-harness
+check "validate-tunnel-harness builds" go -C "$ROOT_DIR" build -o "$HARNESS_BIN" ./cmd/validate-tunnel-harness
 check "incus remote '$REMOTE' reachable" incus info "$REMOTE:"
 check "network '$LAN_NETWORK' exists" bash -c "incus network list '$REMOTE:' --project '$PROJECT' -f csv | cut -d, -f1 | sed 's/ (current)\$//' | grep -qx '$LAN_NETWORK'"
 
@@ -171,7 +171,7 @@ fi
 
 echo
 echo "== 2. NAT-simulation topology: wan-sim network + gateway =="
-# home-lan already exists (shared with validate-issue-5.sh); wan-sim is
+# home-lan already exists (shared with node-boots-and-trusts-bootstrap-cert.sh); wan-sim is
 # this run's own, deleted in cleanup. No ipv4.nat here — the gateway
 # container does its own MASQUERADE (see this file's header for why).
 check "network '$WAN_NETWORK' created" incus network create "$REMOTE:$WAN_NETWORK" \
@@ -260,9 +260,9 @@ check "fleet git repo built" bash -c "
   cd '$WORK_DIR/fleet-repo-src' &&
   git init -q -b main . &&
   git config user.email 'dev@homelab-ops.local' &&
-  git config user.name 'validate-issue-91' &&
+  git config user.name 'node-tunnel-survives-nat' &&
   git add fleet.yaml &&
-  git commit -q -m 'validate-issue-91 fleet' &&
+  git commit -q -m 'node-tunnel-survives-nat fleet' &&
   git clone -q --bare . '$WORK_DIR/fleet-repo.git'
 "
 
@@ -380,7 +380,7 @@ PYEOF
   check "harness identity generated" bash -c "[ -n '$HARNESS_PUBLIC_KEY' ]"
 
   # Patches network.yaml in place using the exact vendored types
-  # internal/seed renders with (see cmd/validate-91-harness's patch-seed
+  # internal/seed renders with (see cmd/validate-tunnel-harness's patch-seed
   # mode) — no Python/PyYAML dependency, and byte-compatible with what
   # IncusOS actually parses.
   check "wan-sim route + harness test peer appended to network.yaml" "$HARNESS_BIN" -mode=patch-seed \

@@ -10,21 +10,21 @@
 # operator would run, mounts it into the web container via a compose
 # override (CLIENT_CERT_PATH env var + a read-only volume — scoped to this
 # script, not a permanent docker-compose.yml change, same pattern
-# validate-config-sync-poll.sh uses for CONFIG_SYNC_INTERVAL), and asserts
+# background-poll-warns-on-config-diff.sh uses for CONFIG_SYNC_INTERVAL), and asserts
 # the route's incus.yaml embeds that exact cert's DER bytes.
 #
 # The route, CertSource interface, and CLIENT_CERT_PATH wiring this script
 # exercises may not exist yet — until #36 lands, expect this to fail with a
 # connection/404 error against POST /instances/.../seed. That's the desired
 # failure mode until the fix is applied (same convention as
-# validate-issue-41.sh).
+# cli-rejects-invalid-network-addressing.sh).
 #
 # Intended to run INSIDE the devcontainer, from the repo root. Requires
 # docker compose, jq, go, and openssl.
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 pass=0
@@ -44,7 +44,7 @@ OVERRIDE="$(mktemp /tmp/compose-cert-override.XXXXXX.yml)"
 # net.ListenUDP), and resolveInstanceSeed mints the node credential offline
 # without dialing anything. So a loopback endpoint satisfies it; the port is
 # already published by docker-compose.yml. See #129, which fixed the same defect
-# in validate-issue-38.sh and -39.sh, and docs/Decisions.md §20.
+# in seed-route-renders-ipam-address.sh and -39.sh, and docs/Decisions.md §20.
 #
 # Note this makes tunnel startup FATAL rather than degraded (see cmd/web/main.go
 # — a *set* endpoint expresses operator intent), so the stack will fail to come
@@ -102,7 +102,7 @@ fi
 # This is the exact step an operator runs once for the deployment's single
 # break-glass cert (per docs/Architecture.md's "Cert sourcing"); the web app
 # never runs this itself.
-check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "validate-issue-36"
+check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "seed-route-renders-static-ip"
 
 # The DER bytes the route's incus.yaml must embed (base64-encoded), so the
 # comparison below proves the route reads back the literal file gen-cert

@@ -12,10 +12,10 @@
 #
 # Intended to run INSIDE the devcontainer, against the existing
 # "homelab-host" remote / "homelab-dev" project / "home-lan" network set up
-# by .devcontainer/scripts/2-setup-dev-network.sh (see validate-issue-6.sh).
+# by .devcontainer/scripts/2-setup-dev-network.sh (see devcontainer-reaches-host-incus.sh).
 #
 # Requires a real, bootable base IncusOS raw image — unlike
-# validate-issue-4.sh's placeholder, a VM actually has to boot and install
+# cli-renders-seed-and-builds-image.sh's placeholder, a VM actually has to boot and install
 # from this one. Point INCUSOS_BASE_IMAGE at a local copy; the relevant
 # section is skipped with a clear message if it's unset.
 #
@@ -38,7 +38,7 @@
 
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK_DIR="$(mktemp -d)"
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -54,10 +54,10 @@ NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
 POOL="default"
 STATIC_IP="192.168.1.201"
 MAC="aa:bb:cc:dd:ee:ff"
-VM_NAME="validate-issue-5-$$"
-WRITER_NAME="validate-issue-5-writer-$$"
-PROBE_NAME="validate-issue-5-probe-$$"
-SEED_VOL="validate-issue-5-seeded-img-$$"
+VM_NAME="validate-nodeboot-$$"
+WRITER_NAME="validate-nodeboot-writer-$$"
+PROBE_NAME="validate-nodeboot-probe-$$"
+SEED_VOL="validate-nodeboot-seeded-img-$$"
 
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
 

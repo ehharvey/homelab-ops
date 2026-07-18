@@ -47,15 +47,25 @@ Guidance for Claude Code working in this repo. Full context lives in
 
 Unit tests don't catch everything here — issue #5 shipped with a passing
 test suite but a silently dropped seed file that only surfaced when
-booting a real Incus VM. `scripts/validate-*.sh` each drive a real pipeline
+booting a real Incus VM. `scripts/validate/*.sh` each drive a real pipeline
 end-to-end, proving a "done when" criterion `make test` can't — run the
 relevant one before calling related work done. Two families:
 
-- **Bootstrap/Phase-0** (e.g. `validate-issue-5.sh`): drive the real Incus
-  remote `homelab-host`, sometimes booting a real VM off the produced `.img`.
-- **Web app** (e.g. `validate-issue-22.sh`, `validate-config-sync-poll.sh`):
-  bring up the real `docker compose` stack (web + a throwaway git remote in
-  `dev/git-fixture`) and assert against its HTTP API and logs — needs Docker.
+- **Bootstrap/Phase-0** (e.g. `node-boots-and-trusts-bootstrap-cert.sh`):
+  drive the real Incus remote `homelab-host`, sometimes booting a real VM off
+  the produced `.img`. Override the target with `VALIDATE_INCUS_REMOTE` /
+  `VALIDATE_INCUS_PROJECT` / `VALIDATE_INCUS_NETWORK` (#132).
+- **Web app** (e.g. `sync-warns-on-config-diff.sh`,
+  `background-poll-warns-on-config-diff.sh`): bring up the real
+  `docker compose` stack (web + a throwaway git remote in `dev/git-fixture`)
+  and assert against its HTTP API and logs — needs Docker.
 
-Not every script is named `validate-issue-N.sh`; a fix without its own issue
-can take a descriptive name (`validate-config-sync-poll.sh`).
+Scripts are named for the **behaviour they prove**, not the issue that
+prompted them (#138) — an issue number ages into meaninglessness, and the
+originating issue is recorded in each file's header comment instead. The
+names are meant to make the suite readable as a set: `sync-warns-on-config-diff`
+and `background-poll-warns-on-config-diff` are visibly a pair proving the same
+behaviour on two code paths.
+
+`scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`,
+`vendor-incusos.sh`, `ship.sh`, `lgtm.sh`.
