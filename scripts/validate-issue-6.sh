@@ -8,9 +8,17 @@
 
 set -uo pipefail
 
-REMOTE="homelab-host"
-PROJECT="homelab-dev"
-NETWORK="home-lan"
+# Overridable so this can run somewhere other than the devcontainer — notably
+# on the Incus host itself, where Incus is a local unix socket and no remote
+# named "homelab-host" exists (see #115's CI design).
+#
+# PROJECT defaults to "default", not "homelab-dev": that project is stuck with
+# features.networks=true and therefore sees no networks at all, so this script's
+# "network exists" assertion could never pass against it (#96, #131). #91 already
+# targets "default" for the same reason, and home-lan lives there.
+REMOTE="${VALIDATE_INCUS_REMOTE:-homelab-host}"
+PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
+NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
 
 pass=0
 fail=0
