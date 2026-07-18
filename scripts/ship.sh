@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# One-command path from a finished commit to a merged PR (#119).
+# Push a finished commit and open its PR (#119). Stops there — `make lgtm`
+# merges (#125), so CI runs while you actually read the diff.
 #
-# The PR is a CI gate, not a review bottleneck (main requires 0 approvals), so
-# this collapses it to a single command: push, open, and queue for auto-merge.
-# Checks run asynchronously and the branch merges itself when they pass.
+# The PR is a CI gate, not a review bottleneck: main requires 0 approvals, and
+# a real approval gate isn't available to a solo dev anyway (GitHub won't let
+# you approve your own PR, so requiring 1 review would deadlock everything).
+# The ship/lgtm split is a deliberate speed bump, not an enforced control.
 #
 # `gh pr create --fill` takes the PR title from the commit subject and the PR
 # body verbatim from the commit message body — which is why the ## Plan and
@@ -42,7 +44,5 @@ else
 	gh pr create --fill
 fi
 
-# --auto queues the merge behind the required checks rather than blocking here.
-gh pr merge --auto --rebase --delete-branch
-
-gh pr view --json number,url --jq '"ship: #\(.number) queued for auto-merge — \(.url)"'
+gh pr view --json number,url --jq '"ship: #\(.number) open — \(.url)"'
+echo "ship: review it, then \`make lgtm\` to merge."

@@ -25,6 +25,9 @@ Guidance for Claude Code working in this repo. Full context lives in
 - Write the Plan/Test plan sections and `Closes #<n>` in the *commit message
   body*; `make ship` runs `gh pr create --fill`, which copies them into the PR.
   Don't close issues manually.
+- `make ship` pushes and opens the PR, then stops. `make lgtm` enables
+  auto-merge once you've read the diff — **that's the operator's call, not
+  yours; never run it unless asked.**
 - Core logic lives in `internal/<package>/`, decoupled from CLI/cobra
   concerns; `cmd/bootstrap/cmd/` is one file per subcommand, self-registered
   via `init()`.

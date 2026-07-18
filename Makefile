@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship vendor-incusos docker-build dev validate-sprint-3
+.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm vendor-incusos docker-build dev validate-sprint-3
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -37,6 +37,10 @@ hooks:
 
 ship:
 	./scripts/ship.sh
+
+# make lgtm  /  make lgtm PR=123
+lgtm:
+	./scripts/lgtm.sh $(PR)
 
 vendor-incusos:
 	./scripts/vendor-incusos.sh
