@@ -58,9 +58,13 @@ set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
-REMOTE="homelab-host"
-PROJECT="default"
-LAN_NETWORK="home-lan"
+# Overridable so this can run somewhere other than the devcontainer — notably
+# on the Incus host itself, where Incus is a local unix socket and no remote
+# named "homelab-host" exists (see #115's CI design). This script already
+# targeted "default" (see the #96 note above); the other three now match it.
+REMOTE="${VALIDATE_INCUS_REMOTE:-homelab-host}"
+PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
+LAN_NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
 # Bridge network names become real host-level interface names (ip link),
 # capped at 15 characters — keep this short.
 WAN_NETWORK="wan91-$$"
