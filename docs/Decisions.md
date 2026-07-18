@@ -844,6 +844,119 @@ proxy         →  routing, health-checked against the DB layer  (seconds)
   perfectly. Orthogonal to all of the above (a sidecar plus `params`), but it
   has to exist before anything real depends on a managed database.
 
+## 20. The validation suite: bash, tailnet CI, and no OVN (#115, #127)
+
+#115 established that nothing runs `scripts/validate-*.sh`, and that two of
+them had been silently broken for weeks after #107 gated the seed and image
+routes on `WIREGUARD_ENDPOINT`. Putting them in CI forces three coupled
+questions: are these scripts Go or bash, how does CI reach real hardware, and
+does that need OVN on the Incus host.
+
+One fact reframes all three. The #107 gate is a *config* gate, not a hardware
+gate: `internal/wireguard` runs the tunnel over `netstack.CreateNetTUN` +
+`conn.NewDefaultBind()` — userspace, no `NET_ADMIN`, an unprivileged
+`net.ListenUDP` — and nothing dials a real node. So the docker-compose family
+(7 scripts) runs on `ubuntu-latest` today, and with the two that need only Go,
+9 of the 14 need no hardware at all; only the Incus/VM family needs the host.
+
+### Options considered
+
+**Go vs. bash.** ~2,800 lines across 14 files, with 22 near-identical copies
+of `check`/`check_json`/`check_log`/`wait_log`. Go would bring `t.Skip`, typed
+assertions against `internal/config`, and real `go test` reporting.
+
+**Self-hosted runner vs. hosted + tailnet.** The repo is public, so a
+self-hosted runner would execute fork-authored code on the dev workstation.
+The alternative is a hosted runner that joins the tailnet and shells into the
+Incus host.
+
+**OVN vs. plain bridges.** Incus 6.0.4 only supports OVN-type networks inside
+non-default projects (#96), and OVN would allow per-project network ACLs to
+keep CI workloads off the real LAN.
+
+### Answer
+
+**1. Stay bash; extract `lib.sh`** (plus `lib-compose.sh`, `lib-incus.sh`).
+The strongest pro-Go argument — typed assertions against the repo's own
+structs instead of `jq` string-matching — is on inspection an argument
+*against*: `curl` + `jq` is the **independent observer** that makes these
+scripts worth their runtime, and asserting through the app's own types means a
+wrong struct satisfies the app and its validation simultaneously. That is
+exactly the issue-#5 failure `CLAUDE.md` records — a passing test suite that
+still shipped a silently dropped seed file. The real defects (a skip printed
+as `FAIL`, and a `cmp -s` assertion that passes on a 503 error body) are
+missing-harness defects, not bash defects; `t.Skip` is a six-line bash
+function. Consistent with §16's anti-premature-abstraction bias, and with
+`lint-mermaid.sh`'s precedent that a well-shaped bash script wired to a Make
+target and CI is an accepted artifact here.
+
+Counterweight, recorded rather than buried: `validate-issue-91.sh` at 544
+lines is already past comfortable bash.
+
+**`bats-core` was considered for the harness and declined.** It would supply a
+correct `skip`, a `run` helper, TAP output, and `setup_file`/`teardown_file`
+for the expensive compose bring-up — genuinely useful, but roughly what
+`lib.sh` costs to write, against a new dependency in a repo whose §13/§16 bias
+is stdlib-and-vendoring. The apparent win, `bats --jobs`, does not survive
+contact: it parallelises test *cases within* a file, whereas these scripts are
+strictly ordered narratives (#38 asserts an IPAM address, then re-syncs and
+asserts that address is *stable* — meaningless out of order), and the
+contention that actually matters is *between* scripts fighting over host ports
+and `home-lan`. `run.sh --jobs` addresses that; bats does not. `lib.sh` should
+still copy bats' `skip` semantics rather than invent worse ones.
+
+**When this gets revisited:** the first validation script that needs a real
+data structure — a map or list it must build, sort, and assert over — gets
+rewritten in Go, alone, and only then. Not the suite. Separately, `bats-core`
+becomes worth reopening if the suite is ever split into small, genuinely
+*independent* checks, since that is the shape its model and its parallelism
+assume.
+
+**2. Hosted runner + Tailscale to the Incus host, not a self-hosted runner.**
+The security objection to self-hosted is real but not decisive on its own:
+fork PRs cannot fire `push` on the base repo, and `workflow_dispatch` requires
+write access. What decides it is operational. The workstation is not always
+on, so a job targeting it queues amber until GitHub's 24-hour timeout — checks
+that hang until someone boots a desktop train you to ignore checks, which is
+the same disease this suite already suffers from, one layer up. And the runner
+*is* the developer's machine: `validate-sprint-3.sh` already warns against
+running concurrently with `validate-issue-5.sh` (both drive the live `home-lan`
+bridge, and #5 hardcodes the address IPAM hands node1), while #91 avoided
+per-network NAT because it would tune the shared host's netfilter state. A
+GitHub-dispatched job cannot take a lock against a human; a host-side script
+under `flock` can.
+
+Inverting the direction keeps untrusted code on GitHub's disposable VM and
+makes the host reachable only through a credential GitHub **withholds from
+fork PRs entirely**. The SSH target is a persistent `ci-orchestrator` Incus
+container holding a project-restricted TLS cert, which launches throwaway VM
+sandboxes and deletes them — so nothing CI-related lives on the desktop
+filesystem, and the whole apparatus is one deletable container. A VM sandbox
+rather than a nesting container because any container engine inside an Incus
+container needs `security.nesting=true` (podman included), whereas a VM has
+its own kernel and runs stock Docker with no privilege grant.
+
+**3. No OVN.** The strongest case for it was network ACLs keeping CI sandboxes
+off the real LAN — a legitimate goal, since `home-lan` is `ipv4.nat: "true"`
+with no firewall override, so today they can reach it. But the running server
+already advertises `network_bridge_acl`, so that control works on plain
+bridges; and per-run network isolation already works via uniquely-named
+bridges, which `validate-issue-91.sh`'s `wan91-$$` does today. Against that,
+OVN would add OVS, `ovn-northd`, `ovn-controller` and OVSDB as an always-on
+failure domain to the machine every PR now depends on. Note also that
+`features.networks=false` *inherits* the default project's networks rather
+than losing them — measured on `homelab-host`, `user-1000` sees `home-lan`
+while `homelab-dev` (`features.networks=true`) sees nothing, which is #96's
+trap — so project scoping needs no OVN either.
+
+**When this gets revisited:** OVN earns its place when parallel runs need
+overlapping IP ranges or genuinely isolated L2 — simulating two separate
+homelabs at once. Unique bridge names per run do not need it; identical
+subnets per run do. It also flips if the bridge-ACL control cannot be made to
+hold, since that protection is *structural* (the ACL and its network live in a
+project the CI cert cannot reach) rather than enforced by a dedicated
+"may not edit ACLs" restriction, which does not appear to exist.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
