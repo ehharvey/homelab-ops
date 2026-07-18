@@ -43,7 +43,7 @@ Copies a base IncusOS raw image and shells out to the upstream
 `flasher-tool` binary (`go install github.com/lxc/incus-os/incus-osd/cmd/flasher-tool`,
 must be on `$PATH`) to inject the seed into the copy. The base image itself
 is never modified. Result is a `.img` ready to `dd` onto a USB stick — or
-run `scripts/validate-issue-5.sh` to boot it in a real Incus VM and confirm
+run `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` to boot it in a real Incus VM and confirm
 install + cert trust end-to-end without real hardware.
 
 Run any subcommand with `--help` for the full flag list.

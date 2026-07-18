@@ -107,7 +107,7 @@ git push -q --no-verify -u origin "$BRANCH"
 # --- 2. one-commit check fails on the PR -----------------------------------
 gh pr create --head "$BRANCH" --base main \
 	--title "DO NOT MERGE: validate #119" \
-	--body "Throwaway PR opened by scripts/validate-issue-119.sh. Closed automatically." >/dev/null
+	--body "Throwaway PR opened by scripts/validate/multi-commit-pr-cannot-reach-main.sh. Closed automatically." >/dev/null
 PR_OPEN=1
 echo "=== opened throwaway PR, waiting for one-commit to report"
 

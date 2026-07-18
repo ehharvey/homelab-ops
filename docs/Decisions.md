@@ -599,7 +599,8 @@ deferred part.
   anyway, and the mechanism is what's being validated at this stage) —
   revisit both the done-when criteria and the ≥3-member requirement once
   a real multi-member cluster is on the table. See #92's done-when and
-  `scripts/validate-issue-92.sh` (#103) for how this is validated today.
+  #103's validation script — which lands in `scripts/validate/` named for the
+  behaviour it proves, not its issue number (#138).
 - **Leader-to-node partitions.** If the leader loses reach to a specific,
   still-alive node, that node's Apps go unreconciled until the partition
   heals or the lease moves to an agent that can reach it. Accepted,
@@ -890,7 +891,7 @@ function. Consistent with §16's anti-premature-abstraction bias, and with
 `lint-mermaid.sh`'s precedent that a well-shaped bash script wired to a Make
 target and CI is an accepted artifact here.
 
-Counterweight, recorded rather than buried: `validate-issue-91.sh` at 544
+Counterweight, recorded rather than buried: `node-tunnel-survives-nat-and-provisions.sh` at 544
 lines is already past comfortable bash.
 
 **`bats-core` was considered for the harness and declined.** It would supply a
@@ -919,8 +920,8 @@ write access. What decides it is operational. The workstation is not always
 on, so a job targeting it queues amber until GitHub's 24-hour timeout — checks
 that hang until someone boots a desktop train you to ignore checks, which is
 the same disease this suite already suffers from, one layer up. And the runner
-*is* the developer's machine: `validate-sprint-3.sh` already warns against
-running concurrently with `validate-issue-5.sh` (both drive the live `home-lan`
+*is* the developer's machine: `app-produces-working-installer-e2e.sh` already warns against
+running concurrently with `node-boots-and-trusts-bootstrap-cert.sh` (both drive the live `home-lan`
 bridge, and #5 hardcodes the address IPAM hands node1), while #91 avoided
 per-network NAT because it would tune the shared host's netfilter state. A
 GitHub-dispatched job cannot take a lock against a human; a host-side script
@@ -941,7 +942,7 @@ off the real LAN — a legitimate goal, since `home-lan` is `ipv4.nat: "true"`
 with no firewall override, so today they can reach it. But the running server
 already advertises `network_bridge_acl`, so that control works on plain
 bridges; and per-run network isolation already works via uniquely-named
-bridges, which `validate-issue-91.sh`'s `wan91-$$` does today. Against that,
+bridges, which `node-tunnel-survives-nat-and-provisions.sh`'s `valwan-$$` does today. Against that,
 OVN would add OVS, `ovn-northd`, `ovn-controller` and OVSDB as an always-on
 failure domain to the machine every PR now depends on. Note also that
 `features.networks=false` *inherits* the default project's networks rather
