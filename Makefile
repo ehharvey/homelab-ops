@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean vendor-incusos docker-build dev validate-sprint-3
+.PHONY: build test lint lint-docs fmt tidy clean hooks ship vendor-incusos docker-build dev validate-sprint-3
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -30,6 +30,13 @@ tidy:
 
 clean:
 	rm -rf bin/ bootstrap-output/
+
+# Relative path on purpose — see .devcontainer/scripts/4-install-git-hooks.sh.
+hooks:
+	git config core.hooksPath .githooks
+
+ship:
+	./scripts/ship.sh
 
 vendor-incusos:
 	./scripts/vendor-incusos.sh

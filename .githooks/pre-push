@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Local mirror of the `one-commit` CI check (#119), so a multi-commit branch
+# fails in a second instead of after a push, a PR open, and a CI round trip.
+#
+# CI is still the authority — this is a convenience, and `git push --no-verify`
+# bypasses it (which scripts/validate-issue-119.sh relies on to get a
+# deliberately-malformed branch to the server).
+#
+# Deliberately does not run make test/lint: `make lint` pulls a ~200MB Docker
+# image and is documented as slow, and CI gates those as required checks now.
+set -euo pipefail
+
+ZERO="0000000000000000000000000000000000000000"
+
+# git feeds one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	# Branch deletion — nothing to inspect.
+	[ "$local_sha" = "$ZERO" ] && continue
+
+	if [ "$remote_ref" = "refs/heads/main" ]; then
+		echo "pre-push: main takes PRs, not direct pushes (the ruleset refuses this too)." >&2
+		echo "          Branch as eharvey/#<issue> and run \`make ship\`." >&2
+		exit 1
+	fi
+
+	# FETCH_HEAD rather than origin/main: `git fetch origin main` always writes
+	# it, whereas whether the remote-tracking ref advances depends on the
+	# remote's configured refspec.
+	git fetch -q origin main
+	ahead=$(git rev-list --count FETCH_HEAD.."$local_sha")
+
+	if [ "$ahead" -gt 1 ]; then
+		cat >&2 <<-EOF
+			pre-push: $remote_ref is $ahead commits ahead of main; it must be 1.
+
+			    git reset --soft FETCH_HEAD
+			    git commit -c HEAD@{1}
+
+			Then push again. To push anyway: git push --no-verify
+		EOF
+		exit 1
+	fi
+done
