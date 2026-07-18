@@ -17,7 +17,16 @@ Code-level docs (READMEs, package comments) stay in the main repo as usual — t
 - PR body includes `Closes #<issue-number>` so merging auto-closes the issue — don't close issues manually.
 - **One issue, one commit** (added 2026-07-18, see #119). `main` merges PRs with rebase only — never squash — so a branch with N commits lands as N commits. The branch itself has to be the single commit.
 
-Run `make ship` to land finished work: it pushes, opens the PR with `gh pr create --fill`, and queues auto-merge behind the required checks (`scripts/ship.sh`). Three things enforce the shape, in order of how fast they tell you:
+Landing finished work is two steps (`scripts/ship.sh`, `scripts/lgtm.sh`):
+
+- **`make ship`** — pushes and opens the PR with `gh pr create --fill`. Stops there. CI runs while you read the diff.
+- **`make lgtm`** — enables auto-merge on the current branch's PR, so it merges once the required checks pass. `make lgtm PR=<n>` for a PR opened another way.
+
+Splitting them (see #125) is what keeps a PR from merging before anyone has looked at it. It's a speed bump, not an enforced control: a real approval gate isn't available to a solo dev, since GitHub won't let you approve your own PR and requiring one review would deadlock every PR. `required_approving_review_count` is therefore 0 and `make lgtm` is the honour-system stand-in.
+
+`lgtm` runs locally rather than as a workflow reacting to an "lgtm" comment on purpose: a merge enabled with `GITHUB_TOKEN` is attributed to `github-actions[bot]`, and GITHUB_TOKEN-driven pushes don't trigger further workflow runs — which would silently stop `sync-wiki.yml` mirroring `docs/**`. A local `gh` keeps the merge attributed to a real user, so push-triggered workflows on `main` keep firing.
+
+Three things enforce the one-commit shape, in order of how fast they tell you:
 
 1. `.githooks/pre-push` refuses a multi-commit push locally. Install once with `make hooks` (the devcontainer does it on start via `.devcontainer/scripts/4-install-git-hooks.sh`).
 2. The `one-commit` job in `.github/workflows/pr-shape.yml` fails the PR.
@@ -134,7 +143,7 @@ Established by `internal/configsync` and `internal/store`:
 ## Linting & CI
 
 - `golangci-lint` config lives in `.golangci.yml` at the repo root. Start from `default: standard` and add linters deliberately rather than maximal strictness — e.g. `gosec` is non-negotiable for any package handling key material, but noisy style linters (`cyclop`, `dupl`, `funlen`, `wsl`, etc.) are left off a young codebase to avoid PR friction.
-- `Makefile` targets: `build`, `test` (`-race -cover`), `lint`, `lint-docs`, `fmt`, `tidy`, `clean`, `hooks`, `ship`. Plain Make — no justfile/task-runner, since Make is already in the devcontainer base image.
+- `Makefile` targets: `build`, `test` (`-race -cover`), `lint`, `lint-docs`, `fmt`, `tidy`, `clean`, `hooks`, `ship`, `lgtm`. Plain Make — no justfile/task-runner, since Make is already in the devcontainer base image.
 - CI (`.github/workflows/ci.yml`) runs three parallel jobs on push/PR to `main`: `build-test` (`go build` + `go test`), `lint` (`golangci-lint-action`), and `docker-smoke` (builds the web image and proves `flasher-tool` executes inside the distroless final stage). `.github/workflows/pr-shape.yml` adds a fourth check, `one-commit`, on PRs only.
 - **`build-test`, `lint`, `docker-smoke`, and `one-commit` are required status checks** on `main` (added 2026-07-18, see #119) — before that they were advisory and a PR with red CI was mergeable. Two constraints on that ruleset worth knowing before editing it:
   - `strict_required_status_checks_policy` must stay **false**. Strict mode requires the branch be up to date with base, and the "Update branch" button's default mode adds a *merge commit to the branch* — which would make it two commits and fail `one-commit`. Strict mode and the one-commit rule are mutually exclusive.
