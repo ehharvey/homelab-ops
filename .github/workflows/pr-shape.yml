@@ -1,0 +1,59 @@
+name: PR shape
+
+# Enforces the "one GitHub issue, one commit on main" invariant from #119.
+#
+# The main ruleset merges PRs with rebase only (never squash), so a branch with
+# N commits lands as N commits — the branch itself has to be the single commit,
+# and nothing checked that before (#87, #107, #110, #111 landed 2-7 commits).
+#
+# Unlike ci.yml this cannot also run on push: the commit count is only defined
+# relative to a base branch, which exists solely in the pull_request payload.
+#
+# Deliberately has no `paths:` filter. A workflow skipped by a path filter never
+# reports a status at all, so a required check would sit pending forever on any
+# PR that doesn't touch those paths. (A job skipped by an `if:` condition does
+# report `skipped`, which satisfies the rule — but path filters do not.)
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Job id is the status check context named in the ruleset's
+  # required_status_checks — renaming this job silently un-requires the check.
+  one-commit:
+    runs-on: ubuntu-latest
+    steps:
+      # github.event.pull_request.commits is the merge-base-to-head count, and
+      # GitHub recomputes it on every `synchronize` event, so squashing the
+      # branch and force-pushing re-runs this green.
+      #
+      # Counting with git instead would need a checkout: on pull_request events
+      # actions/checkout defaults to the synthetic refs/pull/N/merge ref, whose
+      # HEAD is a merge commit that exists on neither branch, and the default
+      # fetch-depth: 1 shallow clone makes `origin/main..HEAD` fail outright.
+      - name: PR is exactly one commit
+        env:
+          COMMITS: ${{ github.event.pull_request.commits }}
+        run: |
+          if [ "$COMMITS" -eq 1 ]; then
+            echo "PR is 1 commit."
+            exit 0
+          fi
+
+          cat >&2 <<EOF
+          This PR has $COMMITS commits; main takes exactly 1 per issue.
+
+          Squash the branch and force-push:
+
+              git fetch origin main
+              git reset --soft origin/main
+              git commit -c HEAD@{1}
+              git push --force-with-lease
+
+          Keep the ## Plan and ## Test plan sections in the commit message body
+          — \`gh pr create --fill\` copies them into the PR description.
+          EOF
+          exit 1

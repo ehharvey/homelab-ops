@@ -15,8 +15,28 @@ Code-level docs (READMEs, package comments) stay in the main repo as usual — t
 - One branch per issue, named `eharvey/#<issue-number>` (e.g. `eharvey/#1`, `eharvey/#6`).
 - Work lands via PR, not direct pushes to `main`.
 - PR body includes `Closes #<issue-number>` so merging auto-closes the issue — don't close issues manually.
+- **One issue, one commit** (added 2026-07-18, see #119). `main` merges PRs with rebase only — never squash — so a branch with N commits lands as N commits. The branch itself has to be the single commit.
+
+Run `make ship` to land finished work: it pushes, opens the PR with `gh pr create --fill`, and queues auto-merge behind the required checks (`scripts/ship.sh`). Three things enforce the shape, in order of how fast they tell you:
+
+1. `.githooks/pre-push` refuses a multi-commit push locally. Install once with `make hooks` (the devcontainer does it on start via `.devcontainer/scripts/4-install-git-hooks.sh`).
+2. The `one-commit` job in `.github/workflows/pr-shape.yml` fails the PR.
+3. `one-commit` is a required status check on `main`, so a failing PR can't merge.
+
+To squash a branch that got away from you:
+
+```sh
+git fetch origin main
+git reset --soft FETCH_HEAD
+git commit -c HEAD@{1}
+git push --force-with-lease
+```
+
+Why one commit rather than squash-merging: squash-vs-rebase was a per-PR judgment call with no right answer (#119), and rebase-only removes the decision while keeping history linear. The cost is moving the squash upstream, to the branch, where a force-push is still cheap and the commit message is still editable.
 
 ## PR body format
+
+**Write these two sections in the commit message body, not the GitHub web form.** `gh pr create --fill` (what `make ship` uses) takes the PR title from the commit subject and the PR body verbatim from the commit message body, so a well-formed commit satisfies this convention with nothing retyped — and the rationale stays in `git`, readable offline and greppable via `git log`.
 
 PRs use two sections:
 
@@ -33,17 +53,19 @@ was chosen, what alternatives were ruled out and why.>
 - [x] ...
 ```
 
-Keep the "why" in the PR description, not in code comments — code comments should only explain non-obvious *invariants*, not the history of how a feature came to be.
+Keep the "why" in the commit message, not in code comments — code comments should only explain non-obvious *invariants*, not the history of how a feature came to be.
 
 ## Roadmap checklist convention
 
-When a `Roadmap.md` checklist item is completed, check it off in its own commit (not bundled into the code commit it's documenting) and annotate which issue closed it:
+When a `Roadmap.md` checklist item is completed, check it off **in the same commit as the work it's documenting**, and annotate which issue closed it:
 
 ```markdown
 - [x] Offline self-signed cert/key generation: DONE; see #1
 ```
 
 This keeps `Roadmap.md` as a live, skimmable status board rather than a static spec.
+
+The check-off used to be required to be *its own* commit. That was dropped for the one-issue-one-commit rule above (2026-07-18, see #119) — it was the only structural reason a compliant PR was ever two commits (it's why #87 was). The `see #N` annotation already carries the traceability the separate commit was standing in for.
 
 **Milestones are named after the phase alone, no separate "Sprint N" counter** (changed 2026-07-03): milestones/issues used to read `Sprint N — Phase M: ...`, but sprint numbers were 1-indexed against 0-indexed phases and every sprint has mapped 1:1 to exactly one phase — so the sprint counter carried no information beyond "which phase, off by one" (`Sprint 3` did `Phase 2`'s work). GitHub milestones are now just `Phase N: <name>`, matching `Roadmap.md`'s headings; the `Sprint planning` issue template is `phase_planning.yml` (`[Phase]: ` issues). Older closed issues that predate this (`[Sprint]: N`) were retitled to match; only issue *bodies*/comments referencing the old scheme are left as historical record.
 
@@ -112,8 +134,11 @@ Established by `internal/configsync` and `internal/store`:
 ## Linting & CI
 
 - `golangci-lint` config lives in `.golangci.yml` at the repo root. Start from `default: standard` and add linters deliberately rather than maximal strictness — e.g. `gosec` is non-negotiable for any package handling key material, but noisy style linters (`cyclop`, `dupl`, `funlen`, `wsl`, etc.) are left off a young codebase to avoid PR friction.
-- `Makefile` targets: `build`, `test` (`-race -cover`), `lint`, `lint-docs`, `fmt`, `tidy`, `clean`. Plain Make — no justfile/task-runner, since Make is already in the devcontainer base image.
-- CI (`.github/workflows/ci.yml`) runs two parallel jobs on push/PR to `main`: `build-test` (`go build` + `go test`) and `lint` (`golangci-lint-action`).
+- `Makefile` targets: `build`, `test` (`-race -cover`), `lint`, `lint-docs`, `fmt`, `tidy`, `clean`, `hooks`, `ship`. Plain Make — no justfile/task-runner, since Make is already in the devcontainer base image.
+- CI (`.github/workflows/ci.yml`) runs three parallel jobs on push/PR to `main`: `build-test` (`go build` + `go test`), `lint` (`golangci-lint-action`), and `docker-smoke` (builds the web image and proves `flasher-tool` executes inside the distroless final stage). `.github/workflows/pr-shape.yml` adds a fourth check, `one-commit`, on PRs only.
+- **`build-test`, `lint`, `docker-smoke`, and `one-commit` are required status checks** on `main` (added 2026-07-18, see #119) — before that they were advisory and a PR with red CI was mergeable. Two constraints on that ruleset worth knowing before editing it:
+  - `strict_required_status_checks_policy` must stay **false**. Strict mode requires the branch be up to date with base, and the "Update branch" button's default mode adds a *merge commit to the branch* — which would make it two commits and fail `one-commit`. Strict mode and the one-commit rule are mutually exclusive.
+  - `docs.yml`'s `mermaid` job must **not** be added to the required list. It's path-filtered to `docs/**`, and a workflow skipped by a path filter reports no status at all, so requiring it would leave every non-docs PR pending forever. (A job skipped by an `if:` condition reports `skipped`, which *does* satisfy the rule — the distinction is easy to get wrong.)
 - `make lint` runs `golangci-lint` via the official `golangci/golangci-lint` Docker image (pinned to a specific tag in the `Makefile`'s `LINT_IMAGE` var) rather than a locally installed binary — no toolchain setup needed beyond Docker, and the version is pinned in one place instead of relying on whatever happens to be on a contributor's `$PATH`.
 - **`make lint-docs` proves `docs/`'s mermaid diagrams actually parse** (`scripts/lint-mermaid.sh`, run in CI by `.github/workflows/docs.yml` when `docs/**` changes). It follows `make lint`'s shape exactly — the official `mermaid-cli` image, pinned in one place, no local toolchain beyond Docker, so a Go repo gains no `package.json`. This exists because reviewing a diagram's *source* in a PR diff tells you nothing about whether it *renders*: `docs/AppManager.md`'s sequence diagram showed a parse error instead of a diagram on GitHub from #105 until #111, and #106 reviewed and corrected that very diagram's logic in between without anyone noticing it wasn't displaying. Same lesson as `CLAUDE.md`'s issue-#5 note (a passing test suite that still shipped a silently dropped seed file), applied to docs.
 
