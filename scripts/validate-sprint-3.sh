@@ -314,16 +314,29 @@ check "response is an attachment named node0.img (Content-Disposition)" \
 check "downloaded .img is non-empty" bash -c "[ -s '$out_img' ]"
 
 out_bytes=$(stat -c%s "$out_img")
+base_bytes=$(stat -c%s "$INCUSOS_BASE_IMAGE")
 check "downloaded .img is a plausibly-sized disk image (>= 1 MiB)" \
   bash -c "[ '$out_bytes' -ge $((1 << 20)) ]"
 
-if cmp -s "$INCUSOS_BASE_IMAGE" "$out_img"; then
-  echo "FAIL: downloaded .img differs from the base (seed injected) — image is byte-identical to base"
-  fail=$((fail + 1))
-else
-  echo "PASS: downloaded .img differs from the base (seed injected)"
-  pass=$((pass + 1))
-fi
+# In-place seed injection keeps the size identical to the base, so equality is
+# the assertion to make here.
+#
+# This replaces a `cmp -s` check — byte-identical to the one in
+# validate-issue-39.sh — that asserted the download merely *differed* from the
+# base. That passed whenever the two files were not byte-identical, which a
+# 40-byte 503 error body trivially is not, so it reported PASS for the exact
+# failure mode it existed to catch. See #115.
+check "downloaded .img is exactly the base image's size (in-place injection)" \
+  bash -c "[ '$out_bytes' -eq '$base_bytes' ]"
+
+# Positive proof the seed was written rather than the base streamed back: the
+# seed is injected as an uncompressed tar of the rendered YAML, so node0's MAC
+# is greppable in the image bytes. The negative control on the base is what
+# makes that meaningful. Neither can be satisfied by an error body.
+check "downloaded .img carries node0's seeded MAC" \
+  grep -aq "$MAC" "$out_img"
+check "the base image does not carry that MAC (so the above proves injection)" \
+  bash -c "! grep -aq '$MAC' '$INCUSOS_BASE_IMAGE'"
 
 echo
 echo "== 6. Boot a real VM off that image and prove cert trust =="

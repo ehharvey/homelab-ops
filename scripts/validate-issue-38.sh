@@ -38,6 +38,19 @@ OVERRIDE="$(mktemp /tmp/compose-issue38-override.XXXXXX.yml)"
 
 # The seed route 503s without a CertSource, so mount an operator cert at
 # CLIENT_CERT_PATH exactly as validate-issue-36.sh does.
+#
+# WIREGUARD_ENDPOINT is required for the same reason: #107 added a second gate
+# to this route ("wireguard not configured"), and this script never set it, so
+# every seed assertion below has been failing since. It is a *config* gate, not
+# a hardware one — internal/wireguard runs the tunnel over netstack.CreateNetTUN
+# + conn.NewDefaultBind() (userspace, no NET_ADMIN, an unprivileged
+# net.ListenUDP), and resolveInstanceSeed mints the node credential offline
+# without dialing anything. So a loopback endpoint satisfies it; the port is
+# already published by docker-compose.yml.
+#
+# Note this makes tunnel startup FATAL rather than degraded (see cmd/web/main.go
+# — a *set* endpoint expresses operator intent), so the stack will fail to come
+# up if 51820 is already bound. That is the correct failure: loud, not silent.
 cat >"$OVERRIDE" <<'EOF'
 services:
   web:
@@ -45,6 +58,7 @@ services:
       - ${CERT_DIR}:/cert:ro
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
+      - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 
 compose() {
