@@ -41,23 +41,35 @@ check() {
   fi
 }
 
-# expect_render_seed_failure writes fleet_yaml to a temp file and runs
-# render-seed against it, expecting a non-zero exit (the fleet is invalid).
-# Since the validations under test may not exist yet, render-seed will
-# probably succeed instead — which is the desired failure mode until the
-# fix is applied.
-expect_render_seed_failure() {
-  local desc="$1" fleet_yaml="$2"
-  local fleet_file
+# expect_render_seed_rejects writes fleet_yaml to a temp file, runs render-seed
+# against it, and requires BOTH a non-zero exit AND an error matching pattern.
+#
+# Matching the message is the whole point. The previous version asserted only a
+# non-zero exit, which *any* failure satisfies — a renamed flag, a typo in the
+# fixture — so all three checks below could report PASS while proving nothing
+# about the rule under test. Demonstrated rather than assumed: renaming --file
+# to --fleetfile makes render-seed exit non-zero with "unknown flag", which the
+# old helper scored as three PASSes and this one reports as three FAILs naming
+# the mismatch. Unlike validate-issue-39.sh's equivalent false pass, this one
+# had no neighbouring assertion to catch it, so the script would have gone
+# fully green. See #115.
+expect_render_seed_rejects() {
+  local desc="$1" pattern="$2" fleet_yaml="$3"
+  local fleet_file out
   fleet_file="$(mktemp "$WORK_DIR/fleet.XXXXXX.yaml")"
   printf '%s\n' "$fleet_yaml" >"$fleet_file"
 
-  if ! "$BOOTSTRAP_BIN" render-seed --file "$fleet_file" --cert "$CERT_DIR/client.crt" --output-dir "$WORK_DIR/seed-$$-$RANDOM" >/dev/null 2>&1; then
+  if out=$("$BOOTSTRAP_BIN" render-seed --file "$fleet_file" --cert "$CERT_DIR/client.crt" --output-dir "$WORK_DIR/seed-$$-$RANDOM" 2>&1); then
+    echo "FAIL: $desc (render-seed succeeded; expected it to reject the fleet)" >&2
+    fail=$((fail + 1))
+  elif ! grep -qE "$pattern" <<<"$out"; then
+    echo "FAIL: $desc (rejected, but not for the reason under test)" >&2
+    echo "      want stderr matching: $pattern" >&2
+    echo "      got: $(head -1 <<<"$out")" >&2
+    fail=$((fail + 1))
+  else
     echo "PASS: $desc"
     pass=$((pass + 1))
-  else
-    echo "FAIL: $desc" >&2
-    fail=$((fail + 1))
   fi
 }
 
@@ -78,7 +90,8 @@ check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR"
 
 echo
 echo "== 3. render-seed must reject static_ip outside the network's cidr =="
-expect_render_seed_failure "render-seed rejects static_ip outside cidr" "$(cat <<'EOF'
+expect_render_seed_rejects "render-seed rejects static_ip outside cidr" \
+  'instances\[0\]\.static_ip: .* is not inside cidr' "$(cat <<'EOF'
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
@@ -101,7 +114,8 @@ EOF
 
 echo
 echo "== 4. render-seed must reject dhcp_excluded_range outside the network's cidr =="
-expect_render_seed_failure "render-seed rejects dhcp_excluded_range outside cidr" "$(cat <<'EOF'
+expect_render_seed_rejects "render-seed rejects dhcp_excluded_range outside cidr" \
+  'networks\[0\]\.dhcp_excluded_range: .*not contained in cidr' "$(cat <<'EOF'
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24
@@ -124,7 +138,8 @@ EOF
 
 echo
 echo "== 5. render-seed must reject static_ip inside cidr but outside dhcp_excluded_range =="
-expect_render_seed_failure "render-seed rejects static_ip outside dhcp_excluded_range" "$(cat <<'EOF'
+expect_render_seed_rejects "render-seed rejects static_ip outside dhcp_excluded_range" \
+  'instances\[0\]\.static_ip: .* is outside dhcp_excluded_range' "$(cat <<'EOF'
 kind: Network
 name: home-lan
 cidr: 192.168.1.0/24

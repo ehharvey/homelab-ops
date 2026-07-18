@@ -14,10 +14,10 @@
 # The image checks need a real base IncusOS raw image: point INCUSOS_BASE_IMAGE
 # at a local copy. Those checks skip with a clear message if it's unset/missing
 # (same convention as validate-issue-5.sh). A real IncusOS image injects the
-# seed in place at a fixed offset, so the output is the SAME size as the base
-# but differs byte-for-byte — this asserts the latter (seed injected) rather
-# than size growth, and stops at "structurally a seeded disk image": a full
-# boot-and-cert-trust check belongs to #40, not here.
+# seed in place at a fixed offset, so the output is the SAME size as the base —
+# this asserts that equality plus the presence of the seeded MAC in the output
+# bytes (absent from the base), and stops at "structurally a seeded disk image":
+# a full boot-and-cert-trust check belongs to #40, not here.
 #
 # The route may not exist yet — until #39 lands, expect the image checks to fail
 # with a 404/503 against GET /instances/.../image (same convention as
@@ -40,10 +40,27 @@ CERT_DIR="$WORK_DIR/cert"
 export CERT_DIR
 OVERRIDE="$(mktemp /tmp/compose-image-override.XXXXXX.yml)"
 
+# devnode0's MAC from the committed fixture (dev/git-fixture/fleet.yaml). Used
+# as the positive marker that the seed really was injected into the image.
+DEVNODE0_MAC="aa:bb:cc:dd:ee:00"
+
 # Base override just mounts the cert (as #36 does). The base-image mount +
 # BASE_IMAGE_PATH are appended below only when INCUSOS_BASE_IMAGE is usable, so
 # the stack still comes up (and the route reports 503 "not configured") when
 # it isn't.
+#
+# WIREGUARD_ENDPOINT is required for the same reason as the cert: #107 added a
+# second gate to this route ("wireguard not configured"), and this script never
+# set it, so the image assertions below have been failing since. It is a
+# *config* gate, not a hardware one — internal/wireguard runs the tunnel over
+# netstack.CreateNetTUN + conn.NewDefaultBind() (userspace, no NET_ADMIN, an
+# unprivileged net.ListenUDP), and resolveInstanceSeed mints the node
+# credential offline without dialing anything. So a loopback endpoint satisfies
+# it; the port is already published by docker-compose.yml.
+#
+# Note this makes tunnel startup FATAL rather than degraded (see cmd/web/main.go
+# — a *set* endpoint expresses operator intent), so the stack will fail to come
+# up if 51820 is already bound. That is the correct failure: loud, not silent.
 cat >"$OVERRIDE" <<'EOF'
 services:
   web:
@@ -51,6 +68,7 @@ services:
       - ${CERT_DIR}:/cert:ro
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
+      - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 
 BASE_IMAGE_READY=0
@@ -73,6 +91,7 @@ services:
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
       - BASE_IMAGE_PATH=/data/incusos-base.img
+      - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 fi
 
@@ -137,12 +156,16 @@ check_json "POST /sync returns a commit SHA" "$sync_resp" '.commit | length > 0'
 echo
 echo "== 4. GET /instances/devnode0/image streams a seeded .img =="
 if [ "$BASE_IMAGE_READY" -ne 1 ]; then
+  # Still reported as FAIL rather than a real skip: the skip/exit-code contract
+  # is #115's stage-4 work (lib.sh), deliberately not smuggled into this fix.
   echo "FAIL: image route returns 200 (skipped: INCUSOS_BASE_IMAGE not usable)"
   echo "FAIL: response is an attachment (skipped: INCUSOS_BASE_IMAGE not usable)"
   echo "FAIL: downloaded .img is a non-empty disk image (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: downloaded .img differs from the base (seed injected) (skipped: INCUSOS_BASE_IMAGE not usable)"
+  echo "FAIL: downloaded .img is exactly the base image's size (skipped: INCUSOS_BASE_IMAGE not usable)"
+  echo "FAIL: downloaded .img carries devnode0's seeded MAC (skipped: INCUSOS_BASE_IMAGE not usable)"
+  echo "FAIL: the base image does not carry that MAC (skipped: INCUSOS_BASE_IMAGE not usable)"
   echo "FAIL: unknown instance 404s (skipped: INCUSOS_BASE_IMAGE not usable)"
-  fail=$((fail + 5))
+  fail=$((fail + 7))
 else
   out_img="$WORK_DIR/devnode0.img"
   headers="$WORK_DIR/headers.txt"
@@ -160,16 +183,27 @@ else
   check "downloaded .img is a plausibly-sized disk image (>= 1 MiB)" \
     bash -c "[ '$out_bytes' -ge $((1 << 20)) ]"
 
-  # In-place seed injection keeps the size equal to the base but changes the
-  # bytes; cmp differing proves flasher-tool actually wrote the seed rather than
-  # streaming the base back untouched.
-  if cmp -s "$INCUSOS_BASE_IMAGE" "$out_img"; then
-    echo "FAIL: downloaded .img differs from the base (seed injected) — image is byte-identical to base ($out_bytes vs $base_bytes bytes)"
-    fail=$((fail + 1))
-  else
-    echo "PASS: downloaded .img differs from the base (seed injected)"
-    pass=$((pass + 1))
-  fi
+  # In-place seed injection keeps the size identical to the base, so equality is
+  # the assertion to make here.
+  #
+  # This replaces a `cmp -s` check that asserted the download merely *differed*
+  # from the base. That passed whenever the two files were not byte-identical —
+  # which a 40-byte 503 error body trivially is not. It therefore reported PASS
+  # for the exact failure mode it existed to catch, and did so for weeks while
+  # the route was 503ing on #107's WireGuard gate. See #115.
+  check "downloaded .img is exactly the base image's size (in-place injection)" \
+    bash -c "[ '$out_bytes' -eq '$base_bytes' ]"
+
+  # Positive proof the seed was actually written, rather than the base being
+  # streamed back untouched: the seed is injected as an uncompressed tar of the
+  # rendered YAML, so devnode0's MAC (dev/git-fixture/fleet.yaml) is greppable in
+  # the image bytes. The negative control on the base image is what makes that
+  # meaningful — without it, a match could just mean the base already contained
+  # the string. Neither assertion can be satisfied by an error body.
+  check "downloaded .img carries devnode0's seeded MAC" \
+    grep -aq "$DEVNODE0_MAC" "$out_img"
+  check "the base image does not carry that MAC (so the above proves injection)" \
+    bash -c "! grep -aq '$DEVNODE0_MAC' '$INCUSOS_BASE_IMAGE'"
 
   echo
   echo "== 5. Unknown instance 404s rather than 500ing =="
