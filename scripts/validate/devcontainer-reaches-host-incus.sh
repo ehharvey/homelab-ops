@@ -8,6 +8,21 @@
 
 set -uo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+
+VALIDATE_PROVES="the devcontainer has its tooling and can drive the host's Incus (#6)"
+VALIDATE_GROUP="incus"
+VALIDATE_NEEDS="an Incus remote"
+VALIDATE_DURATION="~1s"
+
+validate_parse_args "$@"
+
+# Note the tool checks below stay `check`, not `require_cmd`: for this script
+# "is incus installed" IS the assertion, not a precondition for one. Everywhere
+# else in the suite it's the reverse.
+
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
 # named "homelab-host" exists (see #115's CI design).
@@ -19,21 +34,6 @@ set -uo pipefail
 REMOTE="${VALIDATE_INCUS_REMOTE:-homelab-host}"
 PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
 NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
-
-pass=0
-fail=0
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
 
 echo "== 1. Required packages =="
 check "incus client installed" command -v incus
@@ -52,6 +52,4 @@ echo "== 3. Simulated network environment in incus =="
 check "project '$PROJECT' exists" bash -c "incus project list '$REMOTE:' -f csv | cut -d, -f1 | sed 's/ (current)\$//' | grep -qx '$PROJECT'"
 check "network '$NETWORK' exists" bash -c "incus network list '$REMOTE:' --project '$PROJECT' -f csv | cut -d, -f1 | sed 's/ (current)\$//' | grep -qx '$NETWORK'"
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

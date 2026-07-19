@@ -25,16 +25,27 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
 
-pass=0
-fail=0
+VALIDATE_PROVES="POST /instances/{name}/seed renders all four seed files for an explicit static_ip (#36)"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose jq go openssl"
+VALIDATE_DURATION="~15s"
+
+validate_parse_args "$@"
+cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 export CERT_DIR
 OVERRIDE="$(mktemp /tmp/compose-cert-override.XXXXXX.yml)"
+# lib-compose.sh's compose() picks this up; scripts that need no scoped
+# override simply leave it unset.
+VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 
 # WIREGUARD_ENDPOINT is required alongside the cert: #107 added a second gate to
 # the seed route ("wireguard not configured"), and this script never set it, so
@@ -59,39 +70,12 @@ services:
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 
-compose() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" "$@"
-}
-
 cleanup() {
   compose down >/dev/null 2>&1
   rm -rf "$WORK_DIR"
   rm -f "$OVERRIDE"
 }
 trap cleanup EXIT
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-check_json() {
-  local desc="$1" json="$2" filter="$3"
-  if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc (got: $json)"
-    fail=$((fail + 1))
-  fi
-}
 
 echo "== 1. Prerequisites: build bootstrap binary, generate the operator's cert =="
 check "build bootstrap binary" go build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
@@ -144,11 +128,9 @@ incus_yaml=$(echo "$seed_resp" | jq -r '.incus_yaml')
 got_der_b64=$(echo "$incus_yaml" | grep -oE '[A-Za-z0-9+/]{100,}={0,2}' | head -1)
 check "incus.yaml embeds a base64 certificate blob" test -n "$got_der_b64"
 if [ "$got_der_b64" = "$want_der_b64" ]; then
-  echo "PASS: incus.yaml's embedded cert matches the operator-supplied cert exactly"
-  pass=$((pass + 1))
+  record_pass "incus.yaml's embedded cert matches the operator-supplied cert exactly"
 else
-  echo "FAIL: incus.yaml's embedded cert does not match CLIENT_CERT_PATH's cert"
-  fail=$((fail + 1))
+  record_fail "incus.yaml's embedded cert does not match CLIENT_CERT_PATH's cert"
 fi
 
 echo
@@ -160,6 +142,4 @@ echo
 echo "(Not covered here: CLIENT_CERT_PATH unset -> 503 'cert source not configured'."
 echo " That's a unit-test concern (fakeCertSource=nil), not a real-stack one.)"
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

@@ -18,53 +18,31 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
 
-pass=0
-fail=0
+VALIDATE_PROVES="the background config-sync poller surfaces diff warnings without any POST /sync"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose curl"
+VALIDATE_DURATION="~17s"
+
+validate_parse_args "$@"
+cd "$ROOT_DIR"
 
 # A short poll interval keeps the test fast; the waits below tolerate clone
 # and scheduling jitter well beyond one tick.
 OVERRIDE="$(mktemp /tmp/compose-poll-override.XXXXXX.yml)"
+# lib-compose.sh's compose() picks this up; scripts that need no scoped
+# override simply leave it unset.
+VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 cat >"$OVERRIDE" <<'EOF'
 services:
   web:
     environment:
       - CONFIG_SYNC_INTERVAL=2s
 EOF
-
-compose() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" "$@"
-}
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-# wait_log retries grepping the web container's logs for a fixed pattern,
-# since the poller logs asynchronously on its own schedule.
-wait_log() {
-  local desc="$1" pattern="$2" tries="${3:-30}"
-  for _ in $(seq 1 "$tries"); do
-    if compose logs web 2>/dev/null | grep -qF -- "$pattern"; then
-      echo "PASS: $desc"
-      pass=$((pass + 1))
-      return 0
-    fi
-    sleep 1
-  done
-  echo "FAIL: $desc (pattern not found after ${tries}s: $pattern)"
-  fail=$((fail + 1))
-  return 1
-}
 
 cleanup() {
   compose down >/dev/null 2>&1
@@ -131,6 +109,4 @@ status=$(curl -s "$base_url/status")
 check "GET /status reports a sync happened via the poller alone" \
   bash -c "echo '$status' | grep -q '\"synced\":true'"
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

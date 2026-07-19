@@ -39,6 +39,17 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-incus.sh
+. "$ROOT_DIR/scripts/validate/lib-incus.sh"
+
+VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, and trusts the bootstrap cert (#5)"
+VALIDATE_GROUP="incus-vm"
+VALIDATE_NEEDS="incus go [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_DURATION="~9m"
+
+validate_parse_args "$@"
 WORK_DIR="$(mktemp -d)"
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -77,11 +88,9 @@ check() {
   local desc="$1"
   shift
   if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
+    record_pass "$desc"
   else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
+    record_fail "$desc"
   fi
 }
 
@@ -103,17 +112,28 @@ wait_for_console_text() {
   return 1
 }
 
-echo "== 1. Prerequisites =="
-check "incus client installed" command -v incus
-check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
-check "incus remote '$REMOTE' reachable" incus info "$REMOTE:"
-check "project '$PROJECT' exists" bash -c "incus project list '$REMOTE:' -f csv | cut -d, -f1 | sed 's/ (current)\$//' | grep -qx '$PROJECT'"
-check "network '$NETWORK' exists" bash -c "incus network list '$REMOTE:' --project '$PROJECT' -f csv | cut -d, -f1 | sed 's/ (current)\$//' | grep -qx '$NETWORK'"
+echo "== 0. Hard prerequisites =="
+# These are preconditions for the assertion, not the assertion itself — whether
+# the devcontainer has a working Incus remote is devcontainer-reaches-host-incus.sh's
+# job, so nothing is lost by gating rather than counting them here.
+#
+# require_flasher_tool exists because of #136: build-image shells out to it, and
+# without this the CLI's own perfectly clear error was swallowed by `check`,
+# producing five cascading failures that read like a provisioning regression.
+require_cmd incus go
+require_flasher_tool
+require_incus_remote "$REMOTE"
+require_incus_project "$REMOTE" "$PROJECT"
+require_incus_network "$REMOTE" "$PROJECT" "$NETWORK"
+check_prereqs
 
-if [ ! -x "$BOOTSTRAP_BIN" ] || ! incus info "$REMOTE:" >/dev/null 2>&1; then
-  echo
-  echo "$pass passed, $((fail + 4)) failed (prerequisites not met, skipping remaining checks)"
-  exit 1
+echo
+echo "== 1. Build the bootstrap CLI =="
+check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
+
+if [ ! -x "$BOOTSTRAP_BIN" ]; then
+  echo "ERROR: bootstrap CLI didn't build; nothing downstream can be meaningful" >&2
+  summary
 fi
 
 echo
@@ -148,18 +168,17 @@ check "incus.yaml rendered" test -f "$WORK_DIR/seed/incus.yaml"
 
 echo
 echo "== 3. Boot an Incus VM from the produced .img and confirm install + cert trust =="
-if [ -z "${INCUSOS_BASE_IMAGE:-}" ]; then
-  echo "FAIL: build-image exits 0 (skipped: INCUSOS_BASE_IMAGE not set)"
-  echo "FAIL: seed .img streamed onto $REMOTE as a block volume (skipped: INCUSOS_BASE_IMAGE not set)"
-  echo "FAIL: VM installs IncusOS from the seeded image (skipped: INCUSOS_BASE_IMAGE not set)"
-  echo "FAIL: node trusts the bootstrap cert and is reachable over Incus API (skipped: INCUSOS_BASE_IMAGE not set)"
-  fail=$((fail + 4))
-elif [ ! -f "$INCUSOS_BASE_IMAGE" ]; then
-  echo "FAIL: build-image exits 0 (skipped: INCUSOS_BASE_IMAGE=$INCUSOS_BASE_IMAGE not found)"
-  echo "FAIL: seed .img streamed onto $REMOTE as a block volume (skipped: INCUSOS_BASE_IMAGE not found)"
-  echo "FAIL: VM installs IncusOS from the seeded image (skipped: INCUSOS_BASE_IMAGE not found)"
-  echo "FAIL: node trusts the bootstrap cert and is reachable over Incus API (skipped: INCUSOS_BASE_IMAGE not found)"
-  fail=$((fail + 4))
+if ! have_env_file INCUSOS_BASE_IMAGE; then
+  # The operator supplies this 3.2 GB image; its absence says nothing about
+  # whether node provisioning works, so it's a skip rather than four failures.
+  _why="INCUSOS_BASE_IMAGE ${INCUSOS_BASE_IMAGE:+=$INCUSOS_BASE_IMAGE }not usable"
+  for _desc in \
+    "build-image exits 0" \
+    "seed .img streamed onto $REMOTE as a block volume" \
+    "VM installs IncusOS from the seeded image" \
+    "node trusts the bootstrap cert and is reachable over Incus API"; do
+    skip_check "$_desc" base-image "$_why"
+  done
 else
   check "build-image exits 0" "$BOOTSTRAP_BIN" build-image \
     --seed-dir "$WORK_DIR/seed" \
@@ -202,8 +221,7 @@ else
 
   echo "Waiting up to 5 minutes for the install to complete ..."
   if wait_for_console_text "successfully installed" 300; then
-    echo "PASS: VM installs IncusOS from the seeded image"
-    pass=$((pass + 1))
+    record_pass "VM installs IncusOS from the seeded image"
 
     # IncusOS halts after installing and waits for the install media to be
     # removed before it'll boot the installed system — mirrors the manual
@@ -214,8 +232,7 @@ else
     incus config device remove --project "$PROJECT" "$REMOTE:$VM_NAME" install-media >/dev/null 2>&1
     incus start --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1
   else
-    echo "FAIL: VM installs IncusOS from the seeded image"
-    fail=$((fail + 1))
+    record_fail "VM installs IncusOS from the seeded image"
   fi
 
   check "probe instance ready on $NETWORK" bash -c "
@@ -248,18 +265,14 @@ else
     response=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
       curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0" 2>/dev/null)
     if echo "$response" | grep -q '"auth":"trusted"'; then
-      echo "PASS: node trusts the bootstrap cert and is reachable over Incus API"
-      pass=$((pass + 1))
+      record_pass "node trusts the bootstrap cert and is reachable over Incus API"
     else
-      echo "FAIL: node trusts the bootstrap cert and is reachable over Incus API (reachable, but auth was not \"trusted\": $response)"
-      fail=$((fail + 1))
+      record_fail "node trusts the bootstrap cert and is reachable over Incus API (reachable, but auth was not \"trusted\": $response)"
     fi
   else
-    echo "FAIL: node trusts the bootstrap cert and is reachable over Incus API (node never became reachable)"
-    fail=$((fail + 1))
+    record_fail "node trusts the bootstrap cert and is reachable over Incus API (node never became reachable)"
   fi
 fi
 
 echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

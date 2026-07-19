@@ -57,6 +57,17 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-incus.sh
+. "$ROOT_DIR/scripts/validate/lib-incus.sh"
+
+VALIDATE_PROVES="a node's WireGuard tunnel survives a NAT hop and carries provisioning (#91)"
+VALIDATE_GROUP="incus-vm"
+VALIDATE_NEEDS="incus go git python3 [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_DURATION="~11m"
+
+validate_parse_args "$@"
 WORK_DIR="$(mktemp -d)"
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -110,11 +121,9 @@ check() {
   local desc="$1"
   shift
   if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
+    record_pass "$desc"
   else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
+    record_fail "$desc"
   fi
 }
 
@@ -154,19 +163,26 @@ cleanup_bg_pids() {
 }
 trap 'cleanup_bg_pids; cleanup' EXIT
 
-echo "== 1. Prerequisites =="
-check "incus client installed" command -v incus
+echo "== 0. Hard prerequisites =="
+# Preconditions, not assertions — this script's subject is the tunnel, and
+# require_flasher_tool in particular is #136: build-image's dependency used to
+# fail here as four cascading failures with no diagnostic.
+require_cmd incus go git python3
+require_flasher_tool
+require_incus_remote "$REMOTE"
+require_incus_network "$REMOTE" "$PROJECT" "$LAN_NETWORK"
+check_prereqs
+
+echo
+echo "== 1. Build the binaries =="
 check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
 check "web app builds (CGO_ENABLED=0, matching the real Docker image)" \
   bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$WEB_BIN' ./cmd/web"
 check "validate-tunnel-harness builds" go -C "$ROOT_DIR" build -o "$HARNESS_BIN" ./cmd/validate-tunnel-harness
-check "incus remote '$REMOTE' reachable" incus info "$REMOTE:"
-check "network '$LAN_NETWORK' exists" bash -c "incus network list '$REMOTE:' --project '$PROJECT' -f csv | cut -d, -f1 | sed 's/ (current)\$//' | grep -qx '$LAN_NETWORK'"
 
-if [ ! -x "$BOOTSTRAP_BIN" ] || [ ! -x "$WEB_BIN" ] || [ ! -x "$HARNESS_BIN" ] || ! incus info "$REMOTE:" >/dev/null 2>&1; then
-  echo
-  echo "$pass passed, $((fail + 1)) failed (prerequisites not met, skipping remaining checks)"
-  exit 1
+if [ ! -x "$BOOTSTRAP_BIN" ] || [ ! -x "$WEB_BIN" ] || [ ! -x "$HARNESS_BIN" ]; then
+  echo "ERROR: a required binary didn't build; nothing downstream can be meaningful" >&2
+  summary
 fi
 
 echo
@@ -318,33 +334,33 @@ for _ in $(seq 1 15); do
   sleep 2
 done
 if [ -n "$NODE_TUNNEL_IP" ]; then
-  echo "PASS: web app synced and assigned node0 tunnel_ip $NODE_TUNNEL_IP"
-  pass=$((pass + 1))
+  record_pass "web app synced and assigned node0 tunnel_ip $NODE_TUNNEL_IP"
 else
-  echo "FAIL: web app synced and assigned node0 a tunnel_ip (webapp.log: $(tail -5 "$WORK_DIR/webapp.log" 2>/dev/null))"
-  fail=$((fail + 1))
+  record_fail "web app synced and assigned node0 a tunnel_ip (webapp.log: $(tail -5 "$WORK_DIR/webapp.log" 2>/dev/null))"
 fi
 
 echo
 echo "== 5. Boot node0 with the real WireGuard-enabled seed and confirm the tunnel =="
-if [ -z "${INCUSOS_BASE_IMAGE:-}" ]; then
-  echo "FAIL: build-image exits 0 (skipped: INCUSOS_BASE_IMAGE not set)"
-  echo "FAIL: node0 boots and its WireGuard tunnel to the webapp comes up (skipped: INCUSOS_BASE_IMAGE not set)"
-  echo "FAIL: node0's Incus API is reachable through the tunnel, not just the LAN (skipped: INCUSOS_BASE_IMAGE not set)"
-  echo "FAIL: temp-cert create-instance + revoke mechanism succeeds over the tunnel (skipped: INCUSOS_BASE_IMAGE not set)"
-  fail=$((fail + 4))
-elif [ ! -f "$INCUSOS_BASE_IMAGE" ]; then
-  echo "FAIL: build-image exits 0 (skipped: INCUSOS_BASE_IMAGE=$INCUSOS_BASE_IMAGE not found)"
-  echo "FAIL: node0 boots and its WireGuard tunnel to the webapp comes up (skipped: INCUSOS_BASE_IMAGE not found)"
-  echo "FAIL: node0's Incus API is reachable through the tunnel, not just the LAN (skipped: INCUSOS_BASE_IMAGE not found)"
-  echo "FAIL: temp-cert create-instance + revoke mechanism succeeds over the tunnel (skipped: INCUSOS_BASE_IMAGE not found)"
-  fail=$((fail + 4))
+_vm_checks=(
+  "build-image exits 0"
+  "node0 boots and its WireGuard tunnel to the webapp comes up"
+  "node0's Incus API is reachable through the tunnel, not just the LAN"
+  "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
+)
+if ! have_env_file INCUSOS_BASE_IMAGE; then
+  # Operator-supplied image absent: says nothing about the tunnel.
+  for _desc in "${_vm_checks[@]}"; do
+    skip_check "$_desc" base-image \
+      "INCUSOS_BASE_IMAGE ${INCUSOS_BASE_IMAGE:+=$INCUSOS_BASE_IMAGE }not usable"
+  done
 elif [ -z "$NODE_TUNNEL_IP" ]; then
-  echo "FAIL: build-image exits 0 (skipped: web app never assigned node0 a tunnel_ip, see step 4)"
-  echo "FAIL: node0 boots and its WireGuard tunnel to the webapp comes up (skipped)"
-  echo "FAIL: node0's Incus API is reachable through the tunnel, not just the LAN (skipped)"
-  echo "FAIL: temp-cert create-instance + revoke mechanism succeeds over the tunnel (skipped)"
-  fail=$((fail + 4))
+  # Distinct from the case above: this isn't a missing prerequisite, it's a
+  # cascade from step 4's already-recorded failure. Tagged separately so
+  # --strict promotes it (the run is red regardless) and so the output doesn't
+  # imply the operator forgot to supply something.
+  for _desc in "${_vm_checks[@]}"; do
+    skip_check "$_desc" upstream "web app never assigned node0 a tunnel_ip, see step 4"
+  done
 else
   # Fetch node0's seed from the REAL running web app — now with WireGuard
   # config + the bootstrap cert embedded, unlike step 3's base seed. Then
@@ -425,14 +441,12 @@ PYEOF
 
   echo "Waiting up to 5 minutes for the install to complete ..."
   if wait_for_console_text "successfully installed" 300; then
-    echo "PASS: VM installs IncusOS from the seeded image"
-    pass=$((pass + 1))
+    record_pass "VM installs IncusOS from the seeded image"
     incus stop --project "$PROJECT" "$REMOTE:$VM_NAME" --force >/dev/null 2>&1
     incus config device remove --project "$PROJECT" "$REMOTE:$VM_NAME" install-media >/dev/null 2>&1
     incus start --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1
   else
-    echo "FAIL: VM installs IncusOS from the seeded image"
-    fail=$((fail + 1))
+    record_fail "VM installs IncusOS from the seeded image"
   fi
 
   echo "Waiting up to 3 minutes for node0's WireGuard tunnel to the webapp to come up (checked via the webapp's own Incus network state) ..."
@@ -464,11 +478,9 @@ PYEOF
     sleep 5
   done
   if "$handshake_seen"; then
-    echo "PASS: node0's WireGuard tunnel to the webapp shows a completed handshake"
-    pass=$((pass + 1))
+    record_pass "node0's WireGuard tunnel to the webapp shows a completed handshake"
   else
-    echo "FAIL: node0's WireGuard tunnel to the webapp shows a completed handshake (never observed within 3 minutes)"
-    fail=$((fail + 1))
+    record_fail "node0's WireGuard tunnel to the webapp shows a completed handshake (never observed within 3 minutes)"
   fi
 
   echo
@@ -500,11 +512,9 @@ PYEOF
       -peer-tunnel-ip="$NODE_TUNNEL_IP" \
       -node-addr="$NODE_TUNNEL_IP:8443" \
       -timeout=60s >"$WORK_DIR/harness-probe.log" 2>&1; then
-    echo "PASS: node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN"
-    pass=$((pass + 1))
+    record_pass "node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN"
   else
-    echo "FAIL: node0's Incus API reachable through a real WireGuard tunnel (see $WORK_DIR/harness-probe.log)"
-    fail=$((fail + 1))
+    record_fail "node0's Incus API reachable through a real WireGuard tunnel (see $WORK_DIR/harness-probe.log)"
   fi
 
   # Pull the webapp's store and extract node0's real bootstrap credential
@@ -535,14 +545,11 @@ PYEOF
       -bootstrap-cert=/root/bootstrap.crt \
       -bootstrap-key=/root/bootstrap.key \
       -timeout=60s >"$WORK_DIR/harness-create.log" 2>&1; then
-    echo "PASS: temp-cert create-instance + revoke mechanism succeeds over the tunnel"
-    pass=$((pass + 1))
+    record_pass "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
   else
-    echo "FAIL: temp-cert create-instance + revoke mechanism succeeds over the tunnel (see $WORK_DIR/harness-create.log)"
-    fail=$((fail + 1))
+    record_fail "temp-cert create-instance + revoke mechanism succeeds over the tunnel (see $WORK_DIR/harness-create.log)"
   fi
 fi
 
 echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

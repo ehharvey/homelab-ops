@@ -16,6 +16,9 @@ Guidance for Claude Code working in this repo. Full context lives in
     make lint    # golangci-lint via Docker — slow; run before declaring done
     make fmt     # gofmt + goimports
 
+    make validate           # the unattended validate suite (~2.5m, needs Docker)
+    make validate-hardware  # the Incus/VM subset (~30m, boots real VMs)
+
 ## Conventions (see docs/Development Conventions.md for full detail/rationale)
 
 - One branch per GitHub issue: `eharvey/#<n>`, landing as **exactly one
@@ -69,3 +72,14 @@ behaviour on two code paths.
 
 `scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`,
 `vendor-incusos.sh`, `ship.sh`, `lgtm.sh`.
+
+They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
+prerequisite is a **SKIP with exit 3**, never a FAIL — "you didn't install a
+tool" and "the thing under test is broken" are different outcomes. `--strict
+--allow-skip <tag>` is how CI says "these must actually run": a route that
+silently gains a precondition fails rather than skipping quietly. Ask the
+scripts what they need rather than looking it up:
+
+    ./scripts/validate/run.sh --describe
+
+Full detail in `scripts/validate/README.md`.
