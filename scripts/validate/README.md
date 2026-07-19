@@ -11,7 +11,7 @@ each file's header comment and in its `VALIDATE_PROVES` declaration.
 ## Running them
 
 ```
-make validate                     # the unattended subset — what CI runs
+make validate                     # the unattended subset — CI's intended entry point
 make validate-hardware            # needs the Incus remote and a real VM boot
 
 ./scripts/validate/run.sh --group compose
@@ -58,12 +58,18 @@ SKIP: image route returns 200 [base-image] — INCUSOS_BASE_IMAGE not usable
 run.sh --group compose --strict --allow-skip base-image
 ```
 
-That combination is what CI uses, and it is the suite's anti-rot mechanism. A
-hosted runner genuinely cannot supply a 3.2 GB IncusOS image, so `base-image`
-skips are blessed — but **any other** skip fails the build, including a *new*
-tag nobody has blessed yet. A route that silently gains a precondition produces
-a `FAIL`, not a quietly-tolerated skip, on the day it lands rather than weeks
-later by accident (which is exactly how #107 broke four scripts).
+That combination is the suite's intended anti-rot mechanism. A hosted runner
+genuinely cannot supply a 3.2 GB IncusOS image, so `base-image` skips are
+blessed — but **any other** skip fails the build, including a *new* tag nobody
+has blessed yet. A route that silently gains a precondition produces a `FAIL`,
+not a quietly-tolerated skip, on the day it lands rather than weeks later by
+accident (which is exactly how #107 broke four scripts).
+
+**Nothing runs this automatically yet.** There is no validate workflow in
+`.github/workflows/`; the mechanism above is built and ready, but until it is
+wired up it only protects the runs someone remembers to start by hand. Wiring
+it is tracked separately, and the "runs in CI" column below states intent, not
+current fact.
 
 Tags in use: `base-image`, `flasher-tool`, `incus`, `vm`, `github`, `upstream`
 (the last meaning "a prior check already failed, so this couldn't run" — a
@@ -85,7 +91,7 @@ absence causes a skip rather than a failure.
 
 ## Groups
 
-| group | what it needs | runs in CI |
+| group | what it needs | belongs in CI |
 |---|---|---|
 | `none` | Go only | yes |
 | `compose` | Docker, `docker compose` | yes |

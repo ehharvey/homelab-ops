@@ -42,9 +42,11 @@ ship:
 lgtm:
 	./scripts/lgtm.sh $(PR)
 
-# The unattended subset — exactly what CI runs, same entry point (following
-# `make lint-docs`' precedent). --strict makes an unmet prerequisite a failure,
-# except the 3.2 GB base image no hosted runner can supply.
+# The unattended subset, and CI's intended entry point when a validate workflow
+# exists — there isn't one yet, so today this only runs by hand. Same
+# entry-point shape as `make lint-docs`, following its precedent. --strict makes
+# an unmet prerequisite a failure, except the 3.2 GB base image no hosted runner
+# can supply.
 #
 # Exit 3 ("some checks skipped") is success here: under --strict the only skips
 # that survive are ones this command explicitly blessed, so treating 3 as a
