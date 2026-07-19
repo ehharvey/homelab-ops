@@ -32,7 +32,7 @@ validate_parse_args "$@"
 cd "$ROOT_DIR"
 
 cleanup() {
-  docker compose down >/dev/null 2>&1
+  compose_down
 }
 trap cleanup EXIT
 

@@ -25,6 +25,50 @@ compose() {
 	fi
 }
 
+# compose_down — tear the stack down and block until it is really gone. Every
+# compose script's cleanup trap calls this instead of a bare `compose down`, so
+# the barrier lives here once rather than as a sleep copied into each script.
+#
+# Why a barrier at all: run.sh runs the compose group back-to-back, so one
+# script's teardown is immediately followed by the next script's `compose up`.
+# On this devcontainer's Compose (v5), `down` releases the published ports and
+# the project network *before* it returns, so the two don't actually race —
+# measured directly while closing #153, and 13 consecutive suite runs stayed
+# green. Older Compose tore those down more loosely, letting the next `up`
+# collide with a half-removed network or a still-bound port; that is the
+# nondeterminism #153 set out to kill. This barrier makes the suite robust to
+# that difference — including on a CI runner whose Compose version we don't
+# control (#146) — and is a no-op when `down` is already synchronous.
+compose_down() {
+	compose down --remove-orphans >/dev/null 2>&1
+	# Bounded, best-effort: wait until no project container remains and none of
+	# the stack's published host ports are still bound, then return. Never fails
+	# the caller — a stuck teardown gives up after ~15s rather than hanging the
+	# suite, and a port held by some unrelated process is not ours to free.
+	local _
+	for _ in $(seq 1 30); do
+		[ -n "$(compose ps -aq 2>/dev/null)" ] && {
+			sleep 0.5
+			continue
+		}
+		_compose_ports_free && return 0
+		sleep 0.5
+	done
+	return 0
+}
+
+# _compose_ports_free — false while any host port the compose stack publishes
+# (docker-compose.yml) is still bound. These are the ports two consecutive
+# compose scripts contend over.
+_compose_ports_free() {
+	local p
+	for p in 8080 3000 3100 9090; do
+		ss -Hltn "sport = :$p" 2>/dev/null | grep -q . && return 1
+	done
+	ss -Hluln "sport = :51820" 2>/dev/null | grep -q . && return 1
+	return 0
+}
+
 # wait_web_ready <base_url> [tries] — poll /healthz until the web app answers,
 # then assert it. Every compose-family script had its own copy of this loop.
 #

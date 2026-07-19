@@ -40,7 +40,7 @@ check_json() {
 }
 
 cleanup() {
-  compose down >/dev/null 2>&1
+  compose_down
 }
 trap cleanup EXIT
 
