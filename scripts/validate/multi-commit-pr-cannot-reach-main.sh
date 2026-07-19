@@ -26,13 +26,33 @@
 # BASE_REF to the #119 branch itself.
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+
+VALIDATE_PROVES="a multi-commit PR cannot reach main: hook, check, and ruleset all hold (#119)"
+VALIDATE_GROUP="github"
+VALIDATE_NEEDS="gh authenticated with repo admin (reads rulesets, opens/closes real PRs)"
+VALIDATE_DURATION="~3m"
+
+validate_parse_args "$@"
+
 BASE_REF="${BASE_REF:-origin/main}"
 BRANCH="validate-119/$(date +%s)"
 RULESET_ID=17956515
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 
-pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
+# This script is deliberately fail-fast, unlike the rest of the suite: it drives
+# one real PR through GitHub and every step depends on the last (open the PR →
+# watch one-commit go red → confirm merge is refused → squash → watch it go
+# green). There is nothing meaningful to accumulate after a failure, so `fail`
+# still aborts. It uses the shared recorders purely so the output and exit codes
+# match everything else.
+pass() { record_pass "$*"; }
+fail() {
+	record_fail "$*"
+	summary
+}
 
 cleanup() {
 	set +e
@@ -157,4 +177,5 @@ await_check "$(git rev-parse HEAD)" success
 pass "one-commit went green after the squash"
 
 echo
-echo "All checks passed. #119's enforcement is real end to end."
+echo "#119's enforcement is real end to end."
+summary

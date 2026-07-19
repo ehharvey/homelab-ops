@@ -15,33 +15,18 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
+
+VALIDATE_PROVES="the store retains last-synced state and replaces rather than merges it (#21)"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose jq curl"
+VALIDATE_DURATION="~15s"
+
+validate_parse_args "$@"
 cd "$ROOT_DIR"
-
-pass=0
-fail=0
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-check_json() {
-  local desc="$1" json="$2" filter="$3"
-  if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc (got: $json)"
-    fail=$((fail + 1))
-  fi
-}
 
 cleanup() {
   docker compose down >/dev/null 2>&1
@@ -111,6 +96,4 @@ check_json "GET /networks now returns only other-lan" "$networks2" '(. | length 
 instances2=$(curl -s "$base_url/instances")
 check_json "GET /instances is empty (old devnode0 dropped, not unioned)" "$instances2" '. == null or length == 0'
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

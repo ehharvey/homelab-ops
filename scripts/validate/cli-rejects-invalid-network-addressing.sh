@@ -16,30 +16,24 @@ set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+
+VALIDATE_PROVES="render-seed rejects network addressing that doesn't add up (#41)"
+VALIDATE_GROUP="none"
+VALIDATE_NEEDS="go"
+VALIDATE_DURATION="~2s"
+
+validate_parse_args "$@"
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 
-pass=0
-fail=0
-
 cleanup() {
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
 
 # expect_render_seed_rejects writes fleet_yaml to a temp file, runs render-seed
 # against it, and requires BOTH a non-zero exit AND an error matching pattern.
@@ -60,23 +54,22 @@ expect_render_seed_rejects() {
   printf '%s\n' "$fleet_yaml" >"$fleet_file"
 
   if out=$("$BOOTSTRAP_BIN" render-seed --file "$fleet_file" --cert "$CERT_DIR/client.crt" --output-dir "$WORK_DIR/seed-$$-$RANDOM" 2>&1); then
-    echo "FAIL: $desc (render-seed succeeded; expected it to reject the fleet)" >&2
-    fail=$((fail + 1))
+    record_fail "$desc" "render-seed succeeded; expected it to reject the fleet"
   elif ! grep -qE "$pattern" <<<"$out"; then
-    echo "FAIL: $desc (rejected, but not for the reason under test)" >&2
-    echo "      want stderr matching: $pattern" >&2
-    echo "      got: $(head -1 <<<"$out")" >&2
-    fail=$((fail + 1))
+    record_fail "$desc" "rejected, but not for the reason under test — want stderr matching: $pattern; got: $(head -1 <<<"$out")"
   else
-    echo "PASS: $desc"
-    pass=$((pass + 1))
+    record_pass "$desc"
   fi
 }
 
 # Start
 
-echo "== 1. Prerequisites: go tool and build bootstrap binary =="
-check "go present" command -v go
+echo "== 0. Hard prerequisites =="
+require_cmd go
+check_prereqs
+
+echo
+echo "== 1. Build the bootstrap binary =="
 check "build bootstrap binary" go build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
 
 if [ ! -x "$BOOTSTRAP_BIN" ]; then
@@ -161,6 +154,4 @@ applications: [incus]
 EOF
 )"
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary
