@@ -74,6 +74,15 @@ Run `./bin/bootstrap build-image --help` for all flags.
     make vendor-incusos  # regenerate internal/third_party/incusos after bumping the submodule
     make clean           # remove bin/ and bootstrap-output/
 
-`scripts/validate-issue-N.sh` scripts each prove one GitHub issue's "done
-when" criteria end-to-end against a real Incus remote/VM, not just unit
-tests — run the relevant one after touching anything it covers.
+    make validate           # the unattended validate suite (needs Docker)
+    make validate-hardware  # the Incus/VM subset (boots real VMs)
+
+`scripts/validate/` holds scripts that each drive a real pipeline end-to-end,
+proving a "done when" criterion unit tests can't — run the relevant one after
+touching anything it covers. Each is named for the behaviour it proves rather
+than the issue that prompted it, and declares its own prerequisites:
+
+    ./scripts/validate/run.sh --describe
+
+See `scripts/validate/README.md` for the groups, the skip contract, and what
+each script needs.

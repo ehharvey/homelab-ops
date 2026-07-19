@@ -334,7 +334,7 @@ Alloy's log/metric shipping is not a single hardcoded destination. Both of Alloy
 
 This means "local Grafana instance" and "Grafana Cloud" aren't an either/or choice: an operator can run both simultaneously (e.g. always mirror to a local Grafana instance for fast local queries/debugging, while also shipping to Grafana Cloud as the durable production destination), point at multiple cloud accounts/environments, or configure just one — whatever the deployment needs. The exact shape of the "list of destinations" config (repeated env vars vs. a small typed list) is left to whichever mechanism #67 (Unified config / viper) lands on, rather than inventing a bespoke env-var scheme now that config consolidation would immediately have to replace.
 
-**Local dev/test stack:** requiring live Grafana Cloud credentials for every `scripts/validate-*.sh` run (or every dev loop) is exactly the friction the repo's other dev fixtures avoid (`dev/git-fixture` for config sync). So a local stack — Grafana + Loki + Prometheus (with `--web.enable-remote-write-receiver`) under `docker-compose.yml`, mirroring the existing `web`/`config-repo` services — is always at least one of the configured destinations for `scripts/validate-*.sh`'s Phase 3 checks: no cloud credentials needed for that destination, fully automatable, torn down after each run. A real Grafana Cloud check (with the local stack configured as an *additional* destination, or on its own) remains available as a separate, credential-gated step (same gate-and-skip pattern as `INCUSOS_BASE_IMAGE`/`BASE_IMAGE_PATH` for real-VM tests) rather than the thing CI/every contributor has to run.
+**Local dev/test stack:** requiring live Grafana Cloud credentials for every `scripts/validate/` run (or every dev loop) is exactly the friction the repo's other dev fixtures avoid (`dev/git-fixture` for config sync). So a local stack — Grafana + Loki + Prometheus (with `--web.enable-remote-write-receiver`) under `docker-compose.yml`, mirroring the existing `web`/`config-repo` services — is always at least one of the configured destinations for `scripts/validate/`'s Phase 3 checks: no cloud credentials needed for that destination, fully automatable, torn down after each run. A real Grafana Cloud check (with the local stack configured as an *additional* destination, or on its own) remains available as a separate, credential-gated step (same gate-and-skip pattern as `INCUSOS_BASE_IMAGE`/`BASE_IMAGE_PATH` for real-VM tests) rather than the thing CI/every contributor has to run.
 
 ## 15. Multi-OS support (Debian, Talos) — direction, not yet built
 
@@ -957,6 +957,70 @@ subnets per run do. It also flips if the bridge-ACL control cannot be made to
 hold, since that protection is *structural* (the ACL and its network live in a
 project the CI cert cannot reach) rather than enforced by a dedicated
 "may not edit ACLs" restriction, which does not appear to exist.
+
+## 22. The validate suite's delivered contract: skips, exit codes, self-description (#140, #136)
+
+§20 decided *to* extract `lib.sh`; it predates the harness actually landing,
+and so records none of what the harness turned out to need. This entry is that
+record. Numbered 22 rather than 21 because §21 (the dev Incus host) was in
+flight on another branch when this was written.
+
+**The finding that reframed the work.** #115 was opened on the premise that the
+suite had rotted. It had not: 12 of the 13 runnable scripts were green. **The
+skip contract was the dominant defect** — every failure in the suite that
+wasn't #137 turned out to be an unmet prerequisite reported as a failure. A
+suite that cries FAIL when `flasher-tool` is merely absent (#136) trains its
+operator to ignore it, which is the same disease as a suite nobody runs, one
+layer up. Recorded because the premise was wrong in an instructive direction:
+the scripts were fine and the *reporting* was broken, so a rewrite — the
+obvious response to "rotted" — would have preserved the actual defect.
+
+### Answer
+
+**Four exit codes, because "didn't run" is not "failed".** `0` pass, `1` a
+genuine assertion failure, `2` a hard prerequisite missing (the script cannot
+meaningfully start), `3` a skip. The distinction that earns its keep is 2 vs.
+3 vs. 1: "you didn't install a tool", "this route needs hardware you don't
+have", and "the thing under test is broken" are three different facts, and
+collapsing them is precisely what made the suite ignorable. Semantics copied
+from `bats`' `skip` rather than invented, per §20's note.
+
+**`make validate` treats 3 as success, and this is not a fudge.** Under
+`--strict --allow-skip <tag>` the only skips that survive are ones the command
+explicitly blessed, so treating 3 as a build failure would make a correct run
+red. `run.sh` still *reports* 3 rather than 0, because "not everything ran" is
+worth saying out loud — the Makefile decides what that means for a gate, the
+harness only reports it. Keeping that judgement in the caller rather than the
+harness is what lets CI and a developer's laptop apply different policies to
+the same run.
+
+**`--strict --allow-skip` is the anti-rot mechanism.** A skip is the failure
+mode that hides: #107 gated the seed and image routes on `WIREGUARD_ENDPOINT`
+and four scripts went quiet for weeks. An allow-list inverts that — a route
+that silently gains a precondition is no longer on the list, so it goes red
+instead of quiet. The list is the point; `--strict` alone would only forbid
+skipping.
+
+**Scripts declare, docs don't.** Each script carries `VALIDATE_PROVES`,
+`VALIDATE_GROUP`, `VALIDATE_NEEDS` and `VALIDATE_DURATION`, and
+`run.sh --describe` reads them back. The alternative — a table in a README —
+is a second source of truth that drifts from the scripts the moment anyone
+edits one, and this repo has already paid for exactly that (`README.md`
+described `scripts/validate-issue-N.sh` for weeks after #138 deleted them).
+Asking the scripts what they need cannot drift.
+
+**When this gets revisited:** the exit-code vocabulary grows only if a real
+outcome appears that none of the four describes — a flake distinct from a
+failure would be the plausible one, and only once flakes are observed rather
+than anticipated. Separately, §20's Go trigger still stands and is unaffected
+by any of this: the harness being pleasant to use is not an argument for
+staying bash if a script ever needs a real data structure.
+
+Implementation landed under #140 (harness, `run.sh`, the three libraries) and
+#136 (the missing-`flasher-tool` skips that motivated it); operator-facing
+detail lives in `scripts/validate/README.md`, and the day-to-day rules in
+`CLAUDE.md`. Enforcement — a workflow that actually runs any of this — is
+**not** part of it and does not yet exist.
 
 ## Other notes
 1. Track the commit hash nodes are running

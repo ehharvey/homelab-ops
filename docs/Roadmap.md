@@ -59,7 +59,35 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   `kind: App` object across the whole fleet via a small renderer registry,
   proven by managing its own fleet (blue-green self-upgrade, driven
   fleet-wide by whichever agent is leader) — see #92,
-  `docs/Decisions.md` § App Manager HA
+  `docs/Decisions.md` § App Manager HA. Built in dependency order:
+  - [ ] `kind: App` schema + store/configdiff plumbing — no runtime
+    behaviour, pure parse/validate/store, prerequisite for every step
+    below; `App` carries a cardinality field rather than a separate
+    `kind: AgentConfig` (see `docs/AppClasses.md`) — see #97
+  - [ ] `internal/leaderelection` — an ETag-conditional-write lease over a
+    dedicated Incus project, giving the fleet one elected leader with no
+    etcd/Consul/Raft — see #108
+  - [ ] App renderer registry + fleet-wide reconcile algorithm; fleet
+    reconciliation only ever runs while the caller holds the lease — see
+    #98
+  - [ ] Preseed the `incus-socket` profile onto every node
+    unconditionally, since an agent now runs everywhere — see #99
+  - [ ] Deploy the agent's first instance — web app route +
+    `bootstrap deploy-agent` — see #100
+  - [ ] `cmd/agent` binary tying election and the reconcile loop together;
+    every node runs the same binary and election decides which is active
+    each tick — see #101
+  - [ ] Leader declines to renew its lease on self version mismatch, so a
+    stale leader steps aside during a self-upgrade — see #109
+  - [ ] Publish the agent image to GHCR; local registry for
+    dev/validation — see #102
+  - [ ] `scripts/validate/` script proving fleet-wide blue-green +
+    leader failover end-to-end against #92's own done-when — see #103
+- [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
+  the two cannot drift from one another — see #68
+- [ ] Unified config: consolidate config passing into one place and fail
+  fast on missing required values, rather than resolving it just-in-time
+  across the codebase — see #67
 
 **Done when:** a managed node has a persistent WireGuard tunnel to the web
 app, and a per-node app-manager agent fleet that elects a single leader,
@@ -70,6 +98,49 @@ TTL with no reconciliation gap. (0.x provisions one physical node only,
 so this proves the lease/election mechanism itself, not genuine
 node-death fault tolerance — that needs real multi-member Incus
 clustering, deferred; see `docs/Decisions.md` § App Manager HA.)
+
+## Phase 3.5 — The validate suite made runnable
+
+> **Detour note (2026-07-19, see #115):** this is not a phase in the sense
+> the others are — it produces no runnable node or service. It is recorded
+> as one because the work was large, it interrupted Phase 3 between #91 and
+> #92, and a roadmap that omits it makes Phase 3 look stalled for no
+> reason. It interleaves with the remaining #92 work rather than gating it.
+>
+> The trigger: #115 established that nothing ran `scripts/validate-*.sh` at
+> all, that two scripts had been silently 503ing for weeks after #107 gated
+> the seed and image routes on `WIREGUARD_ENDPOINT`, and that three
+> assertions passed for the wrong reason. The sharpest was a `cmp -s` that
+> could not distinguish a 40-byte 503 body from a 3.2 GB image — so it
+> reported PASS throughout the window the route was broken, for precisely
+> the failure it existed to catch. Rationale in `docs/Decisions.md` §20
+> (bash vs. Go, CI transport, OVN) and §22 (the delivered contract).
+
+- [x] Decide what the suite *is* before moving it: stays bash with an
+  extracted `lib.sh` rather than becoming Go, CI reaches hardware over
+  Tailscale rather than via a self-hosted runner, and no OVN; resolves
+  `docs/Decisions.md` §20: DONE; see #127
+- [x] Unbreak the two scripts failing since #107, and close the three
+  assertions that passed for the wrong reason: DONE; see #129, #134
+- [x] Parametrize the hardware scripts' remote/project/network
+  (`VALIDATE_INCUS_REMOTE`/`_PROJECT`/`_NETWORK`) so they stop hardcoding
+  one operator's dev host: DONE; see #132
+- [x] Move the suite to `scripts/validate/`, each script named for the
+  behaviour it proves rather than the issue that prompted it — an issue
+  number ages into meaninglessness, and the originating issue is recorded
+  in each file's header comment instead: DONE; see #138
+- [x] Shared `lib.sh` harness and a real skip contract: an unmet
+  prerequisite is a SKIP with its own exit code, never a FAIL, and
+  `run.sh --describe` lets the scripts declare what they need rather than
+  the docs claiming it; resolves `docs/Decisions.md` §22: DONE; see #140,
+  #136
+
+**Done when:** the suite is honest about its own results — a missing tool
+reports as a skip rather than a failure, a script that silently gains a
+precondition fails rather than passing quietly, and every script can say
+what it proves and what it needs without being read. (Reached. What
+remains is *enforcement* — nothing runs the suite automatically yet; that
+work is tracked separately and is not part of this section.)
 
 ## Phase 4 — Tailscale, logging + metrics
 
