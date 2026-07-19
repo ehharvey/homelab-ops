@@ -1158,6 +1158,27 @@ detail lives in `scripts/validate/README.md`, and the day-to-day rules in
 `CLAUDE.md`. Enforcement — a workflow that actually runs any of this — is
 **not** part of it and does not yet exist.
 
+### Follow-up: the compose group's serial-teardown barrier (#153)
+
+#153 reported `make validate` failing nondeterministically on clean `main`,
+always in the `compose` group, with the hypothesis that a script's
+`docker compose down` returned before releasing the shared host ports/network,
+so the next script's `compose up` raced it. Characterising before fixing
+(the suite's whole doctrine) **disproved that mechanism on the current
+toolchain**: on Docker 29.6.1 / Compose v5.3.1, `down` releases the published
+ports *and* the project network before it returns, measured directly, and 13
+consecutive suite runs (5 group + 8 full `make validate`, the latter under CPU/IO
+load) stayed green. The bug was real when filed — the most likely cause is a
+Compose upgrade since, older versions tearing networks/ports down more loosely.
+
+The fix is kept anyway, as a `compose_down` barrier in `lib-compose.sh` that
+every compose script's cleanup trap calls: it blocks until the containers and
+published ports are actually gone. It is a no-op where `down` is already
+synchronous, and defends the group's determinism on an older or CI-provided
+Compose whose version the repo does not control — which matters precisely
+because enforcement (#146, a *required* validate check) is the next step, and a
+required gate cannot be allowed to flake on a runner we didn't measure.
+
 ## Other notes
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?

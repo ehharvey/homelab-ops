@@ -45,7 +45,7 @@ services:
 EOF
 
 cleanup() {
-  compose down >/dev/null 2>&1
+  compose_down
   rm -f "$OVERRIDE"
 }
 trap cleanup EXIT
