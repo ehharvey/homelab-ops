@@ -36,6 +36,19 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
+# shellcheck source=scripts/validate/lib-incus.sh
+. "$ROOT_DIR/scripts/validate/lib-incus.sh"
+
+VALIDATE_PROVES="the app produces a working installer end-to-end, without the bootstrap CLI (#40)"
+VALIDATE_GROUP="incus-vm"
+VALIDATE_NEEDS="docker-compose incus go openssl INCUSOS_BASE_IMAGE"
+VALIDATE_DURATION="~10m"
+
+validate_parse_args "$@"
 cd "$ROOT_DIR"
 
 pass=0
@@ -46,6 +59,9 @@ BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 export CERT_DIR
 OVERRIDE="$(mktemp /tmp/compose-sprint-3-override.XXXXXX.yml)"
+# lib-compose.sh's compose() picks this up; scripts that need no scoped
+# override simply leave it unset.
+VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -65,10 +81,6 @@ WRITER_NAME="validate-installer-writer-$$"
 PROBE_NAME="validate-installer-probe-$$"
 SEED_VOL="validate-installer-seeded-img-$$"
 
-compose() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" "$@"
-}
-
 cleanup() {
   compose down >/dev/null 2>&1
   incus delete --force --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1
@@ -84,22 +96,18 @@ check() {
   local desc="$1"
   shift
   if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
+    record_pass "$desc"
   else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
+    record_fail "$desc"
   fi
 }
 
 check_json() {
   local desc="$1" json="$2" filter="$3"
   if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
+    record_pass "$desc"
   else
-    echo "FAIL: $desc (got: $json)"
-    fail=$((fail + 1))
+    record_fail "$desc (got: $json)"
   fi
 }
 
@@ -156,8 +164,7 @@ if [ "$missing" -ne 0 ]; then
   echo "ERROR: prerequisites not met — aborting before doing any work" >&2
   exit 2
 fi
-echo "PASS: all hard prerequisites met"
-pass=$((pass + 1))
+record_pass "all hard prerequisites met"
 
 echo
 echo "== 1. Operator cert (the only bootstrap CLI use — cert generation, not provisioning) =="
@@ -268,25 +275,19 @@ in_pool() {
   [ -n "$last" ] && [ "$last" -ge 200 ] 2>/dev/null && [ "$last" -le 250 ] 2>/dev/null
 }
 if in_pool "$ip0"; then
-  echo "PASS: node0 has an IPAM-assigned StaticIP in .200-.250 ($ip0)"
-  pass=$((pass + 1))
+  record_pass "node0 has an IPAM-assigned StaticIP in .200-.250 ($ip0)"
 else
-  echo "FAIL: node0 has an IPAM-assigned StaticIP in .200-.250 (got: $ip0)"
-  fail=$((fail + 1))
+  record_fail "node0 has an IPAM-assigned StaticIP in .200-.250 (got: $ip0)"
 fi
 if in_pool "$ip1"; then
-  echo "PASS: node1 has an IPAM-assigned StaticIP in .200-.250 ($ip1)"
-  pass=$((pass + 1))
+  record_pass "node1 has an IPAM-assigned StaticIP in .200-.250 ($ip1)"
 else
-  echo "FAIL: node1 has an IPAM-assigned StaticIP in .200-.250 (got: $ip1)"
-  fail=$((fail + 1))
+  record_fail "node1 has an IPAM-assigned StaticIP in .200-.250 (got: $ip1)"
 fi
 if [ -n "$ip0" ] && [ -n "$ip1" ] && [ "$ip0" != "$ip1" ]; then
-  echo "PASS: node0 and node1 got distinct addresses ($ip0 vs $ip1)"
-  pass=$((pass + 1))
+  record_pass "node0 and node1 got distinct addresses ($ip0 vs $ip1)"
 else
-  echo "FAIL: node0 and node1 did not get distinct addresses (got: $ip0 / $ip1)"
-  fail=$((fail + 1))
+  record_fail "node0 and node1 did not get distinct addresses (got: $ip0 / $ip1)"
 fi
 
 seed_resp=$(curl -s -X POST "$base_url/instances/node0/seed")
@@ -310,11 +311,9 @@ check "node0's incus_yaml embeds the operator's break-glass cert" \
 seed_resp2=$(curl -s -X POST "$base_url/instances/node0/seed")
 incus_yaml2=$(echo "$seed_resp2" | jq -r '.incus_yaml')
 if [ "$incus_yaml" = "$incus_yaml2" ]; then
-  echo "PASS: node0's incus_yaml is byte-identical across repeated seed calls (idempotent)"
-  pass=$((pass + 1))
+  record_pass "node0's incus_yaml is byte-identical across repeated seed calls (idempotent)"
 else
-  echo "FAIL: node0's incus_yaml is byte-identical across repeated seed calls (idempotent)"
-  fail=$((fail + 1))
+  record_fail "node0's incus_yaml is byte-identical across repeated seed calls (idempotent)"
 fi
 
 seed_resp_node1=$(curl -s -X POST "$base_url/instances/node1/seed")
@@ -398,8 +397,7 @@ check "VM created with empty disk + seeded image as install media" bash -c "
 
 echo "Waiting up to 5 minutes for the install to complete ..."
 if wait_for_console_text "successfully installed" 300; then
-  echo "PASS: VM installs IncusOS from the web-app-produced image"
-  pass=$((pass + 1))
+  record_pass "VM installs IncusOS from the web-app-produced image"
 
   # IncusOS halts after installing and waits for the install media to be
   # removed before it'll boot the installed system.
@@ -407,8 +405,7 @@ if wait_for_console_text "successfully installed" 300; then
   incus config device remove --project "$PROJECT" "$REMOTE:$VM_NAME" install-media >/dev/null 2>&1
   incus start --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1
 else
-  echo "FAIL: VM installs IncusOS from the web-app-produced image"
-  fail=$((fail + 1))
+  record_fail "VM installs IncusOS from the web-app-produced image"
 fi
 
 check "probe instance ready on $NETWORK" bash -c "
@@ -440,17 +437,13 @@ if "$reachable"; then
   response=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
     curl --cert /root/client.crt --key /root/client.key -k -s "https://$ASSIGNED_IP:8443/1.0" 2>/dev/null)
   if echo "$response" | grep -q '"auth":"trusted"'; then
-    echo "PASS: node trusts the break-glass cert and is reachable over Incus API"
-    pass=$((pass + 1))
+    record_pass "node trusts the break-glass cert and is reachable over Incus API"
   else
-    echo "FAIL: node trusts the break-glass cert and is reachable over Incus API (reachable, but auth was not \"trusted\": $response)"
-    fail=$((fail + 1))
+    record_fail "node trusts the break-glass cert and is reachable over Incus API (reachable, but auth was not \"trusted\": $response)"
   fi
 else
-  echo "FAIL: node trusts the break-glass cert and is reachable over Incus API (node never became reachable)"
-  fail=$((fail + 1))
+  record_fail "node trusts the break-glass cert and is reachable over Incus API (node never became reachable)"
 fi
 
 echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

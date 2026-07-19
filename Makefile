@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm vendor-incusos docker-build dev
+.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm vendor-incusos docker-build dev validate validate-hardware
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -41,6 +41,24 @@ ship:
 # make lgtm  /  make lgtm PR=123
 lgtm:
 	./scripts/lgtm.sh $(PR)
+
+# The unattended subset — exactly what CI runs, same entry point (following
+# `make lint-docs`' precedent). --strict makes an unmet prerequisite a failure,
+# except the 3.2 GB base image no hosted runner can supply.
+#
+# Exit 3 ("some checks skipped") is success here: under --strict the only skips
+# that survive are ones this command explicitly blessed, so treating 3 as a
+# build failure would make a correct run red. run.sh still reports 3 rather than
+# 0, because "not everything ran" is worth saying out loud — the Makefile
+# decides what that means for a gate, the harness only reports it.
+validate:
+	@./scripts/validate/run.sh --group none,compose --strict --allow-skip base-image; \
+	rc=$$?; [ $$rc -eq 0 ] || [ $$rc -eq 3 ] || exit $$rc
+
+# Needs the Incus remote, home-lan, INCUSOS_BASE_IMAGE and flasher-tool.
+# Serial by necessity: these share the home-lan bridge.
+validate-hardware:
+	./scripts/validate/run.sh --group incus,incus-vm
 
 vendor-incusos:
 	./scripts/vendor-incusos.sh

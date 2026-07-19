@@ -14,34 +14,32 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+
+VALIDATE_PROVES="the bootstrap CLI renders a seed and injects it into a .img (#4)"
+VALIDATE_GROUP="none"
+VALIDATE_NEEDS="go [flasher-tool]"
+VALIDATE_DURATION="~3s"
+
+validate_parse_args "$@"
+
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
 
-pass=0
-fail=0
+echo "== 0. Hard prerequisites =="
+require_cmd go
+check_prereqs
 
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-echo "== 1. Prerequisites =="
-check "flasher-tool installed (go install github.com/lxc/incus-os/incus-osd/cmd/flasher-tool)" command -v flasher-tool
+echo
+echo "== 1. Build the bootstrap CLI =="
 check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
 
 if [ ! -x "$BOOTSTRAP_BIN" ]; then
-  echo
-  echo "$((pass)) passed, $((fail + 1)) failed (bootstrap CLI didn't build, skipping remaining checks)"
-  exit 1
+  echo "ERROR: bootstrap CLI didn't build; nothing downstream can be meaningful" >&2
+  summary
 fi
 
 echo
@@ -79,10 +77,14 @@ check "incus.yaml rendered" test -f "$WORK_DIR/seed/incus.yaml"
 
 echo
 echo "== 3. build-image injects the seed into a .img =="
-if ! command -v flasher-tool >/dev/null 2>&1; then
-  echo "FAIL: build-image exits 0 (skipped: flasher-tool not installed)"
-  echo "FAIL: output .img exists and grew to cover the injected seed (skipped: flasher-tool not installed)"
-  fail=$((fail + 2))
+# flasher-tool is an operator-installed binary the repo doesn't vendor, so its
+# absence is a genuine skip, not a defect in anything under test. It used to be
+# counted as two failures — see #136 for what that cost when the same gap in
+# node-boots-and-trusts-bootstrap-cert.sh presented as five failures reading
+# like a provisioning regression.
+if ! have_cmd flasher-tool; then
+  skip_check "build-image exits 0" flasher-tool "flasher-tool not installed"
+  skip_check "output .img exists and grew to cover the injected seed" flasher-tool "flasher-tool not installed"
 else
   base_image="$WORK_DIR/base.img"
   output_image="$WORK_DIR/out.img"
@@ -102,5 +104,4 @@ else
 fi
 
 echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

@@ -29,16 +29,27 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
 
-pass=0
-fail=0
+VALIDATE_PROVES="GET /instances/{name}/image streams a freshly seeded, correctly-sized .img (#39)"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose curl jq go openssl [INCUSOS_BASE_IMAGE]"
+VALIDATE_DURATION="~1m"
+
+validate_parse_args "$@"
+cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 export CERT_DIR
 OVERRIDE="$(mktemp /tmp/compose-image-override.XXXXXX.yml)"
+# lib-compose.sh's compose() picks this up; scripts that need no scoped
+# override simply leave it unset.
+VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 
 # devnode0's MAC from the committed fixture (dev/git-fixture/fleet.yaml). Used
 # as the positive marker that the seed really was injected into the image.
@@ -95,39 +106,12 @@ services:
 EOF
 fi
 
-compose() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" "$@"
-}
-
 cleanup() {
   compose down >/dev/null 2>&1
   rm -rf "$WORK_DIR"
   rm -f "$OVERRIDE"
 }
 trap cleanup EXIT
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-check_json() {
-  local desc="$1" json="$2" filter="$3"
-  if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc (got: $json)"
-    fail=$((fail + 1))
-  fi
-}
 
 echo "== 1. Prerequisites: build bootstrap binary, generate the operator's cert =="
 check "build bootstrap binary" go build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
@@ -156,16 +140,21 @@ check_json "POST /sync returns a commit SHA" "$sync_resp" '.commit | length > 0'
 echo
 echo "== 4. GET /instances/devnode0/image streams a seeded .img =="
 if [ "$BASE_IMAGE_READY" -ne 1 ]; then
-  # Still reported as FAIL rather than a real skip: the skip/exit-code contract
-  # is #115's stage-4 work (lib.sh), deliberately not smuggled into this fix.
-  echo "FAIL: image route returns 200 (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: response is an attachment (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: downloaded .img is a non-empty disk image (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: downloaded .img is exactly the base image's size (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: downloaded .img carries devnode0's seeded MAC (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: the base image does not carry that MAC (skipped: INCUSOS_BASE_IMAGE not usable)"
-  echo "FAIL: unknown instance 404s (skipped: INCUSOS_BASE_IMAGE not usable)"
-  fail=$((fail + 7))
+  # A 3.2 GB base image is something the operator supplies, not something the
+  # route can be wrong about — so its absence is a skip, tagged so CI can bless
+  # it (`--allow-skip base-image`) while still failing on any *other* skip.
+  # That distinction is what would have caught #107's gate the day it landed:
+  # a route returning 503 produces failures here, not skips.
+  for _desc in \
+    "image route returns 200" \
+    "response is an attachment" \
+    "downloaded .img is a non-empty disk image" \
+    "downloaded .img is exactly the base image's size" \
+    "downloaded .img carries devnode0's seeded MAC" \
+    "the base image does not carry that MAC" \
+    "unknown instance 404s"; do
+    skip_check "$_desc" base-image "INCUSOS_BASE_IMAGE not usable"
+  done
 else
   out_img="$WORK_DIR/devnode0.img"
   headers="$WORK_DIR/headers.txt"
@@ -216,6 +205,4 @@ echo "(Not covered here: booting the produced image in a real VM and confirming"
 echo " cert trust — that's #40's broader end-to-end check, deliberately not"
 echo " duplicated in this route-level script.)"
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

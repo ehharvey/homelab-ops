@@ -17,72 +17,26 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
+
+VALIDATE_PROVES="the local Grafana/Loki/Prometheus stack accepts logs and metrics (#82)"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose curl jq"
+VALIDATE_DURATION="~1m"
+
+validate_parse_args "$@"
 cd "$ROOT_DIR"
-
-pass=0
-fail=0
-
-compose() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" "$@"
-}
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
 
 check_json() {
   local desc="$1" json="$2" filter="$3"
   if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
+    record_pass "$desc"
   else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
+    record_fail "$desc"
   fi
-}
-
-# wait_http retries a plain HTTP 200 check against a readiness endpoint.
-wait_http() {
-  local desc="$1" url="$2" tries="${3:-30}"
-  for _ in $(seq 1 "$tries"); do
-    if curl -sf -o /dev/null "$url"; then
-      echo "PASS: $desc"
-      pass=$((pass + 1))
-      return 0
-    fi
-    sleep 1
-  done
-  echo "FAIL: $desc (unreachable after ${tries}s: $url)"
-  fail=$((fail + 1))
-  return 1
-}
-
-# wait_json retries a GET against url until the response satisfies a jq
-# filter, since both Loki's query path and Prometheus's remote_write path are
-# asynchronous relative to the push/scrape that feeds them.
-wait_json() {
-  local desc="$1" url="$2" filter="$3" tries="${4:-30}"
-  local body=""
-  for _ in $(seq 1 "$tries"); do
-    body=$(curl -s "$url")
-    if echo "$body" | jq -e "$filter" >/dev/null 2>&1; then
-      echo "PASS: $desc"
-      pass=$((pass + 1))
-      return 0
-    fi
-    sleep 1
-  done
-  echo "FAIL: $desc (condition not met after ${tries}s; last response: $body)"
-  fail=$((fail + 1))
-  return 1
 }
 
 cleanup() {
@@ -137,6 +91,4 @@ datasources=$(curl -s -u admin:admin http://localhost:3000/api/datasources)
 check_json "Grafana lists Loki + Prometheus datasources" "$datasources" \
   '([.[].type] | sort) == ["loki", "prometheus"]'
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

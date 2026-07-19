@@ -25,16 +25,27 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
 
-pass=0
-fail=0
+VALIDATE_PROVES="POST /instances/{name}/seed renders a stable IPAM-assigned address (#38)"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose jq go"
+VALIDATE_DURATION="~15s"
+
+validate_parse_args "$@"
+cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 export CERT_DIR
 OVERRIDE="$(mktemp /tmp/compose-issue38-override.XXXXXX.yml)"
+# lib-compose.sh's compose() picks this up; scripts that need no scoped
+# override simply leave it unset.
+VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 
 # The seed route 503s without a CertSource, so mount an operator cert at
 # CLIENT_CERT_PATH exactly as seed-route-renders-static-ip.sh does.
@@ -61,39 +72,12 @@ services:
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 
-compose() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE" "$@"
-}
-
 cleanup() {
   compose down >/dev/null 2>&1
   rm -rf "$WORK_DIR"
   rm -f "$OVERRIDE"
 }
 trap cleanup EXIT
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-check_json() {
-  local desc="$1" json="$2" filter="$3"
-  if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc (got: $json)"
-    fail=$((fail + 1))
-  fi
-}
 
 echo "== 1. Prerequisites: build bootstrap binary, generate the operator's cert =="
 check "build bootstrap binary" go build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
@@ -186,13 +170,9 @@ seed_resp2=$(curl -s -X POST "$base_url/instances/devnode1/seed")
 network_yaml2=$(echo "$seed_resp2" | jq -r '.network_yaml')
 ip2=$(echo "$network_yaml2" | grep -oE '10\.0\.0\.[0-9]{1,3}/24' | head -1)
 if [ -n "$ip2" ] && [ "$ip1" = "$ip2" ]; then
-  echo "PASS: address is stable across re-sync ($ip1)"
-  pass=$((pass + 1))
+  record_pass "address is stable across re-sync ($ip1)"
 else
-  echo "FAIL: address churned across re-sync (first $ip1, second $ip2)"
-  fail=$((fail + 1))
+  record_fail "address churned across re-sync (first $ip1, second $ip2)"
 fi
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary

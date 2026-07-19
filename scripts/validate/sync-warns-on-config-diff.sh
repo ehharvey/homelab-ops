@@ -18,44 +18,18 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$ROOT_DIR/scripts/validate/lib.sh"
+# shellcheck source=scripts/validate/lib-compose.sh
+. "$ROOT_DIR/scripts/validate/lib-compose.sh"
+
+VALIDATE_PROVES="POST /sync reports a visible diff, and rejects invalid config with 502 (#22, #46)"
+VALIDATE_GROUP="compose"
+VALIDATE_NEEDS="docker-compose jq curl"
+VALIDATE_DURATION="~15s"
+
+validate_parse_args "$@"
 cd "$ROOT_DIR"
-
-pass=0
-fail=0
-
-check() {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc"
-    fail=$((fail + 1))
-  fi
-}
-
-check_json() {
-  local desc="$1" json="$2" filter="$3"
-  if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc (got: $json)"
-    fail=$((fail + 1))
-  fi
-}
-
-check_log() {
-  local desc="$1" pattern="$2"
-  if docker compose logs web 2>/dev/null | grep -qF -- "$pattern"; then
-    echo "PASS: $desc"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $desc (pattern not found: $pattern)"
-    fail=$((fail + 1))
-  fi
-}
 
 cleanup() {
   docker compose down >/dev/null 2>&1
@@ -162,6 +136,4 @@ echo "== 5. Zero side effects on real nodes =="
 check "web container has no shell (still distroless; no provisioning tooling crept in)" \
   bash -c '! docker compose exec -T web sh -c "true" 2>/dev/null'
 
-echo
-echo "$pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+summary
