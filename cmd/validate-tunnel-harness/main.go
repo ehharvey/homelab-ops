@@ -1,4 +1,4 @@
-// Command validate-91-harness is test-only scaffolding for
+// Command validate-tunnel-harness is test-only scaffolding for
 // scripts/validate-issue-91.sh — it is NOT an operator-facing command like
 // cmd/bootstrap or cmd/web, and ships no stability promise. It exists
 // because the validate script needs to drive internal/wireguard's
@@ -34,7 +34,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "validate-91-harness:", err)
+		fmt.Fprintln(os.Stderr, "validate-tunnel-harness:", err)
 		os.Exit(1)
 	}
 }

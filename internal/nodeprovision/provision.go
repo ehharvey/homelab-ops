@@ -136,7 +136,7 @@ func waitOperation(ctx context.Context, client *http.Client, addr, operationID s
 	// about it too via ?timeout= (seconds), so the server-side wait and
 	// our own context deadline stay aligned instead of relying solely on
 	// the client-side ctx cancellation to unblock this call. No effect
-	// today (the only caller, cmd/validate-91-harness, always passes a
+	// today (the only caller, cmd/validate-tunnel-harness, always passes a
 	// bounded context anyway) — matters once #92 grows a second caller
 	// with a looser one.
 	if deadline, ok := ctx.Deadline(); ok {
