@@ -126,12 +126,21 @@ Per-run isolation is tracked separately. Until then `--jobs` is safe only across
 groups that don't contend — and the measured serial cost is low: the whole
 non-hardware set runs in about two and a half minutes.
 
+Serially, the same contention can bite at the boundary between two compose
+scripts: one script's teardown must fully release the shared ports and project
+network before the next script's `compose up`. That is what `compose_down`
+(in `lib-compose.sh`) guarantees — every compose script's cleanup trap calls it
+instead of a bare `docker compose down`, and it blocks until the containers and
+published ports are actually gone. On Compose v5 `down` is already synchronous,
+so the barrier is a no-op there; it exists so the group stays deterministic on
+an older or CI-provided Compose where `down` returns early (#153).
+
 ## The library
 
 | file | contents | sourced by |
 |---|---|---|
 | `lib.sh` | counters, `check`/`check_json`/`check_eq`, `skip_check`, the prereq DSL, arg parsing, `summary` | all |
-| `lib-compose.sh` | `compose()`, `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
+| `lib-compose.sh` | `compose()`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 
 `lib.sh`'s prereq DSL includes `require_incus_image`, which asserts the pinned

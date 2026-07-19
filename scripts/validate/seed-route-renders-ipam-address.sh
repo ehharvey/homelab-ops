@@ -73,7 +73,7 @@ services:
 EOF
 
 cleanup() {
-  compose down >/dev/null 2>&1
+  compose_down
   rm -rf "$WORK_DIR"
   rm -f "$OVERRIDE"
 }
