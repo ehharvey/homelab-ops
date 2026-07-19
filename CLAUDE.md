@@ -57,7 +57,11 @@ relevant one before calling related work done. Two families:
 - **Bootstrap/Phase-0** (e.g. `node-boots-and-trusts-bootstrap-cert.sh`):
   drive the real Incus remote `homelab-host`, sometimes booting a real VM off
   the produced `.img`. Override the target with `VALIDATE_INCUS_REMOTE` /
-  `VALIDATE_INCUS_PROJECT` / `VALIDATE_INCUS_NETWORK` (#132).
+  `VALIDATE_INCUS_PROJECT` / `VALIDATE_INCUS_NETWORK` (#132), or
+  `VALIDATE_INCUS_POOL` / `VALIDATE_ALPINE_CT` / `VALIDATE_ALPINE_VM` (#131).
+  They launch from **pinned** base-image aliases, not `images:alpine/edge` —
+  `.devcontainer/scripts/3-pin-validate-images.sh` creates them, and a moving
+  upstream tag was a real source of silent drift (`docs/Decisions.md` §21).
 - **Web app** (e.g. `sync-warns-on-config-diff.sh`,
   `background-poll-warns-on-config-diff.sh`): bring up the real
   `docker compose` stack (web + a throwaway git remote in `dev/git-fixture`)

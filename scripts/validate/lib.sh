@@ -170,6 +170,19 @@ require_incus_network() {
 		_prereq_missing "incus network '$network' not found in project '$project' on $remote"
 }
 
+# require_incus_image <remote> <project> <alias> — the pinned base image must
+# exist locally on the host. A hard prereq rather than a skip: it's operator
+# setup (run .devcontainer/scripts/3-pin-validate-images.sh), the same class as
+# "the remote isn't there", not an environmental limit like a missing 3.2GB
+# base image. A skip would need a new tag, and under --strict a new tag fails
+# CI until someone blesses it — a diagnostic pointing at the fix is honester.
+require_incus_image() {
+	local remote="$1" project="$2" alias="$3"
+	incus image list "$remote:" --project "$project" -c l -f csv |
+		cut -d, -f1 | grep -qx "$alias" ||
+		_prereq_missing "incus image alias '$alias' not found in project '$project' on $remote — run .devcontainer/scripts/3-pin-validate-images.sh"
+}
+
 # require_env_file <VARNAME> — the variable must be set AND name a real file.
 require_env_file() {
 	local name="$1" value="${!1:-}"
