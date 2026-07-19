@@ -11,7 +11,7 @@
 #      cert is trusted" at once.
 #
 # Intended to run INSIDE the devcontainer, against the existing
-# "homelab-host" remote / "homelab-dev" project / "home-lan" network set up
+# "homelab-host" remote / "default" project / "home-lan" network set up
 # by .devcontainer/scripts/2-setup-dev-network.sh (see devcontainer-reaches-host-incus.sh).
 #
 # Requires a real, bootable base IncusOS raw image — unlike
@@ -46,7 +46,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, and trusts the bootstrap cert (#5)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="incus go [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_NEEDS="incus go pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~9m"
 
 validate_parse_args "$@"
@@ -55,10 +55,10 @@ WORK_DIR="$(mktemp -d)"
 # on the Incus host itself, where Incus is a local unix socket and no remote
 # named "homelab-host" exists (see #115's CI design).
 #
-# PROJECT defaults to "default", not "homelab-dev": that project is stuck with
-# features.networks=true and therefore sees no networks at all, so every run
-# here failed its prerequisites (#96, #131). #91 already targets "default" for
-# the same reason, and home-lan lives there.
+# PROJECT defaults to "default". This used to target a "homelab-dev" project,
+# which got stuck with features.networks=true and could therefore see no
+# networks at all, failing every run's prerequisites (#96). #132 repointed the
+# suite at "default", where home-lan lives; #131 deleted homelab-dev outright.
 REMOTE="${VALIDATE_INCUS_REMOTE:-homelab-host}"
 PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
 NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
@@ -125,6 +125,8 @@ require_flasher_tool
 require_incus_remote "$REMOTE"
 require_incus_project "$REMOTE" "$PROJECT"
 require_incus_network "$REMOTE" "$PROJECT" "$NETWORK"
+require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_CT"
+require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_VM"
 check_prereqs
 
 echo
@@ -195,7 +197,7 @@ else
   check "seed .img streamed onto $REMOTE as a block volume" bash -c "
     set -eu
     incus storage volume create '$REMOTE:$POOL' '$SEED_VOL' --type=block size=${vol_gib}GiB --project '$PROJECT' &&
-    incus launch images:alpine/edge '$REMOTE:$WRITER_NAME' --vm --project '$PROJECT' \
+    incus launch '$VALIDATE_ALPINE_VM' '$REMOTE:$WRITER_NAME' --vm --project '$PROJECT' \
       --network '$NETWORK' --storage '$POOL' \
       -c security.secureboot=false -c limits.cpu=1 -c limits.memory=512MiB &&
     incus config device add '$REMOTE:$WRITER_NAME' raw-disk disk pool='$POOL' source='$SEED_VOL' --project '$PROJECT' &&
@@ -237,7 +239,7 @@ else
 
   check "probe instance ready on $NETWORK" bash -c "
     set -eu
-    incus launch images:alpine/edge '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$NETWORK' --storage '$POOL' &&
+    incus launch '$VALIDATE_ALPINE_CT' '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$NETWORK' --storage '$POOL' &&
     for _ in \$(seq 1 15); do
       incus exec --project '$PROJECT' '$REMOTE:$PROBE_NAME' -- apk add --no-cache curl >/dev/null 2>&1 && break
       sleep 2

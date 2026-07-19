@@ -152,3 +152,21 @@ work is tracked separately and is not part of this section.)
 - [ ] Extend the per-node Alloy instance to scrape Incus's native `/1.0/metrics` endpoint and remote_write to Grafana, alongside its existing syslog forwarding — see #80
 
 **Done when:** a freshly provisioned node is reachable over Tailscale and both its logs and its resource metrics (host + instance, CPU/memory/disk/network) show up in Grafana Cloud.
+
+## Deferred / post-1.0 — tooling and dev-host health
+
+Not on the path to 1.0, but tracked here rather than nowhere: keeping the dev
+host reproducible and the validation suite drivable in CI. The suite itself
+was made runnable during the Phase 3.5 detour (#138, #140); what remains here
+is the host it runs against and the CI that will drive it.
+
+- [x] Dev Incus host cleanup — copy-on-write storage pool, pinned base images
+  instead of a moving `images:alpine/edge` tag, `homelab-dev` deleted, and
+  client/server version agreement asserted rather than hoped for: DONE; see
+  #131 (folds in #96), `docs/Decisions.md` §21
+- [ ] CI for the validate suite: a hosted runner joining the tailnet and
+  driving throwaway Incus sandboxes on `homelab-host`, with `tofu/ci/`
+  expressing the host state — see #115, `docs/Decisions.md` §20
+
+**Done when:** the suite runs unattended in CI against a dev host whose state
+is reproducible from the repo rather than from memory.

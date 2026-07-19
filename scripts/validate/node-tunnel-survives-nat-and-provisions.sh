@@ -13,10 +13,11 @@
 #      mechanism (internal/nodeprovision) works against a real node — the
 #      exact mechanism #92's `bootstrap deploy-agent` will reuse for real.
 #
-# Runs against the "homelab-host" remote's DEFAULT project (not
-# "homelab-dev" — see #96: that project got stuck with features.networks=true
-# while building this script, and the plan going forward is to stop using it
-# rather than repair it in place). This script creates and tears down its
+# Runs against the "homelab-host" remote's DEFAULT project. An earlier
+# "homelab-dev" project got stuck with features.networks=true while this
+# script was being built and could see no networks at all (#96); rather than
+# repair it, #132 repointed the suite here and #131 deleted it. This script
+# creates and tears down its
 # own network/instances entirely within the default project, alongside
 # node-boots-and-trusts-bootstrap-cert.sh's "home-lan" network, which it reuses read-only.
 #
@@ -64,7 +65,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="a node's WireGuard tunnel survives a NAT hop and carries provisioning (#91)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="incus go git python3 [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_NEEDS="incus go git python3 pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~11m"
 
 validate_parse_args "$@"
@@ -171,6 +172,8 @@ require_cmd incus go git python3
 require_flasher_tool
 require_incus_remote "$REMOTE"
 require_incus_network "$REMOTE" "$PROJECT" "$LAN_NETWORK"
+require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_CT"
+require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_VM"
 check_prereqs
 
 echo
@@ -193,7 +196,7 @@ echo "== 2. NAT-simulation topology: wan-sim network + gateway =="
 check "network '$WAN_NETWORK' created" incus network create "$REMOTE:$WAN_NETWORK" \
   "ipv4.address=$WAN_GATEWAY_ADDR/24" "ipv4.nat=false" "ipv4.dhcp=true"
 
-check "gateway container launched on $LAN_NETWORK" incus launch images:alpine/edge "$REMOTE:$GATEWAY_NAME" \
+check "gateway container launched on $LAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$GATEWAY_NAME" \
   --project "$PROJECT" --network "$LAN_NETWORK"
 
 check "gateway attached to $WAN_NETWORK" incus config device add --project "$PROJECT" \
@@ -282,7 +285,7 @@ check "fleet git repo built" bash -c "
   git clone -q --bare . '$WORK_DIR/fleet-repo.git'
 "
 
-check "webapp container launched on $WAN_NETWORK" incus launch images:alpine/edge "$REMOTE:$WEBAPP_NAME" \
+check "webapp container launched on $WAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$WEBAPP_NAME" \
   --project "$PROJECT" --network "$WAN_NETWORK"
 
 # The primary NIC DHCPs on first boot, but not necessarily instantly —
@@ -415,7 +418,7 @@ PYEOF
   check "seed .img streamed onto $REMOTE as a block volume" bash -c "
     set -eu
     incus storage volume create '$REMOTE:$POOL' '$SEED_VOL' --type=block size=${vol_gib}GiB --project '$PROJECT' &&
-    incus launch images:alpine/edge '$REMOTE:$WRITER_NAME' --vm --project '$PROJECT' \
+    incus launch '$VALIDATE_ALPINE_VM' '$REMOTE:$WRITER_NAME' --vm --project '$PROJECT' \
       --network '$LAN_NETWORK' --storage '$POOL' \
       -c security.secureboot=false -c limits.cpu=1 -c limits.memory=512MiB &&
     incus config device add '$REMOTE:$WRITER_NAME' raw-disk disk pool='$POOL' source='$SEED_VOL' --project '$PROJECT' &&
@@ -457,7 +460,7 @@ PYEOF
   # is reachable.
   check "probe instance ready on $LAN_NETWORK" bash -c "
     set -eu
-    incus launch images:alpine/edge '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$LAN_NETWORK' --storage '$POOL' &&
+    incus launch '$VALIDATE_ALPINE_CT' '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$LAN_NETWORK' --storage '$POOL' &&
     for _ in \$(seq 1 15); do
       incus exec --project '$PROJECT' '$REMOTE:$PROBE_NAME' -- apk add --no-cache curl >/dev/null 2>&1 && break
       sleep 2
@@ -496,7 +499,7 @@ PYEOF
   # webapp<->node0 handshake check above, which is the pair that actually
   # crosses the gateway (the harness sits on home-lan, L2-adjacent to
   # node0, by design — see this file's header).
-  check "harness container launched on $LAN_NETWORK" incus launch images:alpine/edge "$REMOTE:$HARNESS_NAME" \
+  check "harness container launched on $LAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$HARNESS_NAME" \
     --project "$PROJECT" --network "$LAN_NETWORK"
   check "harness binary + key pushed" bash -c "
     incus file push --project '$PROJECT' '$HARNESS_BIN' '$REMOTE:$HARNESS_NAME/harness' --mode=0755 &&

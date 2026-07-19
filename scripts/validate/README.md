@@ -95,8 +95,8 @@ absence causes a skip rather than a failure.
 |---|---|---|
 | `none` | Go only | yes |
 | `compose` | Docker, `docker compose` | yes |
-| `incus` | an Incus remote | no — needs the host |
-| `incus-vm` | an Incus remote, a real VM boot, `INCUSOS_BASE_IMAGE` | no — needs the host |
+| `incus` | an Incus remote, `jq` | no — needs the host |
+| `incus-vm` | an Incus remote, the pinned base images, a real VM boot, `INCUSOS_BASE_IMAGE` | no — needs the host |
 | `github` | authenticated `gh` with repo admin | no — opens real PRs, would recurse |
 
 `run.sh` derives these from the scripts themselves rather than a list kept here,
@@ -105,7 +105,13 @@ so a new script is covered without editing anything central.
 Target the Incus groups elsewhere with `VALIDATE_INCUS_REMOTE`,
 `VALIDATE_INCUS_PROJECT`, `VALIDATE_INCUS_NETWORK` (#132) — needed to run on the
 Incus host itself, where Incus is a local unix socket and no `homelab-host`
-remote exists.
+remote exists. `VALIDATE_INCUS_POOL` and `VALIDATE_ALPINE_CT` /
+`VALIDATE_ALPINE_VM` (#131) override the storage pool and the pinned base image
+aliases the same way.
+
+`run.sh --group incus` is a one-second health check on the host and the client
+— it asserts the remote is reachable, the network exists, and that the Incus
+client and server share a major version.
 
 ## Parallelism
 
@@ -126,7 +132,13 @@ non-hardware set runs in about two and a half minutes.
 |---|---|---|
 | `lib.sh` | counters, `check`/`check_json`/`check_eq`, `skip_check`, the prereq DSL, arg parsing, `summary` | all |
 | `lib-compose.sh` | `compose()`, `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
-| `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool` | `incus`, `incus-vm` |
+| `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
+
+`lib.sh`'s prereq DSL includes `require_incus_image`, which asserts the pinned
+base images exist. It is a hard prerequisite (exit 2), not a skip: a missing
+alias means operator setup wasn't run, the same class as "the remote isn't
+there" — not an environmental limit like a missing multi-gigabyte
+`INCUSOS_BASE_IMAGE`. The diagnostic names the script that fixes it.
 
 Two deliberate irregularities, both documented in the scripts themselves:
 
@@ -139,3 +151,31 @@ Two deliberate irregularities, both documented in the scripts themselves:
   do from outside. It's a fixture the bash drives — the same category as
   `bootstrap` or `flasher-tool` — not a test. Go's layout requires it live under
   `cmd/`, so the suite is all-bash with one Go fixture binary.
+
+## What the scripts name things on the Incus host (#131)
+
+Every object a script creates on the host carries a recognisable prefix, so
+anything left behind can be identified and removed by hand:
+
+| object | pattern | example |
+|---|---|---|
+| instances | `validate-<slug>-<role>-$$` | `validate-tunnel-gw-31337` |
+| custom volumes | `validate-<slug>-<purpose>-$$` | `validate-nodeboot-seeded-img-31337` |
+| networks | `valwan-$$` | `valwan-31337` |
+
+Networks break the pattern on purpose: a bridge's name becomes a real
+host-level interface name (`ip link`), which is capped at 15 characters.
+`validate-wan-` plus a PID does not fit.
+
+**What this buys, and what it doesn't.** `validate-*` is a safe glob for
+spotting leftovers, but `$$` is the *devcontainer's* PID and means nothing on
+the host — so a re-run cannot recognise or reclaim its own previous leftovers,
+and two concurrent runs cannot tell each other's objects apart. Cleanup is
+`trap ... EXIT` only, so `kill -9`, a devcontainer rebuild mid-run, or a host
+reboot orphans everything that run created.
+
+A reaper to collect leftovers automatically was considered and declined (#131):
+the convention makes them identifiable by hand, and in practice the suite has
+not been observed to leak. Worth revisiting if that stops being true — Incus
+records `created_at` per instance, so age-based collection over the
+`validate-*` glob is the obvious shape.
