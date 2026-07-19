@@ -6,9 +6,9 @@ set -e
 # script exists to create what they expect, so the two must not drift.
 #
 # PROJECT moved from "homelab-dev" to "default" with #132. homelab-dev got stuck
-# with features.networks=true and can therefore see no networks at all (#96), so
-# every script targeting it failed its prerequisites. It is slated for deletion
-# in #131, and re-creating it on every devcontainer start worked against that.
+# with features.networks=true and could therefore see no networks at all (#96),
+# so every script targeting it failed its prerequisites. #131 deleted it — this
+# script must not re-create it.
 REMOTE="${VALIDATE_INCUS_REMOTE:-homelab-host}"
 PROJECT="${VALIDATE_INCUS_PROJECT:-default}"
 NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"

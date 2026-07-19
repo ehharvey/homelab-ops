@@ -20,7 +20,7 @@
 # whole phase, not a route-level regression guard.
 #
 # Requires: docker compose, curl, jq, go, openssl, incus. Needs the real
-# "homelab-host" Incus remote / "homelab-dev" project / "home-lan" network
+# "homelab-host" Incus remote / "default" project / "home-lan" network
 # set up by .devcontainer/scripts/2-setup-dev-network.sh, and a real bootable
 # INCUSOS_BASE_IMAGE (same one node-boots-and-trusts-bootstrap-cert.sh needs). The image route
 # copies the multi-GB base image into the container's /tmp per request, so
@@ -45,7 +45,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="the app produces a working installer end-to-end, without the bootstrap CLI (#40)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="docker-compose incus go openssl INCUSOS_BASE_IMAGE"
+VALIDATE_NEEDS="docker-compose incus go openssl pinned-base-images INCUSOS_BASE_IMAGE"
 VALIDATE_DURATION="~10m"
 
 validate_parse_args "$@"
@@ -130,40 +130,20 @@ wait_for_console_text() {
 }
 
 echo "== 0. Hard prerequisites (hard-fail, no skip-as-fail) =="
-missing=0
-for c in docker curl jq go openssl incus; do
-  if ! command -v "$c" >/dev/null 2>&1; then
-    echo "ERROR: required command not found: $c" >&2
-    missing=1
-  fi
-done
-if ! docker compose version >/dev/null 2>&1; then
-  echo "ERROR: 'docker compose' not available" >&2
-  missing=1
-fi
-if ! incus info "$REMOTE:" >/dev/null 2>&1; then
-  echo "ERROR: incus remote '$REMOTE' not reachable" >&2
-  missing=1
-fi
-if ! incus project list "$REMOTE:" -f csv | cut -d, -f1 | sed 's/ (current)$//' | grep -qx "$PROJECT"; then
-  echo "ERROR: incus project '$PROJECT' not found on $REMOTE" >&2
-  missing=1
-fi
-if ! incus network list "$REMOTE:" --project "$PROJECT" -f csv | cut -d, -f1 | sed 's/ (current)$//' | grep -qx "$NETWORK"; then
-  echo "ERROR: incus network '$NETWORK' not found in project '$PROJECT' on $REMOTE" >&2
-  missing=1
-fi
-if [ -z "${INCUSOS_BASE_IMAGE:-}" ]; then
-  echo "ERROR: INCUSOS_BASE_IMAGE not set" >&2
-  missing=1
-elif [ ! -f "$INCUSOS_BASE_IMAGE" ]; then
-  echo "ERROR: INCUSOS_BASE_IMAGE=$INCUSOS_BASE_IMAGE not found" >&2
-  missing=1
-fi
-if [ "$missing" -ne 0 ]; then
-  echo "ERROR: prerequisites not met — aborting before doing any work" >&2
-  exit 2
-fi
+# This block was hand-rolled — it predates lib.sh's prereq DSL, which #140
+# generalized *from* it. Converted with #131 because a hand-rolled copy silently
+# misses anything added at the library level, and #131 adds exactly that
+# (require_incus_image). Same semantics as before: accumulate every miss, report
+# them all, then exit 2 once, before doing any work.
+require_cmd docker curl jq go openssl incus
+require_docker_compose
+require_incus_remote "$REMOTE"
+require_incus_project "$REMOTE" "$PROJECT"
+require_incus_network "$REMOTE" "$PROJECT" "$NETWORK"
+require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_CT"
+require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_VM"
+require_env_file INCUSOS_BASE_IMAGE
+check_prereqs
 record_pass "all hard prerequisites met"
 
 echo
@@ -371,7 +351,7 @@ vol_gib=$(((img_bytes + (1 << 30) - 1) / (1 << 30)))
 check "seed .img streamed onto $REMOTE as a block volume" bash -c "
   set -eu
   incus storage volume create '$REMOTE:$POOL' '$SEED_VOL' --type=block size=${vol_gib}GiB --project '$PROJECT' &&
-  incus launch images:alpine/edge '$REMOTE:$WRITER_NAME' --vm --project '$PROJECT' \
+  incus launch '$VALIDATE_ALPINE_VM' '$REMOTE:$WRITER_NAME' --vm --project '$PROJECT' \
     --network '$NETWORK' --storage '$POOL' \
     -c security.secureboot=false -c limits.cpu=1 -c limits.memory=512MiB &&
   incus config device add '$REMOTE:$WRITER_NAME' raw-disk disk pool='$POOL' source='$SEED_VOL' --project '$PROJECT' &&
@@ -410,7 +390,7 @@ fi
 
 check "probe instance ready on $NETWORK" bash -c "
   set -eu
-  incus launch images:alpine/edge '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$NETWORK' --storage '$POOL' &&
+  incus launch '$VALIDATE_ALPINE_CT' '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$NETWORK' --storage '$POOL' &&
   for _ in \$(seq 1 15); do
     incus exec --project '$PROJECT' '$REMOTE:$PROBE_NAME' -- apk add --no-cache curl >/dev/null 2>&1 && break
     sleep 2

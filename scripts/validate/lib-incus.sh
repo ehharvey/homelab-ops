@@ -10,6 +10,54 @@
 # itself, where Incus is a local unix socket and no "homelab-host" remote
 # exists.
 
+# The pinned Alpine base images (#131).
+#
+# The suite used to launch "images:alpine/edge" directly at nine call sites.
+# "edge" is a moving tag: it changes upstream, and the local copy expires on
+# the default 10-day images.remote_cache_expiry — so the suite both
+# re-downloaded periodically and silently ran against a different base image
+# over time, a latent flakiness source nobody would attribute correctly. Not
+# hypothetical: #131 recorded fingerprint 19237dd97601 (20260716_13:00) and
+# three days later the host had 20260718_13:00 under a different fingerprint.
+#
+# Two aliases, not one, because a container image and a VM image are separate
+# images with separate fingerprints — an alias resolves to exactly one, so
+# `incus launch <alias> --vm` needs its own. Created by
+# .devcontainer/scripts/3-pin-validate-images.sh; asserted by
+# require_incus_image.
+#
+# Refreshing the pin is deliberately manual (delete the alias, re-copy) rather
+# than --auto-update, which would reintroduce exactly the drift being fixed.
+VALIDATE_ALPINE_CT="${VALIDATE_ALPINE_CT:-validate-alpine}"
+VALIDATE_ALPINE_VM="${VALIDATE_ALPINE_VM:-validate-alpine-vm}"
+
+# incus_client_version / incus_server_version — the two halves of the skew
+# check. The server one needs the leading slash in the query path; without it
+# Incus errors with "Query path must start with /".
+incus_client_version() {
+	incus --version 2>/dev/null
+}
+
+incus_server_version() {
+	incus query "$REMOTE:/1.0" 2>/dev/null | jq -r '.environment.server_version'
+}
+
+# incus_versions_compatible — 0 if client and server share a MAJOR version.
+#
+# Major-only is the deliberate contract (#131). The devcontainer installs the
+# client from zabbly `stable` and rebuilds independently of the host, so client
+# 7.2 against server 7.1 is normal and harmless. A check that fails on that is
+# one people learn to ignore, which is worse than no check at all. The defect
+# worth catching is a major-line split — #131 found client 7.1 against server
+# 6.0.4, which produced no error, just a stray "Can't specify column L when not
+# clustered" that nobody would trace back to a version skew.
+incus_versions_compatible() {
+	local client server
+	client="$(incus_client_version | cut -d. -f1)"
+	server="$(incus_server_version | cut -d. -f1)"
+	[ -n "$client" ] && [ -n "$server" ] && [ "$client" = "$server" ]
+}
+
 # console_log — the VM's console output, NUL bytes stripped.
 #
 # Stripping is not cosmetic: the console log is full of them, and grep treats a

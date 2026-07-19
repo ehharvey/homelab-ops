@@ -871,9 +871,10 @@ self-hosted runner would execute fork-authored code on the dev workstation.
 The alternative is a hosted runner that joins the tailnet and shells into the
 Incus host.
 
-**OVN vs. plain bridges.** Incus 6.0.4 only supports OVN-type networks inside
-non-default projects (#96), and OVN would allow per-project network ACLs to
-keep CI workloads off the real LAN.
+**OVN vs. plain bridges.** Incus only supports OVN-type networks inside
+non-default projects (#96) — measured on 6.0.4, and re-measured on 7.0.1 after
+#131's upgrade, so this is a property of Incus rather than of one version. OVN
+would allow per-project network ACLs to keep CI workloads off the real LAN.
 
 ### Answer
 
@@ -947,8 +948,10 @@ OVN would add OVS, `ovn-northd`, `ovn-controller` and OVSDB as an always-on
 failure domain to the machine every PR now depends on. Note also that
 `features.networks=false` *inherits* the default project's networks rather
 than losing them — measured on `homelab-host`, `user-1000` sees `home-lan`
-while `homelab-dev` (`features.networks=true`) sees nothing, which is #96's
-trap — so project scoping needs no OVN either.
+while `homelab-dev` (`features.networks=true`) saw nothing, which was #96's
+trap — so project scoping needs no OVN either. (`homelab-dev` was deleted in
+#131; the constraint it demonstrated was re-confirmed on 7.0.1 against a
+throwaway project, so the evidence outlived the project. See §21.)
 
 **When this gets revisited:** OVN earns its place when parallel runs need
 overlapping IP ranges or genuinely isolated L2 — simulating two separate
@@ -957,6 +960,139 @@ subnets per run do. It also flips if the bridge-ACL control cannot be made to
 hold, since that protection is *structural* (the ACL and its network live in a
 project the CI cert cannot reach) rather than enforced by a dedicated
 "may not edit ACLs" restriction, which does not appear to exist.
+
+## 21. The dev Incus host: btrfs, pinned base images, one project (#131, #96)
+
+`homelab-host` is the dev workstation's Incus, and the substrate the whole
+`scripts/validate/` suite runs against. Nothing recorded its storage, image or
+version state, so it drifted — and #115's CI work depends on it. #131 audited
+it live and fixed four things. #96 (the stuck `homelab-dev` project) is folded
+in here rather than tracked separately, since both touch the same project.
+
+### Storage: `dir` → `btrfs`
+
+The pool was whatever `incus admin init` produces by accepting defaults, which
+is driver `dir` — no copy-on-write, so every `incus launch` copies the entire
+rootfs rather than cloning it. That is the operation #115 performs per CI run,
+launching a throwaway sandbox from a baked base image.
+
+Measured with a representative ~1.4 GB incompressible image (an Alpine launch
+measures nothing — its rootfs is 3.29 MiB; incompressible so btrfs cannot
+flatter itself by compressing zeroes):
+
+| operation | `dir` | `btrfs` | |
+|---|---|---|---|
+| launch from image | 3,188 ms | 1,288 ms | 2.5× |
+| copy instance (rootfs duplication) | 13,675 ms | 531 ms | 26× |
+
+**Read the two rows differently.** Copy-instance is pure rootfs duplication —
+the exact operation copy-on-write replaces — and 26× is COW doing what it
+says. Launch-from-image also unpacks and starts an instance, so the driver is
+only part of the cost, and 2.5× is the honest ceiling on what a CI run saves.
+
+**Caveat, stated because the numbers invite over-reading:** the `dir` figures
+were taken on server 6.0.4 and the btrfs figures on 7.0.1, so the comparison
+is confounded by the version upgrade. The plan called for re-measuring `dir`
+on 7.0.1 to isolate the driver; the migration ran straight through and the
+`dir` pool no longer exists, so that control is unrecoverable. A 26× copy
+delta is far too large to be a version effect, but the 2.5× launch delta is
+not cleanly attributable.
+
+**The measurement also corrected the premise.** #131 argued a `dir` launch
+might cost "more than the image pulls it exists to avoid"; at ~3.2 s that is
+plainly false. The honest case for btrfs is that it removes a few seconds per
+run, collapses instance cloning to near-free, and costs nothing to adopt —
+not that `dir` was catastrophic. Recorded this way deliberately: the issue's
+framing would have justified the change on a number that turned out not to
+exist.
+
+btrfs over zfs because it needs no out-of-tree kernel module. Loop-file backed
+rather than a partition, so no repartitioning of a working workstation.
+
+A pool's driver cannot be changed in place, so the migration deletes and
+recreates the pool — destroying every instance, volume and image on it.
+`scripts/host-setup/incus-storage-migrate.sh` does this behind an explicit
+`--yes-destroy-everything` flag. It lives outside `.devcontainer/host-setup/`
+on purpose: everything there runs unattended via `initializeCommand`, and a
+step that destroys the host's instances must never be on an automatic path.
+
+### `homelab-dev` deleted (this is #96)
+
+The project got `features.networks=true` while exploring project-scoped
+networks. Incus only supports OVN-type networks inside non-default projects,
+so `home-lan` became invisible from it, and the flag would not unset because
+Incus considered the project non-empty. #132 had already repointed the suite
+at `default`; #131 deleted the project (delete its one cached image, then the
+project — an empty default profile does not block deletion).
+
+Repaired rather than deleted was never seriously on the table: nothing needed
+a second project, and the OVN constraint that broke it still holds. Confirmed
+empirically on 7.0.1 rather than assumed — a throwaway
+`features.networks=true` project still refuses a bridge, failing on
+`/run/openvswitch/db.sock`. §20's "no OVN" conclusion is unaffected.
+
+### The base image is pinned
+
+Nine call sites launched `images:alpine/edge` directly. `edge` is a moving
+tag, and the local copy expires on the default 10-day
+`images.remote_cache_expiry` — so the suite both re-downloaded periodically
+and silently ran against a drifting base image, a flakiness source nobody
+would attribute correctly.
+
+Not hypothetical: #131 recorded fingerprint `19237dd97601` (`20260716_13:00`)
+and three days later the host held `20260718_13:00` under a different
+fingerprint.
+
+Now pinned to local aliases `validate-alpine` and `validate-alpine-vm`, created
+by `.devcontainer/scripts/3-pin-validate-images.sh` and asserted by
+`require_incus_image`. **Two aliases, not one**, because a container image and
+a VM image are separate images with separate fingerprints and an alias resolves
+to exactly one — `incus launch <alias> --vm` needs its own.
+
+Deliberately no `--auto-update`: that reintroduces exactly the drift being
+fixed. Refreshing is a conscious act — delete the alias, re-run the script.
+Explicitly copied aliased images are not *cached* images, so
+`images.remote_cache_expiry` cannot reap them (verified: `expires_at` is zero).
+
+### Client/server version skew, and enforcing it
+
+The host ran server 6.0.4 against a 7.1 client. Nothing detected it; it
+surfaced only as a stray `Can't specify column L when not clustered`. Resolved
+by upgrading the host to 7.0.1 via Debian backports — keeping the server in the
+distro's packaging rather than adding a third-party line.
+
+Fixing it once only resets a clock, so it is now asserted:
+`devcontainer-reaches-host-incus.sh` fails if client and server disagree, and
+`.devcontainer/scripts/1-setup-incus-remote.sh` warns at devcontainer start
+(warning only — it runs under `set -e` on `postStartCommand`, and refusing to
+start a devcontainer because the host is mid-upgrade is a bad trade).
+
+**The contract is major-version agreement, not exact match.** The client comes
+from zabbly `stable` and rebuilds independently of the host, so client 7.2
+against server 7.1 is normal. A check that fails on that is one people learn to
+ignore, which is worse than no check. The defect worth catching is a
+major-line split, which is what 7.1-vs-6.0.4 was. Known consequence: when
+zabbly `stable` reaches 8.x it will outrun a backports 7 LTS server and this
+will go red — that is the check working, and the fix then is to pin the
+Dockerfile to a 7.x line.
+
+### What was deliberately not done
+
+**No reaper.** Script-created objects follow `validate-<slug>-<role>-$$` for
+instances and volumes, and `valwan-$$` for networks (short because bridge names
+become real `ip link` interfaces, capped at 15 characters). That convention is
+now written down in `scripts/validate/README.md`, which is what #131 asked
+for. A reaper to collect leftovers automatically was considered and declined —
+the convention makes leftovers identifiable by hand, and the suite showed no
+evidence of actually leaking. Revisit if leftovers start accumulating in
+practice.
+
+**No `tofu/ci/`.** #131 asked for the resulting state to be expressed in
+OpenTofu. Deferred to #115, which is the issue that actually stands up
+`tofu/ci/`; designing that layout here would mean #115 reworking it.
+Reproducibility in the meantime comes from the two shell scripts above, which
+is the same pattern `.devcontainer/host-setup/setup-incus-trust.sh` already
+uses.
 
 ## 22. The validate suite's delivered contract: skips, exit codes, self-description (#140, #136)
 
