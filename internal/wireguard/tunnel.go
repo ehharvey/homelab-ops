@@ -161,6 +161,32 @@ func (t *Tunnel) UpsertPeer(pub PublicKey, tunnelIP netip.Addr) error {
 	return nil
 }
 
+// UpsertPeerWithEndpoint is UpsertPeer plus a known UDP endpoint to send to,
+// making this side able to *initiate* the handshake rather than only answer
+// one.
+//
+// The web app never uses this, and deliberately cannot: it does not know a
+// node's address in advance, which is the whole reason UpsertPeer omits the
+// field (see its comment, and Decisions.md §11). The caller is
+// cmd/validate-tunnel-harness, which stands in for a node's future peer and
+// *does* know where the node is, having just read the address and port off
+// the node's own IncusOS API.
+//
+// Without this the harness could not talk to a node at all: neither its peer
+// entry for the node nor the node's seeded entry for it carries an endpoint,
+// so neither end had anywhere to send the first packet — one of several
+// reasons #137's harness assertions had never passed.
+func (t *Tunnel) UpsertPeerWithEndpoint(pub PublicKey, tunnelIP netip.Addr, endpoint netip.AddrPort) error {
+	uapi := fmt.Sprintf(
+		"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nendpoint=%s\n",
+		hexKey(pub), tunnelIP, endpoint,
+	)
+	if err := t.dev.IpcSet(uapi); err != nil {
+		return fmt.Errorf("upsert peer %s with endpoint %s: %w", pub, endpoint, err)
+	}
+	return nil
+}
+
 // ListenPort reports the UDP port this Tunnel actually bound to — useful
 // after Start(Options{ListenPort: 0}), where the OS picks the port.
 func (t *Tunnel) ListenPort() (int, error) {
