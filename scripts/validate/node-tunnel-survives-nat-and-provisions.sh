@@ -25,13 +25,24 @@
 # INCUSOS_BASE_IMAGE at a local copy; the node-boot-dependent sections are
 # skipped with a clear message if it's unset.
 #
+# KNOWN RED, deliberately: the last two checks (Incus reachable over the
+# tunnel, and create-instance over it) fail against #157 — a node's seeded wg0
+# gets a /32 address and no overlay route, so it completes a WireGuard
+# handshake but cannot carry IP traffic. That is a real product bug this
+# script is correctly reporting, not rot; their failure text prints node0's
+# own view of the peer, which is what identifies it. Expect 39 passed,
+# 2 failed until #157 lands, then 41/0. See docs/Decisions.md §23.
+#
 # ---------------------------------------------------------------------------
 # Topology (see docs/Roadmap.md #91's plan for the full design rationale):
 #
-#   node0 ---- home-lan (192.168.1.0/24) ---- [gateway] ---- wan-sim (10.200.0.0/24) ---- webapp
-#                                               NAT/MASQUERADE +
-#                                               tuned-down conntrack
-#                                               UDP timeout
+#   node0 ---- home-lan ---- [gateway] ---- wan-sim ---- webapp
+#                              NAT/MASQUERADE +
+#                              tuned-down conntrack
+#                              UDP timeout
+#
+# Both subnets are read off the bridges at runtime rather than written here —
+# home-lan's from `incus network get`, wan-sim's from $WAN_CIDR.
 #
 # - webapp runs the REAL statically-built `web` binary (not a test double)
 #   on wan-sim, so this proves the actual production SyncOnce reconcile
@@ -44,8 +55,18 @@
 #   shorter than WireGuard's 25s PersistentKeepalive) — chosen over Incus's
 #   own per-network NAT because that would tune the SHARED HOST's netfilter
 #   state; a disposable container keeps it fully scoped and torn down with
-#   everything else. All of this was verified for real (UDP delivery + a
-#   correctly-translated conntrack entry) while building this script.
+#   everything else. Section 4 asserts a UDP datagram actually crosses it and
+#   lands with a NAT-translated conntrack entry, per run — that used to be a
+#   one-time manual check at authoring time, which is what made #137 so hard
+#   to diagnose (see section 2's comment).
+# - node0 reaches the internet through home-lan's own ipv4.nat, and IncusOS
+#   auto-updates itself on first boot. That is deliberate, not an oversight:
+#   confining node0's egress with a network ACL was tried under #137 and
+#   breaks the node outright — IncusOS fetches the Incus application from
+#   images.linuxcontainers.org during first boot, so with egress blocked
+#   Incus never starts and port 8443 never opens. The defence against a
+#   moving upstream is therefore to make the assertions version-agnostic
+#   (see the endpoint fallback in section 5), not to freeze the version.
 # - node0's only change versus #5's topology: one extra static route to
 #   wan-sim via the gateway's home-lan address, appended onto the rendered
 #   seed after the real seed.Render call (not a production Render feature).
@@ -65,8 +86,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="a node's WireGuard tunnel survives a NAT hop and carries provisioning (#91)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="incus go git python3 pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
-VALIDATE_DURATION="~11m"
+VALIDATE_NEEDS="incus go git python3 jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_DURATION="~13m"
 
 validate_parse_args "$@"
 WORK_DIR="$(mktemp -d)"
@@ -81,10 +102,16 @@ LAN_NETWORK="${VALIDATE_INCUS_NETWORK:-home-lan}"
 # capped at 15 characters — keep this short.
 WAN_NETWORK="valwan-$$"
 POOL="default"
-STATIC_IP="192.168.1.202"
 MAC="aa:bb:cc:dd:ee:02"
 WAN_CIDR="10.200.0.0/24"
 WAN_GATEWAY_ADDR="10.200.0.1"
+
+# The LAN side is derived from the bridge itself, just after the prereq gate
+# below — see the "LAN addressing" block there.
+LAN_ADDR=""
+LAN_GATEWAY_ADDR=""
+LAN_CIDR=""
+STATIC_IP=""
 
 VM_NAME="validate-tunnel-node0-$$"
 WRITER_NAME="validate-tunnel-writer-$$"
@@ -92,6 +119,7 @@ PROBE_NAME="validate-tunnel-probe-$$"
 GATEWAY_NAME="validate-tunnel-gw-$$"
 WEBAPP_NAME="validate-tunnel-webapp-$$"
 HARNESS_NAME="validate-tunnel-harness-$$"
+NAT_SENDER_NAME="validate-tunnel-natsend-$$"
 SEED_VOL="validate-tunnel-seeded-img-$$"
 
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
@@ -112,8 +140,9 @@ cleanup() {
   incus delete --force --project "$PROJECT" "$REMOTE:$GATEWAY_NAME" >/dev/null 2>&1
   incus delete --force --project "$PROJECT" "$REMOTE:$WEBAPP_NAME" >/dev/null 2>&1
   incus delete --force --project "$PROJECT" "$REMOTE:$HARNESS_NAME" >/dev/null 2>&1
+  incus delete --force --project "$PROJECT" "$REMOTE:$NAT_SENDER_NAME" >/dev/null 2>&1
   incus storage volume delete "$REMOTE:$POOL" "$SEED_VOL" --project "$PROJECT" >/dev/null 2>&1
-  incus network delete "$REMOTE:$WAN_NETWORK" >/dev/null 2>&1
+  incus network delete "$REMOTE:$WAN_NETWORK" --project "$PROJECT" >/dev/null 2>&1
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -168,7 +197,7 @@ echo "== 0. Hard prerequisites =="
 # Preconditions, not assertions — this script's subject is the tunnel, and
 # require_flasher_tool in particular is #136: build-image's dependency used to
 # fail here as four cascading failures with no diagnostic.
-require_cmd incus go git python3
+require_cmd incus go git python3 jq
 require_flasher_tool
 require_incus_remote "$REMOTE"
 require_incus_network "$REMOTE" "$PROJECT" "$LAN_NETWORK"
@@ -176,12 +205,38 @@ require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_CT"
 require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_VM"
 check_prereqs
 
+# LAN addressing, derived from the bridge rather than hardcoded. #132 made the
+# network *name* overridable but left its addressing written out literally in
+# three places, so pointing this script at any bridge that isn't a
+# 192.168.1.0/24 already rendered a fleet.yaml describing a network that didn't
+# exist, and left the fleet.yaml and the rendered seed disagreeing about the
+# network the node is actually on.
+#
+# Derived here rather than up with the other config so an unreachable remote
+# still gets require_incus_remote's diagnostic instead of an empty variable.
+# Assumes a /24, matching the assumption $WAN_GATEWAY_ADDR/24 already makes.
+LAN_ADDR="$(incus network get "$REMOTE:$LAN_NETWORK" ipv4.address 2>/dev/null)"
+if [ -z "$LAN_ADDR" ] || [ "$LAN_ADDR" = "none" ]; then
+  echo "ERROR: network '$LAN_NETWORK' on $REMOTE has no ipv4.address; this script needs a managed IPv4 bridge" >&2
+  exit 2
+fi
+LAN_GATEWAY_ADDR="${LAN_ADDR%/*}"
+LAN_CIDR="${LAN_GATEWAY_ADDR%.*}.0/24"
+STATIC_IP="${LAN_GATEWAY_ADDR%.*}.202"
+
 echo
 echo "== 1. Build the binaries =="
 check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
 check "web app builds (CGO_ENABLED=0, matching the real Docker image)" \
   bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$WEB_BIN' ./cmd/web"
-check "validate-tunnel-harness builds" go -C "$ROOT_DIR" build -o "$HARNESS_BIN" ./cmd/validate-tunnel-harness
+# CGO_ENABLED=0 for the same reason as the web app above, and it is not
+# cosmetic: this binary is pushed into an Alpine container and executed there.
+# A default cgo build requests /lib64/ld-linux-x86-64.so.2, which musl-based
+# Alpine does not have, so `incus exec` reports the famously unhelpful
+# "Error: Command not found" — for a file that exists and is executable.
+# That is why both harness assertions had never passed (#137).
+check "validate-tunnel-harness builds (CGO_ENABLED=0, it runs inside Alpine)" \
+  bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$HARNESS_BIN' ./cmd/validate-tunnel-harness"
 
 if [ ! -x "$BOOTSTRAP_BIN" ] || [ ! -x "$WEB_BIN" ] || [ ! -x "$HARNESS_BIN" ]; then
   echo "ERROR: a required binary didn't build; nothing downstream can be meaningful" >&2
@@ -222,13 +277,29 @@ check "gateway has addresses on both networks" bash -c "[ -n '$GATEWAY_LAN_IP' ]
 # wireGuardPersistentKeepaliveSeconds) but long enough that one keepalive
 # keeps re-arming it — simulating an aggressive home router, so the
 # NAT-survival check later is a real proof, not just "traffic crosses two
-# bridges". All of this was verified for real (UDP delivery + a correctly
-# NAT-translated conntrack entry) while writing this script.
-check "gateway NAT + forwarding + conntrack tuning configured" bash -c "
-  incus exec --project '$PROJECT' '$REMOTE:$GATEWAY_NAME' -- apk add --no-cache iptables >/dev/null &&
-  incus exec --project '$PROJECT' '$REMOTE:$GATEWAY_NAME' -- sysctl -w net.ipv4.ip_forward=1 &&
-  incus exec --project '$PROJECT' '$REMOTE:$GATEWAY_NAME' -- iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
-  incus exec --project '$PROJECT' '$REMOTE:$GATEWAY_NAME' -- sysctl -w net.netfilter.nf_conntrack_udp_timeout=15
+# bridges".
+#
+# These used to be one check that ran four setup commands and asserted they
+# exited 0. That is the defect #137 was filed for: it could not distinguish a
+# broken NAT simulation from a broken tunnel, because it never asserted NAT
+# *translates* anything — both present as "handshake never observed". Now each
+# setting is read back, and section 4 proves an actual packet traverses.
+check "gateway iptables installed" \
+  incus exec --project "$PROJECT" "$REMOTE:$GATEWAY_NAME" -- apk add --no-cache iptables
+check_eq "gateway forwards IPv4" "1" \
+  "$(incus exec --project "$PROJECT" "$REMOTE:$GATEWAY_NAME" -- \
+    sh -c "sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; sysctl -n net.ipv4.ip_forward" 2>/dev/null)"
+# Its own check because sysctl -w on a netfilter key can fail in a container
+# depending on namespace ownership, and the old chained bash -c hid which of
+# the four commands failed.
+check_eq "gateway conntrack UDP timeout tuned below the 25s keepalive" "15" \
+  "$(incus exec --project "$PROJECT" "$REMOTE:$GATEWAY_NAME" -- \
+    sh -c "sysctl -w net.netfilter.nf_conntrack_udp_timeout=15 >/dev/null 2>&1; sysctl -n net.netfilter.nf_conntrack_udp_timeout" 2>/dev/null)"
+incus exec --project "$PROJECT" "$REMOTE:$GATEWAY_NAME" -- \
+  iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE >/dev/null 2>&1
+check "gateway MASQUERADEs out of eth1" bash -c "
+  incus exec --project '$PROJECT' '$REMOTE:$GATEWAY_NAME' -- iptables -t nat -S POSTROUTING |
+    grep -qF -- '-A POSTROUTING -o eth1 -j MASQUERADE'
 "
 
 echo
@@ -238,9 +309,9 @@ check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$WORK_DIR/cert"
 cat >"$WORK_DIR/fleet.yaml" <<EOF
 kind: Network
 name: $LAN_NETWORK
-cidr: 192.168.1.0/24
-gateway: 192.168.1.1
-dns: [192.168.1.1]
+cidr: $LAN_CIDR
+gateway: $LAN_GATEWAY_ADDR
+dns: [$LAN_GATEWAY_ADDR]
 ---
 kind: Instance
 name: node0
@@ -299,6 +370,58 @@ for _ in $(seq 1 10); do
 done
 check "webapp has a wan-sim address" bash -c "[ -n '$WEBAPP_WAN_IP' ]"
 
+# Prove the NAT simulation actually carries UDP across the gateway, before
+# anything depends on it. Section 2 asserts the gateway is *configured*; this
+# asserts it *works*, which is the distinction #137 was filed over — a
+# silently-broken NAT simulation and a broken WireGuard tunnel both present as
+# "handshake never observed", and telling them apart previously meant
+# preserving the topology and inspecting it by hand.
+#
+# Runs here because the sender must sit behind the gateway on home-lan and the
+# receiver on wan-sim, which is only true once the webapp container exists —
+# and before /web starts, so nothing is competing for the port. A port other
+# than $WG_PORT for the same reason.
+#
+# busybox nc on both ends deliberately: wan-sim is ipv4.nat=false and nothing
+# MASQUERADEs for it, so the webapp container has no route off its bridge —
+# verified, not assumed. Anything needing `apk add` would hang on mirror
+# timeouts rather than fail cleanly.
+NAT_PROBE_PORT=51821
+NAT_NONCE="natprobe-$$"
+check "NAT probe sender launched behind the gateway" bash -c "
+  incus launch '$VALIDATE_ALPINE_CT' '$REMOTE:$NAT_SENDER_NAME' --project '$PROJECT' --network '$LAN_NETWORK' &&
+  for _ in \$(seq 1 20); do
+    incus exec --project '$PROJECT' '$REMOTE:$NAT_SENDER_NAME' -- \
+      sh -c 'ip -4 -o addr show eth0 | grep -q inet' && break
+    sleep 1
+  done &&
+  incus exec --project '$PROJECT' '$REMOTE:$NAT_SENDER_NAME' -- \
+    ip route replace default via '$GATEWAY_LAN_IP'
+"
+# Listener first, in the background, then the datagram. UDP is fire-and-forget:
+# if nc isn't bound yet the packet is silently dropped and the check fails for
+# the wrong reason, hence the settle.
+incus_exec_bg "$WORK_DIR/natprobe-listen.log" "$REMOTE:$WEBAPP_NAME" -- \
+  sh -c "nc -u -l -p $NAT_PROBE_PORT >/tmp/natprobe.out"
+sleep 2
+incus exec --project "$PROJECT" "$REMOTE:$NAT_SENDER_NAME" -- \
+  sh -c "echo $NAT_NONCE | nc -u -w2 $WEBAPP_WAN_IP $NAT_PROBE_PORT" >/dev/null 2>&1
+sleep 2
+check "a UDP datagram traverses the gateway to wan-sim" bash -c "
+  incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- \
+    grep -qF '$NAT_NONCE' /tmp/natprobe.out
+"
+# Delivery alone would also pass if the gateway merely *routed* between two
+# bridges. What makes it NAT is the reply-direction destination being the
+# gateway's own wan-sim address rather than the sender's home-lan one — i.e.
+# the source really was rewritten on the way out.
+check "the gateway NAT-translated it (conntrack reply dst is the gateway's wan-sim address)" bash -c "
+  incus exec --project '$PROJECT' '$REMOTE:$GATEWAY_NAME' -- \
+    grep -F 'dport=$NAT_PROBE_PORT' /proc/net/nf_conntrack |
+    grep -qF 'dst=$GATEWAY_WAN_IP'
+"
+incus delete --force --project "$PROJECT" "$REMOTE:$NAT_SENDER_NAME" >/dev/null 2>&1
+
 # git is installed here purely for go-git's benefit: internal/configsync's
 # "no git binary needed" guarantee holds for the git://, http(s)://, and
 # ssh:// transports it uses in production, but go-git's *local filesystem
@@ -344,10 +467,29 @@ fi
 
 echo
 echo "== 5. Boot node0 with the real WireGuard-enabled seed and confirm the tunnel =="
+# Every check the else-branch below records, in order and worded identically.
+# They have to match: skip_check and record_pass/record_fail both feed the same
+# tally, so a skip label that doesn't correspond to a real check makes the
+# summary describe a run that never happened — and a check with no skip entry
+# silently shrinks the total when the branch is skipped.
 _vm_checks=(
+  "fetched WireGuard-enabled seed from the real web app"
+  "all four seed files extracted from the web app's response"
+  "web app's WireGuard public key present in node0's seed"
+  "harness identity generated"
+  "wan-sim route + harness test peer appended to network.yaml"
   "build-image exits 0"
-  "node0 boots and its WireGuard tunnel to the webapp comes up"
-  "node0's Incus API is reachable through the tunnel, not just the LAN"
+  "seed .img streamed onto $REMOTE as a block volume"
+  "VM created with empty disk + seeded image as install media"
+  "VM installs IncusOS from the seeded image"
+  "probe instance ready on $LAN_NETWORK"
+  "node0's WireGuard tunnel to the webapp shows a completed handshake"
+  "node0's own wg0 public key and listening port read from the node"
+  "harness container launched on $LAN_NETWORK"
+  "harness binary + key pushed"
+  "node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN"
+  "webapp store pulled and node0's real bootstrap credential extracted"
+  "bootstrap cert/key pushed to harness"
   "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
 )
 if ! have_env_file INCUSOS_BASE_IMAGE; then
@@ -374,8 +516,6 @@ else
     incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- \
       wget -qO- --post-data='' http://127.0.0.1:8080/instances/node0/seed > '$WORK_DIR/node0-seed.json'
   "
-  APP_PUBLIC_KEY=$(grep -o '\"public_key\": \"[^\"]*\"' "$WORK_DIR/node0-seed.json" | head -1 | cut -d'"' -f4)
-
   mkdir -p "$WORK_DIR/seed"
   python3 - "$WORK_DIR/node0-seed.json" "$WORK_DIR/seed" <<'PYEOF'
 import json, sys, pathlib
@@ -390,6 +530,20 @@ PYEOF
     test -s '$WORK_DIR/seed/install.yaml' && test -s '$WORK_DIR/seed/network.yaml' &&
     test -s '$WORK_DIR/seed/applications.yaml' && test -s '$WORK_DIR/seed/incus.yaml'
   "
+
+  # Read from the rendered YAML, not the JSON envelope. /instances/{name}/seed
+  # returns compact JSON whose *values* are YAML documents, so the web app's
+  # key appears as `public_key: <base64>` (YAML), never as `"public_key": "..."`
+  # (JSON). The old JSON-shaped grep therefore matched nothing on every run
+  # this script has ever had, leaving APP_PUBLIC_KEY empty — and nothing
+  # noticed, because the handshake check below only ever grepped for the
+  # *string* and an empty key made its pattern vacuous. That is the third
+  # distinct reason #137's three assertions failed.
+  #
+  # Taken before patch-seed appends the harness's test peer, so the first
+  # public_key in the file is unambiguously the web app's.
+  APP_PUBLIC_KEY=$(awk '/^ *public_key:/ {print $2; exit}' "$WORK_DIR/seed/network.yaml")
+  check "web app's WireGuard public key present in node0's seed" bash -c "[ -n '$APP_PUBLIC_KEY' ]"
 
   # Harness identity + this run's two validate-script-only seed additions
   # (route to wan-sim via the gateway, and the harness as a second trusted
@@ -452,12 +606,18 @@ PYEOF
     record_fail "VM installs IncusOS from the seeded image"
   fi
 
-  echo "Waiting up to 3 minutes for node0's WireGuard tunnel to the webapp to come up (checked via the webapp's own Incus network state) ..."
+  echo "Waiting up to 3 minutes for node0's WireGuard tunnel to the webapp to come up (checked via node0's own IncusOS network state) ..."
   # LAN-side probe, exactly like #5, for querying node0's own IncusOS
   # network state — this is a different check than "Incus reachable over
-  # the tunnel" below: it confirms the HANDSHAKE happened at all
-  # (LatestHandshake non-empty), from the LAN side which we already know
-  # is reachable.
+  # the tunnel" below: it confirms the HANDSHAKE happened at all, from the
+  # LAN side which we already know is reachable.
+  #
+  # The probe only fetches; parsing happens host-side with jq. The old check
+  # grepped the whole response body for two strings independently, which is a
+  # #129-class false pass: the web app's public key appears in the *config*
+  # stanza whether or not any traffic ever flowed, and `latest_handshake`
+  # appears if ANY peer has handshaked — including the harness's own test peer.
+  # Both could match with the webapp tunnel completely dead.
   check "probe instance ready on $LAN_NETWORK" bash -c "
     set -eu
     incus launch '$VALIDATE_ALPINE_CT' '$REMOTE:$PROBE_NAME' --project '$PROJECT' --network '$LAN_NETWORK' --storage '$POOL' &&
@@ -470,11 +630,39 @@ PYEOF
     incus file push '$WORK_DIR/cert/client.key' '$REMOTE:$PROBE_NAME/root/client.key' --project '$PROJECT'
   "
 
+  # IncusOS moved this endpoint from /1.0/... to /os/1.0/... — 202606201302
+  # serves the former, 202607060039 the latter. The script only ever asked for
+  # the old one, so on a node that had auto-updated it got a 404 and reported
+  # "handshake never observed", which is how #137 presented. Ask for both and
+  # use whichever answers, so the assertion tracks the tunnel rather than
+  # whichever IncusOS release the operator's base image happens to be.
+  node_net_state() {
+    local path
+    for path in /os/1.0/system/network /1.0/system/network; do
+      local body
+      body=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
+        curl --cert /root/client.crt --key /root/client.key -k -s \
+        "https://$STATIC_IP:8443$path" 2>/dev/null)
+      if [ -n "$body" ] && ! grep -q '"error_code":404' <<<"$body"; then
+        printf '%s' "$body"
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  # The peer is matched by public key and then asked for its own
+  # latest_handshake. IncusOS omits that field entirely until a handshake
+  # actually completes — verified live against both peers on a running node,
+  # where the webapp peer had it and the never-contacted harness peer did not.
   handshake_seen=false
+  last_peer=""
   for _ in $(seq 1 36); do
-    net_state=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
-      curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0/system/network" 2>/dev/null)
-    if echo "$net_state" | grep -q "\"public_key\": *\"$APP_PUBLIC_KEY\"" && echo "$net_state" | grep -q "latest_handshake"; then
+    net_state=$(node_net_state)
+    last_peer=$(jq -c --arg k "$APP_PUBLIC_KEY" \
+      '.metadata.state.interfaces.wg0.wireguard.peers[]? | select(.public_key == $k)' \
+      <<<"$net_state" 2>/dev/null)
+    if [ -n "$last_peer" ] && jq -e '(.latest_handshake // "") != ""' <<<"$last_peer" >/dev/null 2>&1; then
       handshake_seen=true
       break
     fi
@@ -483,7 +671,11 @@ PYEOF
   if "$handshake_seen"; then
     record_pass "node0's WireGuard tunnel to the webapp shows a completed handshake"
   else
-    record_fail "node0's WireGuard tunnel to the webapp shows a completed handshake (never observed within 3 minutes)"
+    # Report what was actually seen. #137 took a preserved live topology and
+    # manual inspection to diagnose; the peer stanza and the tail of the
+    # console are what that inspection turned out to need.
+    record_fail "node0's WireGuard tunnel to the webapp shows a completed handshake" \
+      "no handshake within 3 minutes; webapp peer stanza: ${last_peer:-<peer $APP_PUBLIC_KEY absent from wg0>}; console tail: $(console_log | tail -20 | tr '\n' '|')"
   fi
 
   echo
@@ -499,8 +691,37 @@ PYEOF
   # webapp<->node0 handshake check above, which is the pair that actually
   # crosses the gateway (the harness sits on home-lan, L2-adjacent to
   # node0, by design — see this file's header).
-  check "harness container launched on $LAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$HARNESS_NAME" \
-    --project "$PROJECT" --network "$LAN_NETWORK"
+  # node0's *own* wg0 identity, read off the node rather than assumed. Both
+  # values were previously missing, and between them are why these two checks
+  # had never passed since #91 (see docs/Decisions.md §23):
+  #
+  #  - the public key: the harness was handed $APP_PUBLIC_KEY, which is the
+  #    *web app's* key. The harness's peer is node0, whose wg0 key is a
+  #    different one entirely, so it was trusting the wrong identity.
+  #  - the listening port: node0's seed sets no `port` for wg0, so IncusOS
+  #    binds a random one. Nothing can initiate to node0 without reading it.
+  _wg=$(node_net_state | jq -r '.metadata.state.interfaces.wg0.wireguard // empty' 2>/dev/null)
+  NODE_WG_PUBKEY=$(jq -r '.public_key // empty' <<<"$_wg" 2>/dev/null)
+  NODE_WG_PORT=$(jq -r '.listening_port // empty' <<<"$_wg" 2>/dev/null)
+  check "node0's own wg0 public key and listening port read from the node" bash -c \
+    "[ -n '$NODE_WG_PUBKEY' ] && [ -n '$NODE_WG_PORT' ]"
+
+  # The DHCP wait matters: the harness dials node0 the moment it starts, and
+  # an interface without a lease yet has no route to home-lan, which surfaces
+  # as `sendmmsg: network is unreachable` from inside WireGuard's own
+  # handshake — a message that reads like a tunnel fault rather than a
+  # container that isn't up yet. Every other container here already waits;
+  # this one didn't, and nothing noticed while the binary couldn't execute.
+  check "harness container launched on $LAN_NETWORK" bash -c "
+    incus launch '$VALIDATE_ALPINE_CT' '$REMOTE:$HARNESS_NAME' --project '$PROJECT' --network '$LAN_NETWORK' &&
+    for _ in \$(seq 1 20); do
+      incus exec --project '$PROJECT' '$REMOTE:$HARNESS_NAME' -- \
+        sh -c 'ip -4 -o addr show eth0 | grep -q inet' && break
+      sleep 1
+    done &&
+    incus exec --project '$PROJECT' '$REMOTE:$HARNESS_NAME' -- \
+      sh -c 'ip -4 -o addr show eth0 | grep -q inet'
+  "
   check "harness binary + key pushed" bash -c "
     incus file push --project '$PROJECT' '$HARNESS_BIN' '$REMOTE:$HARNESS_NAME/harness' --mode=0755 &&
     incus file push --project '$PROJECT' '$WORK_DIR/harness.key' '$REMOTE:$HARNESS_NAME/harness.key'
@@ -511,13 +732,18 @@ PYEOF
     /harness -mode=probe \
       -private-key-file=/harness.key \
       -local-addr=10.100.0.254 \
-      -peer-public-key="$APP_PUBLIC_KEY" \
+      -peer-public-key="$NODE_WG_PUBKEY" \
       -peer-tunnel-ip="$NODE_TUNNEL_IP" \
+      -peer-endpoint="$STATIC_IP:$NODE_WG_PORT" \
       -node-addr="$NODE_TUNNEL_IP:8443" \
       -timeout=60s >"$WORK_DIR/harness-probe.log" 2>&1; then
     record_pass "node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN"
   else
-    record_fail "node0's Incus API reachable through a real WireGuard tunnel (see $WORK_DIR/harness-probe.log)"
+    # node0's view of the harness peer separates "the handshake never
+    # happened" from "it handshaked but no IP traffic came back", which are
+    # different faults with the same symptom at the HTTP layer.
+    record_fail "node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN" \
+      "$(tail -5 "$WORK_DIR/harness-probe.log" 2>/dev/null | tr '\n' '|') node0's view of the harness peer: $(node_net_state | jq -c --arg k "$HARNESS_PUBLIC_KEY" '.metadata.state.interfaces.wg0.wireguard.peers[]? | select(.public_key == $k)' 2>/dev/null)"
   fi
 
   # Pull the webapp's store and extract node0's real bootstrap credential
@@ -542,15 +768,17 @@ PYEOF
     /harness -mode=create-instance \
       -private-key-file=/harness.key \
       -local-addr=10.100.0.254 \
-      -peer-public-key="$APP_PUBLIC_KEY" \
+      -peer-public-key="$NODE_WG_PUBKEY" \
       -peer-tunnel-ip="$NODE_TUNNEL_IP" \
+      -peer-endpoint="$STATIC_IP:$NODE_WG_PORT" \
       -node-addr="$NODE_TUNNEL_IP:8443" \
       -bootstrap-cert=/root/bootstrap.crt \
       -bootstrap-key=/root/bootstrap.key \
       -timeout=60s >"$WORK_DIR/harness-create.log" 2>&1; then
     record_pass "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
   else
-    record_fail "temp-cert create-instance + revoke mechanism succeeds over the tunnel (see $WORK_DIR/harness-create.log)"
+    record_fail "temp-cert create-instance + revoke mechanism succeeds over the tunnel" \
+      "$(tail -5 "$WORK_DIR/harness-create.log" 2>/dev/null | tr '\n' '|')"
   fi
 fi
 

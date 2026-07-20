@@ -45,6 +45,7 @@ func run() error {
 	localAddr := flag.String("local-addr", "10.100.0.254", "this harness's own tunnel-overlay address — deliberately far from the normal instance-assignable range (internal/wireguard.OverlayCIDR, assigned from .2 up) to avoid colliding with a real instance's tunnel_ip, since the harness registers as a second, independent test peer on node0 alongside the real web app")
 	peerPublicKey := flag.String("peer-public-key", "", "base64 WireGuard public key of the peer (node) to trust")
 	peerTunnelIP := flag.String("peer-tunnel-ip", "", "the peer's tunnel-overlay address, e.g. 10.100.0.5")
+	peerEndpoint := flag.String("peer-endpoint", "", "host:port of the peer's WireGuard UDP listener, e.g. 192.168.1.202:32926 — required to initiate a handshake, since neither this harness nor the node's seeded peer entry carries an endpoint for the other (see internal/wireguard.UpsertPeerWithEndpoint)")
 	listenPort := flag.Int("listen-port", 0, "UDP port to bind (0 = OS picks a free port)")
 	nodeAddr := flag.String("node-addr", "", "host:port of the node's Incus API to dial through the tunnel, e.g. 10.100.0.5:8443")
 	timeout := flag.Duration("timeout", 60*time.Second, "how long to wait for the tunnel/dial/create to succeed")
@@ -66,9 +67,9 @@ func run() error {
 	case "genkey":
 		return runGenKey(*privateKeyFile)
 	case "probe":
-		return runProbe(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *listenPort, *nodeAddr, *timeout)
+		return runProbe(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *nodeAddr, *timeout)
 	case "create-instance":
-		return runCreateInstance(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *listenPort, *nodeAddr, *timeout, *bootstrapCert, *bootstrapKey, *instanceName, *storagePool)
+		return runCreateInstance(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *nodeAddr, *timeout, *bootstrapCert, *bootstrapKey, *instanceName, *storagePool)
 	case "extract-credential":
 		return runExtractCredential(*storePath, *instanceName, *outCert, *outKey)
 	case "patch-seed":
@@ -192,11 +193,13 @@ func runGenKey(privateKeyFile string) error {
 }
 
 // buildTunnel loads privateKeyFile, starts a Tunnel on listenPort, and
-// registers peerPublicKeyB64/peerTunnelIPStr as a trusted peer — the
-// common setup probe and create-instance both need.
-func buildTunnel(privateKeyFile, localAddrStr, peerPublicKeyB64, peerTunnelIPStr string, listenPort int) (*wireguard.Tunnel, error) {
-	if privateKeyFile == "" || peerPublicKeyB64 == "" || peerTunnelIPStr == "" {
-		return nil, fmt.Errorf("-private-key-file, -peer-public-key, and -peer-tunnel-ip are all required")
+// registers peerPublicKeyB64/peerTunnelIPStr as a trusted peer reachable at
+// peerEndpointStr — the common setup probe and create-instance both need.
+// The peer here is the *node*, so peerPublicKeyB64 is the node's own wg0 key
+// (read off its IncusOS API), not the web app's.
+func buildTunnel(privateKeyFile, localAddrStr, peerPublicKeyB64, peerTunnelIPStr, peerEndpointStr string, listenPort int) (*wireguard.Tunnel, error) {
+	if privateKeyFile == "" || peerPublicKeyB64 == "" || peerTunnelIPStr == "" || peerEndpointStr == "" {
+		return nil, fmt.Errorf("-private-key-file, -peer-public-key, -peer-tunnel-ip, and -peer-endpoint are all required")
 	}
 
 	privRaw, err := os.ReadFile(privateKeyFile) //nolint:gosec // path is operator-supplied via --private-key-file, not untrusted input
@@ -225,7 +228,16 @@ func buildTunnel(privateKeyFile, localAddrStr, peerPublicKeyB64, peerTunnelIPStr
 	if err != nil {
 		return nil, fmt.Errorf("start tunnel: %w", err)
 	}
-	if err := tun.UpsertPeer(wireguard.PublicKey(peerPub), peerTunnelIP); err != nil {
+	// The endpoint is what makes this side able to initiate. A node's seeded
+	// peer entry for this harness carries no endpoint (patch-seed cannot add
+	// one), and UpsertPeer cannot express one either — so without this the
+	// handshake has no first packet from either direction.
+	peerEndpoint, err := netip.ParseAddrPort(peerEndpointStr)
+	if err != nil {
+		tun.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed setup; we're already returning the real error
+		return nil, fmt.Errorf("parse -peer-endpoint %q: %w", peerEndpointStr, err)
+	}
+	if err := tun.UpsertPeerWithEndpoint(wireguard.PublicKey(peerPub), peerTunnelIP, peerEndpoint); err != nil {
 		tun.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed setup; we're already returning the real error
 		return nil, fmt.Errorf("register peer: %w", err)
 	}
@@ -250,11 +262,11 @@ func decodeKey(b64 string) ([32]byte, error) {
 // API is reachable through the tunnel specifically (see
 // scripts/validate-issue-91.sh for why dialing the tunnel-overlay address
 // is a meaningful proof even when the two ends share an L2 segment).
-func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP string, listenPort int, nodeAddr string, timeout time.Duration) error {
+func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint string, listenPort int, nodeAddr string, timeout time.Duration) error {
 	if nodeAddr == "" {
 		return fmt.Errorf("-node-addr is required")
 	}
-	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, listenPort)
+	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint, listenPort)
 	if err != nil {
 		return err
 	}
@@ -304,11 +316,11 @@ func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP string, lis
 // proving the temp-cert-mint -> dial-over-tunnel -> create -> revoke
 // mechanism #92's bootstrap deploy-agent will reuse for the real
 // app-manager agent.
-func runCreateInstance(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP string, listenPort int, nodeAddr string, timeout time.Duration, bootstrapCertPath, bootstrapKeyPath, instanceName, storagePool string) error {
+func runCreateInstance(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint string, listenPort int, nodeAddr string, timeout time.Duration, bootstrapCertPath, bootstrapKeyPath, instanceName, storagePool string) error {
 	if nodeAddr == "" || bootstrapCertPath == "" || bootstrapKeyPath == "" {
 		return fmt.Errorf("-node-addr, -bootstrap-cert, and -bootstrap-key are all required")
 	}
-	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, listenPort)
+	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint, listenPort)
 	if err != nil {
 		return err
 	}

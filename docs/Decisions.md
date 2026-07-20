@@ -1179,7 +1179,156 @@ Compose whose version the repo does not control — which matters precisely
 because enforcement (#146, a *required* validate check) is the next step, and a
 required gate cannot be allowed to flake on a runner we didn't measure.
 
-## Other notes
+## 23. node0 needs the internet, so the tunnel test can't be hermetic (#137)
+
+#137 reported three failing assertions in
+`node-tunnel-survives-nat-and-provisions.sh` — the WireGuard handshake, the
+Incus API over the tunnel, and the temp-cert provisioning mechanism — and
+diagnosed them as the node auto-updating IncusOS during the 3-minute handshake
+window. The suggested fix, in preference order, was to stop node0 reaching the
+internet.
+
+**That diagnosis was wrong, and the suggested fix is not available.** Recorded
+because both halves are things a future reader would otherwise retry.
+
+### The tunnel was never broken
+
+Queried live against a running node, mid-window:
+
+```
+"latest_handshake": "54 seconds ago",
+"stats": {"rx_bytes": 92, "tx_bytes": 244}
+```
+
+The tunnel handshakes, through the simulated NAT, on a node that *had* already
+auto-updated. Six separate defects were found in the script and its harness —
+five of them causing the three failures, plus the assertion-quality defect the
+issue was actually filed over. Each masked the next, which is why they came
+off one full run at a time:
+
+1. **`APP_PUBLIC_KEY` was always empty — on every run this script has ever
+   had.** `POST /instances/{name}/seed` returns compact JSON whose *values* are
+   YAML documents, so the web app's key appears as `public_key: <base64>`. The
+   extraction grepped for JSON syntax (`"public_key": "…"`) and matched
+   nothing. Nothing noticed, because the handshake check then grepped for that
+   empty string and its pattern became vacuous.
+2. **The endpoint moved.** IncusOS serves system network state at
+   `/os/1.0/system/network`; the script asked for `/1.0/system/network`, which
+   404s on a node that has updated. This is the only respect in which the
+   auto-update mattered — and the durable answer is an assertion that tries
+   both paths, not a frozen OS version.
+3. **The old NAT check asserted configuration, not function.** It ran four
+   setup commands and asserted they exited 0, so a broken NAT simulation and a
+   broken tunnel presented identically. This was the defect #137 was actually
+   filed over, and the one worth fixing regardless of the others.
+4. **The harness binary could not execute at all.** It was built without
+   `CGO_ENABLED=0`, so it requested `/lib64/ld-linux-x86-64.so.2` — which
+   musl-based Alpine does not have. `incus exec` reports that as `Error:
+   Command not found`, for a file that is present and executable, which is
+   why it read as a tunnel failure rather than a build one. The web app
+   binary two lines above had always set `CGO_ENABLED=0`; the harness never
+   did.
+5. **The harness container was used before it had a DHCP lease.** It dials
+   node0 the moment it starts, and an interface without a lease has no route
+   to home-lan — which surfaces from inside WireGuard's own handshake as
+   `sendmmsg: network is unreachable`, reading like a tunnel fault rather
+   than a container that isn't up yet. Every other container in the script
+   already waited; this one never did, and nothing noticed while (4) meant
+   the binary could not run at all.
+6. **The harness was also dialling with the wrong identity, and had nowhere to
+   send it.** It was passed the *web app's* public key while its peer is node0,
+   whose `wg0` key is a different one; and neither its own peer entry for
+   node0 nor node0's seeded entry for it carried an endpoint, so neither end
+   could send a first packet. `UpsertPeer` cannot express an endpoint — that
+   is deliberate, because the web app genuinely never knows a node's address
+   in advance. The harness does know, having just read it off the node, so it
+   now uses `UpsertPeerWithEndpoint`, and the script reads node0's real `wg0`
+   public key and `listening_port` from the node's own API. (The port has to
+   be read: the rendered seed sets no `port` for `wg0`, so IncusOS binds a
+   random one.)
+
+### What the fixed assertions then found: a real product gap
+
+With those six defects cleared, the handshake assertion passes and the run goes
+from *30 passed, 3 failed* to *39 passed, 2 failed*. The two that remain are no
+longer test bugs — they are the suite doing its job, and they are left failing
+deliberately rather than papered over. node0's own view of the harness peer, at
+the moment the HTTP dial times out:
+
+```
+"latest_handshake": "1 minute, 3 seconds ago",
+"endpoint": "192.168.1.58:37856",
+"stats": {"rx_bytes": 724, "tx_bytes": 188}
+```
+
+The WireGuard layer works completely: handshake done, endpoint learned,
+traffic in both directions. What does not work is IP on top of it. `wg0` is
+rendered with a `/32` address and no routes:
+
+```
+wg0  addresses: ["10.100.0.2"]   routes: <none>
+eth0 addresses: [...]            routes: [default via …, 10.200.0.0/24 via …]
+```
+
+So node0 has no route covering `10.100.0.0/24` and cannot originate or reply
+to overlay traffic — the TCP SYN-ACK has nowhere to go. Incus itself is bound
+correctly (`core.https_address: ":8443"`, and `wg0` carries the `management`
+role), so this is not the binding assumption `internal/seed/seed.go` flags as
+unverified; that assumption survives.
+
+`internal/seed` renders the peer's `AllowedIPs` but nothing on
+`SystemNetworkWireguard.Routes`, which the vendored API does expose. `wg-quick`
+would install allowed-IPs as routes; IncusOS evidently does not. Tracked as
+#157 rather than fixed here: it is a change to production seed rendering, needs
+its own validation, and #137 is about the assertions, not the seed.
+
+**Note this means #91's second done-when criterion — "the node's Incus API is
+reachable through the tunnel" — has never actually held.** It was reported as
+passing by an assertion that could not have detected otherwise.
+
+**None of these three assertions had ever passed.** The extraction in (1), the
+cgo-linked harness in (4), the missing DHCP wait in (5), and the wrong key in
+(6) are all present in `f94fa44`, the commit that introduced the script — so
+they failed from the day it landed. #137's premise that "the
+tunnel path is byte-identical to when this script last passed" was mistaken;
+there was no such run. Worth stating because it changes what the suite's green
+history means: a script can be merged, be re-run for weeks, and never once have
+proven its headline claim.
+
+### Blocking node0's egress breaks the node outright
+
+An Incus network ACL on node0's NIC (`security.acls` plus
+`security.acls.default.egress.action=reject`) works exactly as documented, and
+was verified enforcing: DHCP still leases, the gateway is still reachable,
+`1.1.1.1` is dropped, and the node stays on the installed build instead of
+updating. It also makes the test useless. From node0's console under that ACL:
+
+```
+ERROR Failed to check for Secure Boot key updates err=http request timed out
+      after five seconds: Get "https://images.linuxcontainers.org…
+failed to perform NTP synchronization, system time may be incorrect
+refused (provider: images)
+```
+
+**IncusOS fetches the Incus application itself from
+`images.linuxcontainers.org` during first boot.** With egress blocked, Incus
+never installs, port 8443 never opens, and all three tunnel assertions fail —
+for a new reason, having replaced one environmental dependency with another.
+Narrowing the ACL doesn't help: the OS update and the application download come
+from the same host, so no rule separates them.
+
+The seed offers no lever either. The vendored IncusOS seed types
+(`internal/third_party/incusos/api/seed/`) cover install, network,
+applications, and incus — none carries an update channel or auto-update
+toggle, so #137's second suggestion would need new upstream surface vendored
+first.
+
+**So the test is deliberately not hermetic.** node0 reaches the internet
+through `home-lan`'s own `ipv4.nat` and updates itself, and the defence against
+a moving upstream is that the assertions no longer care which build answers.
+That is a weaker guarantee than isolation and worth stating plainly — but it is
+the one available, and it is strictly better than the previous state, where the
+same drift produced three red assertions naming the wrong subsystem.
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
 

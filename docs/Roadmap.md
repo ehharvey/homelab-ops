@@ -134,6 +134,12 @@ clustering, deferred; see `docs/Decisions.md` § App Manager HA.)
   `run.sh --describe` lets the scripts declare what they need rather than
   the docs claiming it; resolves `docs/Decisions.md` §22: DONE; see #140,
   #136
+- [x] Make the tunnel script's own assertions honest — a per-run proof that
+  the simulated NAT actually translates, a handshake check that reads the
+  peer's state structurally instead of grepping the whole document, and the
+  harness finally dialling node0 with node0's own key and endpoint. Its three
+  headline assertions had never passed since #91 introduced them; records why
+  the test cannot be made hermetic in `docs/Decisions.md` §23: DONE; see #137
 
 **Done when:** the suite is honest about its own results — a missing tool
 reports as a skip rather than a failure, a script that silently gains a

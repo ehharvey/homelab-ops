@@ -233,3 +233,102 @@ func TestTunnelEndToEndHandshakeAndDial(t *testing.T) {
 		t.Errorf("echoed payload = %q, want %q", got, marker)
 	}
 }
+
+// TestUpsertPeerWithEndpointLetsTheDialerInitiate covers the topology
+// cmd/validate-tunnel-harness needs and TestTunnelEndToEndHandshakeAndDial
+// does not: *neither* side has been told where the other is by a seed, so
+// unless the dialer supplies an endpoint itself, nobody can send the first
+// packet and no handshake ever happens. That was the state the harness
+// assertions in scripts/validate/node-tunnel-survives-nat-and-provisions.sh
+// were stuck in from #91 until #137 — UpsertPeer has no way to express an
+// endpoint, by design.
+//
+// A stands in for a node (passive, trusts the harness for its overlay
+// address only); B stands in for the harness, which has just read A's
+// address and port off A's own API.
+func TestUpsertPeerWithEndpointLetsTheDialerInitiate(t *testing.T) {
+	privA, pubA, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	nodeAddr := netip.MustParseAddr("10.100.0.5")
+	tunA, err := Start(Options{PrivateKey: privA, ListenPort: 0, LocalAddr: nodeAddr})
+	if err != nil {
+		t.Fatalf("Start (A): %v", err)
+	}
+	defer tunA.Close() //nolint:errcheck // test cleanup
+
+	portA, err := tunA.ListenPort()
+	if err != nil {
+		t.Fatalf("A.ListenPort: %v", err)
+	}
+
+	privB, pubB, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	harnessAddr := netip.MustParseAddr("10.100.0.254")
+	tunB, err := Start(Options{PrivateKey: privB, ListenPort: 0, LocalAddr: harnessAddr})
+	if err != nil {
+		t.Fatalf("Start (B): %v", err)
+	}
+	defer tunB.Close() //nolint:errcheck // test cleanup
+
+	// A trusts B for its overlay address but has nowhere to send — exactly
+	// what patch-seed appends to a real node's network.yaml.
+	if err := tunA.UpsertPeer(pubB, harnessAddr); err != nil {
+		t.Fatalf("A.UpsertPeer(B): %v", err)
+	}
+	// B supplies the endpoint, so B can initiate.
+	endpoint := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(portA)) //nolint:gosec // ListenPort returns a real bound UDP port
+	if err := tunB.UpsertPeerWithEndpoint(pubA, nodeAddr, endpoint); err != nil {
+		t.Fatalf("B.UpsertPeerWithEndpoint(A): %v", err)
+	}
+
+	const marker = "harness reached the node"
+	ln, err := tunA.net.ListenTCPAddrPort(netip.AddrPortFrom(nodeAddr, 8443))
+	if err != nil {
+		t.Fatalf("A.net.ListenTCPAddrPort: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck // test cleanup
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck // test-only echo server
+		buf := make([]byte, len(marker))
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			return
+		}
+		_, _ = conn.Write(buf)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var conn net.Conn
+	deadline := time.Now().Add(20 * time.Second)
+	var dialErr error
+	for time.Now().Before(deadline) {
+		conn, dialErr = tunB.DialContext(ctx, "tcp", fmt.Sprintf("%s:8443", nodeAddr))
+		if dialErr == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if dialErr != nil {
+		t.Fatalf("B could not dial A through the tunnel within 20s: %v", dialErr)
+	}
+	defer conn.Close() //nolint:errcheck // test cleanup
+
+	if _, err := conn.Write([]byte(marker)); err != nil {
+		t.Fatalf("write through tunnel: %v", err)
+	}
+	got := make([]byte, len(marker))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read echo through tunnel: %v", err)
+	}
+	if string(got) != marker {
+		t.Errorf("echoed payload = %q, want %q", got, marker)
+	}
+}
