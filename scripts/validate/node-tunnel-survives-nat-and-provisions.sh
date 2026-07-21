@@ -25,13 +25,22 @@
 # INCUSOS_BASE_IMAGE at a local copy; the node-boot-dependent sections are
 # skipped with a clear message if it's unset.
 #
-# KNOWN RED, deliberately: the last two checks (Incus reachable over the
-# tunnel, and create-instance over it) fail against #157 — a node's seeded wg0
-# gets a /32 address and no overlay route, so it completes a WireGuard
-# handshake but cannot carry IP traffic. That is a real product bug this
-# script is correctly reporting, not rot; their failure text prints node0's
-# own view of the peer, which is what identifies it. Expect 39 passed,
-# 2 failed until #157 lands, then 41/0. See docs/Decisions.md §23.
+# The last two checks (Incus reachable over the tunnel, and create-instance
+# over it) are the ones that prove this file's headline claim, and they were
+# KNOWN RED from #137 until #157: a node's seeded wg0 got a /32 address, so the
+# kernel installed no route covering 10.100.0.0/24 and the node completed a
+# WireGuard handshake it could not carry IP traffic over. #157 widened the
+# seeded address to the overlay's own prefix. Expect 41 passed, 0 failed. See
+# docs/Decisions.md §23 (making these assertions honest) and §24 (why the fix
+# is the address, not a route).
+#
+# If either goes red again: node0's /os/1.0/system/network state is NOT an
+# oracle for that route. IncusOS builds state.interfaces.wg0.routes by
+# regex-matching `ip route show dev wg0` against `(.+) via (.+) proto`, so it
+# only ever reports routes with an explicit gateway — a connected route has
+# none and never appears there, fixed or not. It strips prefix lengths off
+# state addresses too. The rendered network.yaml is what to look at, which is
+# why section 6's failure text prints wg0's seeded address stanza.
 #
 # ---------------------------------------------------------------------------
 # Topology (see docs/Roadmap.md #91's plan for the full design rationale):
@@ -651,6 +660,17 @@ PYEOF
     return 1
   }
 
+  # wg0's address exactly as the real web app rendered it into the seed. The
+  # state API cannot show the prefix length (see this file's header) and the
+  # prefix length is the whole of #157, so a red reachability check reports
+  # the seed instead of a state field that could not distinguish the two.
+  # Deliberately extracts one line: the stanza wholesale would put the node's
+  # WireGuard private key into the run log.
+  seeded_wg0_address() {
+    sed -n '/^wireguard:/,$p' "$WORK_DIR/seed/network.yaml" 2>/dev/null |
+      sed -n '/addresses:/{n;s/^ *- */wg0 as seeded: /p;q;}'
+  }
+
   # The peer is matched by public key and then asked for its own
   # latest_handshake. IncusOS omits that field entirely until a handshake
   # actually completes — verified live against both peers on a running node,
@@ -741,9 +761,12 @@ PYEOF
   else
     # node0's view of the harness peer separates "the handshake never
     # happened" from "it handshaked but no IP traffic came back", which are
-    # different faults with the same symptom at the HTTP layer.
+    # different faults with the same symptom at the HTTP layer. The seeded
+    # address then separates the latter into "the seed didn't carry the
+    # overlay-width prefix" and "it did, and that wasn't enough" — the state
+    # API cannot answer that, per this file's header.
     record_fail "node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN" \
-      "$(tail -5 "$WORK_DIR/harness-probe.log" 2>/dev/null | tr '\n' '|') node0's view of the harness peer: $(node_net_state | jq -c --arg k "$HARNESS_PUBLIC_KEY" '.metadata.state.interfaces.wg0.wireguard.peers[]? | select(.public_key == $k)' 2>/dev/null)"
+      "$(tail -5 "$WORK_DIR/harness-probe.log" 2>/dev/null | tr '\n' '|') node0's view of the harness peer: $(node_net_state | jq -c --arg k "$HARNESS_PUBLIC_KEY" '.metadata.state.interfaces.wg0.wireguard.peers[]? | select(.public_key == $k)' 2>/dev/null); $(seeded_wg0_address)"
   fi
 
   # Pull the webapp's store and extract node0's real bootstrap credential

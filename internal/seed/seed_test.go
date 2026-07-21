@@ -237,8 +237,31 @@ func TestRenderWithWireGuard(t *testing.T) {
 		t.Fatalf("len(Network.Wireguard) = %d, want 1", len(b.Network.Wireguard))
 	}
 	wgIface := b.Network.Wireguard[0]
-	if len(wgIface.Addresses) != 1 || wgIface.Addresses[0] != "10.100.0.5/32" {
-		t.Errorf("Wireguard[0].Addresses = %v, want [10.100.0.5/32]", wgIface.Addresses)
+	// The prefix length is the whole of #157: it is what makes the kernel
+	// install the connected route covering the overlay, and nothing else
+	// installs one. Asserted structurally rather than against the literal
+	// "10.100.0.5/24" so the failure says which half is wrong.
+	if len(wgIface.Addresses) != 1 {
+		t.Fatalf("len(Wireguard[0].Addresses) = %d, want 1", len(wgIface.Addresses))
+	}
+	wgAddr, err := netip.ParsePrefix(wgIface.Addresses[0])
+	if err != nil {
+		t.Fatalf("Wireguard[0].Addresses[0] = %q, want a CIDR address: %v", wgIface.Addresses[0], err)
+	}
+	if wgAddr.Addr() != inst.TunnelIP {
+		t.Errorf("Wireguard[0].Addresses[0] = %q, want the instance's tunnel_ip %s", wgIface.Addresses[0], inst.TunnelIP)
+	}
+	if wgAddr.Masked() != wireguard.OverlayCIDR.Masked() {
+		t.Errorf("Wireguard[0].Addresses[0] = %q covers %s, want a prefix covering the whole overlay %s",
+			wgIface.Addresses[0], wgAddr.Masked(), wireguard.OverlayCIDR.Masked())
+	}
+	// Deliberately empty. The overlay route comes from the address's prefix
+	// above, not from here: SystemNetworkRoute.Via has no omitempty, so any
+	// entry renders `via: ""`, which IncusOS's validateWireguard rejects
+	// with "has empty address" — failing the whole network config, not just
+	// the route (docs/Decisions.md §24).
+	if len(wgIface.Routes) != 0 {
+		t.Errorf("Wireguard[0].Routes = %+v, want none", wgIface.Routes)
 	}
 	if wgIface.PrivateKey != nodePriv.Base64() {
 		t.Errorf("Wireguard[0].PrivateKey = %q, want %q", wgIface.PrivateKey, nodePriv.Base64())
