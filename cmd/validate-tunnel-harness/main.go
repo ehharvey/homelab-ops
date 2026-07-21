@@ -52,7 +52,12 @@ func run() error {
 	bootstrapCert := flag.String("bootstrap-cert", "", "path to the bootstrap client cert PEM (create-instance mode)")
 	bootstrapKey := flag.String("bootstrap-key", "", "path to the bootstrap client key PEM (create-instance mode)")
 	instanceName := flag.String("instance-name", "validate-91-placeholder", "name for the throwaway instance create-instance mode creates, or the instance whose credential to extract (extract-credential mode)")
-	storagePool := flag.String("storage-pool", "default", "storage pool name to attach the throwaway instance's root disk to")
+	// "local" is what IncusOS names its only pool — it creates one zpool from
+	// the "local-data" partition and Incus's applyDefaults registers it under
+	// that name. "default" is the Incus convention and was wrong here from the
+	// day this flag landed (#161); it went unnoticed because the check using it
+	// had never once passed, failing at the network layer until #157.
+	storagePool := flag.String("storage-pool", "local", "storage pool name to attach the throwaway instance's root disk to (IncusOS names its pool \"local\")")
 	storePath := flag.String("store-path", "", "path to a pulled copy of the web app's sqlite store (extract-credential mode)")
 	outCert := flag.String("out-cert", "", "path to write the extracted bootstrap cert PEM to (extract-credential mode)")
 	outKey := flag.String("out-key", "", "path to write the extracted bootstrap key PEM to (extract-credential mode)")
