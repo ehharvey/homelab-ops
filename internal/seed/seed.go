@@ -143,17 +143,37 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 			return Bundle{}, fmt.Errorf("instance %q: wireguard requested but no tunnel_ip assigned", inst.Name)
 		}
 		netConfig.Wireguard = []incusapi.SystemNetworkWireguard{{
-			Name:       "wg0",
-			Addresses:  []string{fmt.Sprintf("%s/32", inst.TunnelIP)},
+			Name: "wg0",
+			// Overlay-width, not /32: the address's own connected route is
+			// the only thing that can cover the overlay, so its prefix
+			// length is load-bearing. IncusOS drives WireGuard through
+			// systemd-networkd and never emits RouteTable= (default: off),
+			// so a peer's AllowedIPs install no routes — unlike wg-quick,
+			// which does it as a side effect. A /32 therefore left a real
+			// booted node completing the handshake and then dropping every
+			// reply, with no route covering OverlayCIDR (#157).
+			//
+			// Populating Routes instead — what #157 originally proposed —
+			// is not available: SystemNetworkRoute.Via has no omitempty, so
+			// a gateway-less route marshals as `via: ""`, and IncusOS's
+			// validateWireguard rejects that ("has empty address"), failing
+			// the whole network config rather than just the route. See
+			// docs/Decisions.md §24.
+			Addresses:  []string{fmt.Sprintf("%s/%d", inst.TunnelIP, wireguard.OverlayCIDR.Bits())},
 			PrivateKey: wg.NodePrivateKey.Base64(),
 			// Tagging wg0 "management" mirrors eth0's role above, on the
 			// (unverified against IncusOS's own docs — confirmed only by a
-			// real-VM boot, see scripts/validate-issue-91.sh) assumption
-			// that this is what makes Incus's API listen on it.
+			// real-VM boot, see
+			// scripts/validate/node-tunnel-survives-nat-and-provisions.sh)
+			// assumption that this is what makes Incus's API listen on it.
 			Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
 			Peers: []incusapi.SystemNetworkWireguardPeer{{
-				PublicKey:           wg.AppPublicKey.Base64(),
-				Endpoint:            wg.AppEndpoint,
+				PublicKey: wg.AppPublicKey.Base64(),
+				Endpoint:  wg.AppEndpoint,
+				// Stays /32 while the address above widens: AllowedIPs is
+				// crypto-routing — which peer may carry which addresses —
+				// not IP routing. Widening it would let the web app's peer
+				// claim every other node's overlay address.
 				AllowedIPs:          []string{fmt.Sprintf("%s/32", wireguard.WebAppAddr)},
 				PersistentKeepalive: wireGuardPersistentKeepaliveSeconds,
 			}},

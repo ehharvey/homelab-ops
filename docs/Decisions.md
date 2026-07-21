@@ -1291,6 +1291,14 @@ its own validation, and #137 is about the assertions, not the seed.
 reachable through the tunnel" — has never actually held.** It was reported as
 passing by an assertion that could not have detected otherwise.
 
+**Resolved by #157 — but not by adding a route.** The paragraph above assumed
+`SystemNetworkWireguard.Routes` was the answer. It is not: IncusOS's own
+validator rejects the only route this could emit. The fix is a wider address on
+`wg0`; §24 records why the vendored API cannot express the route this section
+reached for, and why node0's network state could never have proven it either
+way. The two failures described here are no longer expected — this script's
+contract is now 41 passed, 0 failed.
+
 **None of these three assertions had ever passed.** The extraction in (1), the
 cgo-linked harness in (4), the missing DHCP wait in (5), and the wrong key in
 (6) are all present in `f94fa44`, the commit that introduced the script — so
@@ -1336,6 +1344,103 @@ the one available, and it is strictly better than the previous state, where the
 same drift produced three red assertions naming the wrong subsystem.
 1. Track the commit hash nodes are running
 2. Some phone home functionality could be a nice-to-have if this has low development cost. I.e., could the node phone the dev instance over tailscale to indicate success (and provide a manifest of it's hardware)?
+
+## 24. `wg0` takes an overlay-width address, because the seed API cannot express an on-link route (#157)
+
+§23 left two assertions failing deliberately: a node completed a WireGuard
+handshake but could not carry IP traffic, because `internal/seed` gave `wg0` a
+`/32` and nothing covering `10.100.0.0/24`. It also proposed the obvious
+remedy — populate `SystemNetworkWireguard.Routes` — which is what #157 was
+filed to do, hedged with "the exact shape needs checking against IncusOS's
+semantics first."
+
+Checking it resolves the hedge in the negative. **The remedy is not available,
+and attempting it is worse than the bug.** Recorded here because the issue text
+still says otherwise and will outlive it.
+
+Evidence is from upstream `lxc/incus-os` at `2ad9069b90b4`, not from this repo:
+`scripts/vendor-incusos.sh` vendors only `incus-osd/api/`, so the rendering and
+validation code below cannot be read from the submodule.
+
+### Nothing else creates the route, so the address has to
+
+IncusOS configures WireGuard through systemd-networkd. The generated wireguard
+`.network` file is `processAddresses(wg.Addresses)` plus
+`processRoutes(wg.Routes)` and nothing more — `RouteTable=` appears **nowhere**
+in `internal/systemd/networkd.go`, and systemd's default for it is `off`. So a
+peer's `AllowedIPs` install no routes at all. `wg-quick` installs them as a side
+effect; systemd-networkd does not. That single difference is the whole bug.
+
+`processAddresses` emits `Address=<addr>` verbatim, and systemd's
+`AddPrefixRoute=` defaults to yes, so `10.100.0.2/24` makes the kernel install
+`10.100.0.0/24 dev wg0 proto kernel scope link` — covering both the web app
+(`.1`) and the validate harness (`.254`). `validateAddressWithCIDR`'s regex is
+`^[.:[:xdigit:]]+/\d+$`, so `/24` is exactly as valid a seed value as `/32`.
+
+Peers' `AllowedIPs` stay `/32`. That is crypto-routing — which peer may carry
+which addresses — a different concern from IP routing, and widening it would let
+one peer claim every other node's overlay address.
+
+### The `Routes` field cannot express what this needs
+
+`SystemNetworkRoute.Via` has no `omitempty`, so a gateway-less route marshals as
+`via: ""`. IncusOS's own validator rejects that before systemd ever sees it —
+`validateWireguard` in `internal/systemd/networkd_validate.go`:
+
+```go
+for routeIndex, route := range wg.Routes {
+    err := validateAddressWithCIDR(route.To)
+    ...
+    err = validateAddress(route.Via)   // unconditional
+    if err != nil {
+        return fmt.Errorf("wireguard %d route %d 'Via' %s", index, routeIndex, err.Error())
+    }
+}
+```
+```go
+func validateAddress(address string) error {
+    if address == "" {
+        return errors.New("has empty address")
+    }
+```
+
+The **whole network configuration** fails validation, not just the route. Had
+#157's suggested fix been implemented literally, it would have replaced a node
+with a missing route by a node whose network config IncusOS refuses outright.
+
+No other `via` helps. The only non-empty candidate on the overlay is
+`10.100.0.1`, the web app — which is unreachable from a `/32`, so the kernel
+rejects the route, and which sits inside the very prefix being routed. `via` the
+node's own tunnel address is gateway-is-self nonsense. There is no way to emit
+`Scope=link` or `GatewayOnLink=` through the vendored type.
+
+### The node's own network state cannot prove this fix
+
+Worth stating plainly, because it is exactly the assertion someone will reach
+for next. IncusOS builds `state.interfaces.<n>.routes` by running `ip route show
+dev <n>` and regex-matching `` `(.+) via (.+) proto` ``, so it reports only
+routes with an explicit gateway. A connected route has none and **never
+appears — before or after the fix**. §23's `wg0 … routes: <none>` evidence was
+therefore consistent with both the broken and the fixed node, and it is why
+eth0's own `192.168.1.0/24` connected route is missing from that same listing.
+
+Addresses are no better: `GetIPAddresses` matches `` `inet6? (.+)/\d+ ` `` and
+keeps only group 1, discarding the prefix length — which is the entire content
+of this fix. `10.100.0.2/32` and `10.100.0.2/24` are indistinguishable there.
+
+So `scripts/validate/node-tunnel-survives-nat-and-provisions.sh` adds no
+structural check for the route. What it proves is the behaviour — TCP over the
+overlay, in both directions, from a real second WireGuard endpoint — which is
+strictly stronger than a route's presence, and is what #91's done-when actually
+asks for. A `.routes` assertion would have been permanently red on a *working*
+node: the #129/#137 false-signal failure mode, inverted. The seeded address is
+printed in the failure text instead, as a diagnostic rather than an assertion.
+
+### #91's done-when now holds for the first time
+
+"The node's Incus API is reachable through the tunnel specifically" has been
+reported green since #91 landed and was never true (§23). It is true as of #157,
+proven by that script reaching 41 passed, 0 failed on real hardware.
 
 ## Sources consulted
 
