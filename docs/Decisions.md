@@ -1296,8 +1296,12 @@ passing by an assertion that could not have detected otherwise.
 validator rejects the only route this could emit. The fix is a wider address on
 `wg0`; §24 records why the vendored API cannot express the route this section
 reached for, and why node0's network state could never have proven it either
-way. The two failures described here are no longer expected — this script's
-contract is now 41 passed, 0 failed.
+way. The first of the two failures described here is fixed and now passes on
+real hardware. The second turned out not to be this bug at all: with the route
+in place, `create-instance` reached Incus and failed on the harness asking for a
+storage pool named `default` when IncusOS names its only pool `local`, fixed
+separately in #161. With both landed the script's contract is 41 passed,
+0 failed.
 
 **None of these three assertions had ever passed.** The extraction in (1), the
 cgo-linked harness in (4), the missing DHCP wait in (5), and the wrong key in
@@ -1367,13 +1371,16 @@ validation code below cannot be read from the submodule.
 IncusOS configures WireGuard through systemd-networkd. The generated wireguard
 `.network` file is `processAddresses(wg.Addresses)` plus
 `processRoutes(wg.Routes)` and nothing more — `RouteTable=` appears **nowhere**
-in `internal/systemd/networkd.go`, and systemd's default for it is `off`. So a
-peer's `AllowedIPs` install no routes at all. `wg-quick` installs them as a side
-effect; systemd-networkd does not. That single difference is the whole bug.
+in `internal/systemd/networkd.go`. That setting is what asks systemd to turn a
+peer's `AllowedIPs` into routes, and `systemd.netdev(5)` says it "Defaults to
+false", where "off" means "the routes to the addresses specified in the
+`AllowedIPs=` setting will not be configured". So they install no routes at
+all. `wg-quick` installs them as a side effect; systemd-networkd does not. That
+single difference is the whole bug.
 
-`processAddresses` emits `Address=<addr>` verbatim, and systemd's
-`AddPrefixRoute=` defaults to yes, so `10.100.0.2/24` makes the kernel install
-`10.100.0.0/24 dev wg0 proto kernel scope link` — covering both the web app
+`processAddresses` emits `Address=<addr>` verbatim, and `AddPrefixRoute=`
+"Defaults to true" (`systemd.network(5)`), so `10.100.0.2/24` makes the kernel
+install `10.100.0.0/24 dev wg0 proto kernel scope link` — covering both the web app
 (`.1`) and the validate harness (`.254`). `validateAddressWithCIDR`'s regex is
 `^[.:[:xdigit:]]+/\d+$`, so `/24` is exactly as valid a seed value as `/32`.
 
@@ -1440,7 +1447,22 @@ printed in the failure text instead, as a diagnostic rather than an assertion.
 
 "The node's Incus API is reachable through the tunnel specifically" has been
 reported green since #91 landed and was never true (§23). It is true as of #157,
-proven by that script reaching 41 passed, 0 failed on real hardware.
+proven on real hardware: the assertion that had never once passed since #91
+introduced it now does.
+
+#157's own run was 40 passed, 1 failed rather than the 41/0 it predicted, and
+the difference is worth recording. #157 assumed *both* remaining failures were
+the missing route. Only one was. With the route in place the second got all the
+way to Incus and failed on its own merits — the validate harness requested a
+root disk on a pool named `default`, while IncusOS names its only pool `local`.
+That check had never passed either, so a wrong pool name sat behind a network
+failure from #91 onward, invisible until the network was fixed. Fixed in #161,
+which is what takes the script to 41/0.
+
+Twice now — #137 → #157, and #157 → #161 — fixing the outermost layer of this
+path has exposed the next latent defect underneath. Worth expecting a third:
+until an assertion has actually passed, nothing downstream of it has been
+exercised, and "the suite is green" says only that no one has looked yet.
 
 ## Sources consulted
 
@@ -1456,3 +1478,5 @@ proven by that script reaching 41 passed, 0 failed on real hardware.
 - [CloudNativePG](https://cloudnative-pg.io/) and [Zalando postgres-operator](https://github.com/zalando/postgres-operator) (§18: what the ecosystem converged on for class-3 Postgres, rather than declarative config)
 - [Patroni — DCS requirements](https://patroni.readthedocs.io/en/latest/) (§19: the external-DCS dependency Galera/CockroachDB avoid)
 - [Kubernetes — version skew policy](https://kubernetes.io/releases/version-skew-policy/) (§19 / `docs/AppClasses.md`: why "the image string differs" is too coarse a signal for classes 3/5)
+- [`systemd.netdev(5)` — `[WireGuard] RouteTable=`](https://manpages.ubuntu.com/manpages/noble/man5/systemd.netdev.5.html) (§24: "Defaults to false" — with it off, `AllowedIPs` install no routes, which is the whole of #157)
+- [`systemd.network(5)` — `[Address] AddPrefixRoute=`](https://manpages.ubuntu.com/manpages/noble/man5/systemd.network.5.html) (§24: "Defaults to true" — why the address's prefix length is the available lever)
