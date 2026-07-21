@@ -26,13 +26,23 @@
 # skipped with a clear message if it's unset.
 #
 # The last two checks (Incus reachable over the tunnel, and create-instance
-# over it) are the ones that prove this file's headline claim, and they were
+# over it) are the ones that prove this file's headline claim, and both were
 # KNOWN RED from #137 until #157: a node's seeded wg0 got a /32 address, so the
 # kernel installed no route covering 10.100.0.0/24 and the node completed a
 # WireGuard handshake it could not carry IP traffic over. #157 widened the
-# seeded address to the overlay's own prefix. Expect 41 passed, 0 failed. See
-# docs/Decisions.md §23 (making these assertions honest) and §24 (why the fix
-# is the address, not a route).
+# seeded address to the overlay's own prefix, and the first of the two now
+# passes — node0's Incus API is genuinely reachable over the tunnel for the
+# first time since #91. See docs/Decisions.md §23 (making these assertions
+# honest) and §24 (why the fix is the address, not a route).
+#
+# Expect 41 passed, 0 failed. The create-instance check spent one run red for a
+# second reason #157 uncovered rather than caused: cmd/validate-tunnel-harness
+# defaulted -storage-pool to "default" while IncusOS names its only pool
+# "local", so the request reached Incus over the now-working tunnel and failed
+# on its own merits with "Failed loading storage pool: Storage pool not found".
+# Fixed in #161. Like #157 before it, that check had never once passed, so a
+# wrong pool name sat behind a network failure from #91 onward — until an
+# assertion actually passes, nothing downstream of it has been exercised.
 #
 # If either goes red again: node0's /os/1.0/system/network state is NOT an
 # oracle for that route. IncusOS builds state.interfaces.wg0.routes by
