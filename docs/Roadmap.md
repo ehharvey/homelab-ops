@@ -53,6 +53,14 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   generates its own identity + a per-node keypair at seed-render time,
   embedded into `network.yaml` (no live enrollment step, unlike
   Tailscale/NetBird); resolves `docs/Decisions.md` §11: DONE; see #91
+- [x] Give a seeded node's `wg0` an address at the overlay's own prefix width,
+  so the kernel installs the connected route the tunnel needs. The item above
+  reported done since #91, but its second done-when — "the node's Incus API is
+  reachable *through the tunnel specifically*" — had never actually held: a
+  `/32` left the node handshaking fine and dropping every reply, with no route
+  covering `10.100.0.0/24`. Not fixed the way #157 proposed (a `Routes` entry),
+  because IncusOS's validator rejects the only route the vendored API can
+  emit; resolves `docs/Decisions.md` §24: DONE; see #157
 - [ ] Per-node app-manager agent, leader/follower HA: one agent instance
   per node, electing a single fleet-wide leader via an ETag-CAS lease
   stored in Incus itself (no new dependency) — the leader reconciles a new
