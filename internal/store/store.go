@@ -79,6 +79,9 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 	if _, err := tx.ExecContext(ctx, deleteInstancesSQL); err != nil {
 		return fmt.Errorf("clear instances: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, deleteAppsSQL); err != nil {
+		return fmt.Errorf("clear apps: %w", err)
+	}
 
 	seen := make(map[string]bool, len(cfg.Networks))
 	for _, n := range cfg.Networks {
@@ -112,6 +115,25 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 			boolToInt(i.Security.TPM), boolToInt(i.Security.SecureBoot), string(apps), asText(i.TunnelIP),
 		); err != nil {
 			return fmt.Errorf("store instance %q: %w", i.Name, err)
+		}
+	}
+
+	seen = make(map[string]bool, len(cfg.Apps))
+	for _, a := range cfg.Apps {
+		if seen[a.Name] {
+			log.Printf("store: duplicate app %q in synced config, last one wins", a.Name)
+		}
+		seen[a.Name] = true
+
+		params, err := json.Marshal(a.Params)
+		if err != nil {
+			return fmt.Errorf("marshal app %q params: %w", a.Name, err)
+		}
+		if _, err := tx.ExecContext(ctx, replaceAppSQL,
+			a.Name, a.Type, asText(a.Replicas),
+			a.Image.Server, a.Image.Protocol, a.Image.Alias, a.Image.Fingerprint, string(params),
+		); err != nil {
+			return fmt.Errorf("store app %q: %w", a.Name, err)
 		}
 	}
 
@@ -186,6 +208,25 @@ func (s *Store) Instance(ctx context.Context, name string) (i config.Instance, o
 	return i, true, nil
 }
 
+// Apps returns every stored App, ordered by name.
+func (s *Store) Apps(ctx context.Context) ([]config.App, error) {
+	rows, err := s.db.QueryContext(ctx, listAppsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("query apps: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only query, nothing to flush
+
+	var out []config.App
+	for rows.Next() {
+		a, err := scanApp(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan app: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // Instances returns every stored Instance, ordered by name.
 func (s *Store) Instances(ctx context.Context) ([]config.Instance, error) {
 	rows, err := s.db.QueryContext(ctx, listInstancesSQL)
@@ -250,6 +291,22 @@ func scanInstance(r row) (config.Instance, error) {
 		return config.Instance{}, fmt.Errorf("parse tunnel_ip for %q: %w", i.Name, err)
 	}
 	return i, nil
+}
+
+func scanApp(r row) (config.App, error) {
+	var a config.App
+	var replicas, params string
+	if err := r.Scan(&a.Name, &a.Type, &replicas,
+		&a.Image.Server, &a.Image.Protocol, &a.Image.Alias, &a.Image.Fingerprint, &params); err != nil {
+		return config.App{}, err
+	}
+	if err := a.Replicas.UnmarshalText([]byte(replicas)); err != nil {
+		return config.App{}, fmt.Errorf("parse replicas for %q: %w", a.Name, err)
+	}
+	if err := json.Unmarshal([]byte(params), &a.Params); err != nil {
+		return config.App{}, fmt.Errorf("unmarshal params for %q: %w", a.Name, err)
+	}
+	return a, nil
 }
 
 // WireGuardPrivateKey returns the web app's own persisted WireGuard

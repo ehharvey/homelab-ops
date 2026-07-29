@@ -16,3 +16,12 @@ security:
   tpm: false
   secure_boot: true
 applications: [incus]
+---
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  server: https://ghcr.io
+  protocol: oci
+  alias: ehharvey/homelab-ops/agent:latest

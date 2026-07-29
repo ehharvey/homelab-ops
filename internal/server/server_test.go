@@ -56,6 +56,8 @@ type fakeStore struct {
 	networksErr error
 	instances   []config.Instance
 	instErr     error
+	apps        []config.App
+	appsErr     error
 
 	networkByName  map[string]config.Network
 	instanceByName map[string]config.Instance
@@ -80,6 +82,10 @@ func (f *fakeStore) Networks(context.Context) ([]config.Network, error) {
 
 func (f *fakeStore) Instances(context.Context) ([]config.Instance, error) {
 	return f.instances, f.instErr
+}
+
+func (f *fakeStore) Apps(context.Context) ([]config.App, error) {
+	return f.apps, f.appsErr
 }
 
 func (f *fakeStore) Network(_ context.Context, name string) (config.Network, bool, error) {
@@ -824,5 +830,93 @@ func TestMethodNotAllowed(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+// Apps must reach the diff the same way networks/instances do: the stored
+// snapshot is the baseline, and an agent image bump shows up as a change.
+func TestSyncWithAppDiff(t *testing.T) {
+	agentV1 := config.App{
+		Name: "agent", Type: "agent", Replicas: config.Replicas{PerNode: true},
+		Image: config.ImageRef{Alias: "agent:v1"},
+	}
+	agentV2 := agentV1
+	agentV2.Image = config.ImageRef{Alias: "agent:v2"}
+
+	store := &fakeStore{
+		synced: true, // a prior sync happened, so this is not a "first sync"
+		apps: []config.App{
+			agentV1,
+			{Name: "old-app", Type: "some-renderer", Replicas: config.Replicas{Count: 1}, Image: config.ImageRef{Alias: "o:v1"}},
+		},
+	}
+	cfg := config.Config{Apps: []config.App{
+		agentV2, // changed
+		{Name: "new-app", Type: "some-renderer", Replicas: config.Replicas{Count: 1}, Image: config.ImageRef{Alias: "n:v1"}}, // added
+		// old-app removed
+	}}
+	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
+
+	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
+	rec := httptest.NewRecorder()
+
+	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var got syncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	want := diffCounts{AppsAdded: 1, AppsChanged: 1, AppsRemoved: 1}
+	if got.Diff != want {
+		t.Errorf("Diff = %+v, want %+v", got.Diff, want)
+	}
+	if !reflect.DeepEqual(store.replaceCfg.Apps, cfg.Apps) {
+		t.Errorf("Replace got Apps = %+v, want %+v", store.replaceCfg.Apps, cfg.Apps)
+	}
+}
+
+// Mirrors TestSyncDiffReadFailure for the new reader: a failure reading prior
+// Apps is treated as no baseline, never failing the sync.
+func TestSyncAppsReadFailure(t *testing.T) {
+	store := &fakeStore{synced: true, appsErr: errors.New("disk full")}
+	cfg := config.Config{Apps: []config.App{
+		{Name: "agent", Type: "agent", Replicas: config.Replicas{PerNode: true}, Image: config.ImageRef{Alias: "agent:v1"}},
+	}}
+	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
+
+	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
+	rec := httptest.NewRecorder()
+
+	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync with failing apps read = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !store.replaced {
+		t.Fatalf("POST /sync did not call Store.Replace despite a failed apps read")
+	}
+}
+
+// An invalid App fails the whole sync as upstream's fault, exactly as an
+// invalid Network does — this is the end-to-end proof that Apps thread through
+// config.Validate inside SyncOnce.
+func TestSyncOnceRejectsInvalidApp(t *testing.T) {
+	cfg := config.Config{Apps: []config.App{
+		// replicas omitted: required, so this is a hard validation failure.
+		{Name: "agent", Type: "agent", Image: config.ImageRef{Alias: "agent:v1"}},
+	}}
+	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
+	store := &fakeStore{}
+
+	_, err := SyncOnce(context.Background(), syncer, store, nil, nil, time.Now())
+	if !errors.Is(err, ErrValidate) {
+		t.Fatalf("SyncOnce error = %v, want ErrValidate", err)
+	}
+	if store.replaced {
+		t.Errorf("SyncOnce called Replace despite a validation failure")
 	}
 }

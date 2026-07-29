@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS instances (
     tunnel_ip    TEXT NOT NULL DEFAULT '' -- WireGuard overlay address, app-assigned (internal/wireguard.AssignTunnelIPs)
 );
 
+CREATE TABLE IF NOT EXISTS apps (
+    name              TEXT NOT NULL PRIMARY KEY,
+    type              TEXT NOT NULL,
+    replicas          TEXT NOT NULL, -- "per-node" or a count (config.Replicas' MarshalText)
+    image_server      TEXT NOT NULL,
+    image_protocol    TEXT NOT NULL,
+    image_alias       TEXT NOT NULL,
+    image_fingerprint TEXT NOT NULL,
+    params            TEXT NOT NULL -- JSON object of string->string
+);
+
 -- wireguard_identity holds the web app's own long-lived WireGuard private
 -- key (internal/wireguard.LoadOrGenerateIdentity): generated once on first
 -- run, persisted thereafter. Single row, like sync_state.

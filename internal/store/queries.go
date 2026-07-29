@@ -11,6 +11,9 @@ const deleteNetworksSQL = `DELETE FROM networks`
 // -- name: DeleteInstances :exec
 const deleteInstancesSQL = `DELETE FROM instances`
 
+// -- name: DeleteApps :exec
+const deleteAppsSQL = `DELETE FROM apps`
+
 // -- name: ReplaceNetwork :exec
 const replaceNetworkSQL = `
 INSERT OR REPLACE INTO networks (name, cidr, gateway, dhcp_excluded_range, dns)
@@ -20,6 +23,11 @@ VALUES (?, ?, ?, ?, ?)`
 const replaceInstanceSQL = `
 INSERT OR REPLACE INTO instances (name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+// -- name: ReplaceApp :exec
+const replaceAppSQL = `
+INSERT OR REPLACE INTO apps (name, type, replicas, image_server, image_protocol, image_alias, image_fingerprint, params)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 // -- name: UpsertSyncState :exec
 const upsertSyncStateSQL = `
@@ -44,6 +52,10 @@ SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications,
 // -- name: GetInstance :one
 const getInstanceSQL = `
 SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances WHERE name = ?`
+
+// -- name: ListApps :many
+const listAppsSQL = `
+SELECT name, type, replicas, image_server, image_protocol, image_alias, image_fingerprint, params FROM apps ORDER BY name`
 
 // -- name: GetWireGuardIdentity :one
 const getWireGuardIdentitySQL = `SELECT private_key FROM wireguard_identity WHERE id = 1`

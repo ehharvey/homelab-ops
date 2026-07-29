@@ -69,7 +69,7 @@ applications: [incus]  # IncusOS seed applications — unrelated to `kind: App` 
 kind: App
 name: agent
 type: agent            # renderer-registry key
-replicas: per-node     # how many: a count, or `per-node`. Omitted → 1. Never *where*
+replicas: per-node     # how many: a count, or `per-node`. Required. Never *where*
 image:
   server: https://ghcr.io
   protocol: oci
