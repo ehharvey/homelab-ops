@@ -78,6 +78,7 @@ func (s *Syncer) Sync(ctx context.Context) (config.Config, string, error) {
 
 		cfg.Networks = append(cfg.Networks, parsed.Networks...)
 		cfg.Instances = append(cfg.Instances, parsed.Instances...)
+		cfg.Apps = append(cfg.Apps, parsed.Apps...)
 	}
 
 	return cfg, head.Hash().String(), nil
