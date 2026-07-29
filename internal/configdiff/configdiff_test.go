@@ -193,3 +193,94 @@ func TestLines(t *testing.T) {
 		t.Errorf("Lines() = %v, want %v", got, want)
 	}
 }
+
+func app(name, alias string) config.App {
+	return config.App{
+		Name:     name,
+		Type:     "some-renderer",
+		Replicas: config.Replicas{Count: 1},
+		Image:    config.ImageRef{Alias: alias},
+	}
+}
+
+func TestDiffAppAdded(t *testing.T) {
+	old := config.Config{}
+	newCfg := config.Config{Apps: []config.App{app("web-frontend", "some/image:v1")}}
+
+	got := Diff(old, newCfg)
+
+	want := Result{AddedApps: newCfg.Apps}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Diff() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDiffAppRemoved(t *testing.T) {
+	old := config.Config{Apps: []config.App{app("web-frontend", "some/image:v1")}}
+	newCfg := config.Config{}
+
+	got := Diff(old, newCfg)
+
+	want := Result{RemovedApps: old.Apps}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Diff() = %+v, want %+v", got, want)
+	}
+}
+
+// An agent image bump is an ordinary App-changed — the superseded
+// kind: AgentConfig design would have given it its own diff signal.
+func TestDiffAppChangedImage(t *testing.T) {
+	old := config.Config{Apps: []config.App{app("agent", "agent:v1")}}
+	newCfg := config.Config{Apps: []config.App{app("agent", "agent:v2")}}
+
+	got := Diff(old, newCfg)
+
+	want := Result{ChangedApps: []AppChange{{Name: "agent", Old: old.Apps[0], New: newCfg.Apps[0]}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Diff() = %+v, want %+v", got, want)
+	}
+}
+
+// Replicas is a scaling change an operator should see warned, so it must
+// register as a change on its own — not just image bumps.
+func TestDiffAppChangedReplicas(t *testing.T) {
+	oldApp := app("web-frontend", "some/image:v1")
+	newApp := oldApp
+	newApp.Replicas = config.Replicas{Count: 3}
+	old := config.Config{Apps: []config.App{oldApp}}
+	newCfg := config.Config{Apps: []config.App{newApp}}
+
+	got := Diff(old, newCfg)
+
+	want := Result{ChangedApps: []AppChange{{Name: "web-frontend", Old: oldApp, New: newApp}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Diff() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDiffAppNoChange(t *testing.T) {
+	cfg := config.Config{Apps: []config.App{app("agent", "agent:v1")}}
+
+	got := Diff(cfg, cfg)
+
+	if !got.Empty() {
+		t.Errorf("Diff(cfg, cfg) = %+v, want Empty()", got)
+	}
+}
+
+func TestLinesRendersApps(t *testing.T) {
+	r := Result{
+		AddedApps:   []config.App{app("added-app", "a:v1")},
+		ChangedApps: []AppChange{{Name: "changed-app"}},
+		RemovedApps: []config.App{app("removed-app", "r:v1")},
+	}
+
+	want := []string{
+		"+ app added-app added",
+		"~ app changed-app changed",
+		"- app removed-app removed",
+	}
+	if got := r.Lines(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Lines() = %v, want %v", got, want)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -102,11 +103,96 @@ type Instance struct {
 	TunnelIP netip.Addr `yaml:"-"`
 }
 
-// Config holds every Network and Instance document parsed from a fleet
+// Replicas is an App's cardinality: a fixed count, or one per known Instance
+// ("per-node" — the DaemonSet shape, used by the agent itself and by Alloy).
+// It implements encoding.TextUnmarshaler, exactly as Range does for a
+// Network's dhcp_excluded_range, so "3" and "per-node" both parse and are
+// syntactically validated at parse time (yaml.v3 honors TextUnmarshaler — see
+// ExampleNetwork_yamlUnmarshal). The field is required: the zero Replicas is
+// not a default meaning 1, it's an unset field Validate rejects.
+//
+// This is cardinality, NOT placement: it says how many, never where. A
+// placement field (targeting an Incus cluster group) is anticipated as a
+// separate field, invalid in combination with PerNode — see
+// docs/Out of Scope.md. App.Node was deleted precisely because it meant both
+// at once; Replicas must not inherit that conflation.
+type Replicas struct {
+	PerNode bool
+	Count   int
+}
+
+// perNode is the one non-numeric replicas value.
+const perNode = "per-node"
+
+// UnmarshalText parses "per-node" or a decimal count. An empty input yields
+// the zero Replicas with no error, mirroring Range: whether an unset field is
+// acceptable is Validate's call, not the parser's. A count that is zero or
+// negative parses here and is rejected by Validate too, exactly as Range
+// parses a start-after-end range and leaves that semantics to Validate.
+func (r *Replicas) UnmarshalText(text []byte) error {
+	s := strings.TrimSpace(string(text))
+	if s == "" {
+		*r = Replicas{}
+		return nil
+	}
+	if s == perNode {
+		*r = Replicas{PerNode: true}
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("replicas %q: want %q or a count", s, perNode)
+	}
+	*r = Replicas{Count: n}
+	return nil
+}
+
+// MarshalText renders "per-node" or the count, and the empty string for the
+// zero Replicas (mirroring Range's empty-string encoding of its zero value, so
+// the store's TEXT round-trip is lossless).
+func (r Replicas) MarshalText() ([]byte, error) {
+	switch {
+	case r.PerNode:
+		return []byte(perNode), nil
+	case r.Count == 0:
+		return []byte{}, nil
+	default:
+		return []byte(strconv.Itoa(r.Count)), nil
+	}
+}
+
+// ImageRef mirrors lxcapi.InstanceSource's remote-image fields closely enough
+// to build one directly. Confirmed real-world shape: Protocol "oci" with
+// Server "https://ghcr.io" pulls straight from GHCR (Incus's OCI remote
+// support, shared/cliconfig/remote.go); the local dev/validation loop instead
+// points Server at a docker-compose "registry" service.
+type ImageRef struct {
+	Server      string `yaml:"server,omitempty"`
+	Protocol    string `yaml:"protocol,omitempty"` // "oci" | "simplestreams" | "incus" | ""
+	Alias       string `yaml:"alias,omitempty"`
+	Fingerprint string `yaml:"fingerprint,omitempty"`
+}
+
+// App is a parsed `kind: App` document: a workload instance the app-manager
+// agent fleet reconciles against live Incus, via the renderer registered for
+// Type. Distinct from Instance.Applications (IncusOS host-level applications,
+// e.g. "incus" itself) — an App is a workload the agent manages, not a
+// host-level IncusOS application. No placement field: Incus's own scheduler
+// decides where an App runs in 0.x.
+type App struct {
+	Name     string            `yaml:"name"`     // unique across the fleet
+	Type     string            `yaml:"type"`     // renderer-registry key
+	Replicas Replicas          `yaml:"replicas"` // how many; required
+	Image    ImageRef          `yaml:"image"`
+	Params   map[string]string `yaml:"params,omitempty"` // opaque, renderer-specific passthrough
+}
+
+// Config holds every Network, Instance, and App document parsed from a fleet
 // definition file.
 type Config struct {
 	Networks  []Network
 	Instances []Instance
+	Apps      []App
 }
 
 type discriminator struct {
@@ -114,8 +200,9 @@ type discriminator struct {
 }
 
 // Parse reads a multi-document, k8s-style YAML fleet definition and returns
-// the parsed Networks and Instances. Each document must set `kind: Network`
-// or `kind: Instance`; any other or missing kind is an error.
+// the parsed Networks, Instances, and Apps. Each document must set
+// `kind: Network`, `kind: Instance`, or `kind: App`; any other or missing kind
+// is an error.
 func Parse(r io.Reader) (Config, error) {
 	var cfg Config
 
@@ -155,6 +242,15 @@ func Parse(r io.Reader) (Config, error) {
 				return Config{}, fmt.Errorf("decode document %d as Instance: %w", i, err)
 			}
 			cfg.Instances = append(cfg.Instances, doc.Instance)
+		case "App":
+			var doc struct {
+				Kind string `yaml:"kind"`
+				App  `yaml:",inline"`
+			}
+			if err := strictDecode(&node, &doc); err != nil {
+				return Config{}, fmt.Errorf("decode document %d as App: %w", i, err)
+			}
+			cfg.Apps = append(cfg.Apps, doc.App)
 		case "":
 			return Config{}, fmt.Errorf("document %d: missing required field %q", i, "kind")
 		default:

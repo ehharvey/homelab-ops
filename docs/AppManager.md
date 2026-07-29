@@ -24,7 +24,7 @@ This is a deliberate departure from a leaderless, partitioned design (each agent
 kind: App
 name: web-frontend   # unique across the fleet
 type: some-renderer  # renderer-registry key
-replicas: 1          # how many: a count, or `per-node`. Omitted → 1
+replicas: 1          # how many: a count, or `per-node`. Required
 image:
   server: https://ghcr.io
   protocol: oci
@@ -32,7 +32,7 @@ image:
 params: {}           # opaque, renderer-specific passthrough (e.g. extra env vars)
 ```
 
-- **`replicas` is cardinality — *how many*, never *where*.** A count (`3`), or `per-node` (one per known `kind: Instance`, synthesized by the leader each tick — the DaemonSet shape; see below). Omitted means 1. It's parsed by a small `encoding.TextUnmarshaler` type in `internal/config`, exactly as `Range` already is for `dhcp_excluded_range`, so `per-node` and `3` both land typed at parse time.
+- **`replicas` is cardinality — *how many*, never *where*.** A count (`3`), or `per-node` (one per known `kind: Instance`, synthesized by the leader each tick — the DaemonSet shape; see below). It's parsed by a small `encoding.TextUnmarshaler` type in `internal/config`, exactly as `Range` already is for `dhcp_excluded_range`, so `per-node` and `3` both land typed at parse time. **Required — there's no default.** Writing `replicas: 1` is cheap, and making every App state its cardinality outright beats saving a line: it also means an omitted field and a typo'd `replicas: 0` are one validation error rather than two behaviours, since yaml.v3 can't distinguish an absent key from a zero value at parse time (`internal/config`, `config.Validate`).
 - **No `node` field, and `replicas` is not a replacement for one.** Placement is Incus's problem in 0.x, not the operator's: `Desired()` builds the `InstancesPost` with no `Target`, so Incus's own scheduler decides — moot today since 0.x runs a single-member cluster anyway. When real placement logic is eventually needed (multi-member clusters with heterogeneous nodes), the intended mechanism is Incus's own **cluster groups** (tag members with a capability, target instance creation at the group) via a **separate** field — invalid in combination with `replicas: per-node` — rather than the operator naming individual nodes. `App.Node` was deleted precisely because it meant *how many* and *where* at once; keeping the two apart is why placement gets its own field rather than an overload of this one. See `docs/AppClasses.md` § Placement is a third axis, `docs/Decisions.md` § App Manager HA, and `docs/Out of Scope.md`. This also means the `App.Name`-keyed tagging the reconcile algorithm already uses (below) was never actually placement-dependent — dropping `node` cost nothing there.
 - `image` must set `alias` or `fingerprint`. `protocol: oci` pointing at `https://ghcr.io` is the production shape (Incus's OCI remote support — confirmed via the vendored `lxc/incus/v7` module's `ConnectOCI`); dev/validation points `server` at a local `registry:2` container instead.
 - No per-App `strategy` field: cutover style is fixed per renderer `type`, not configurable per App instance — a DB renderer and a k8s-node renderer are different renderers, not the same renderer with a flag. Which cutover shapes exist, and which one a given renderer is implementing, is `docs/AppClasses.md`.
@@ -108,7 +108,7 @@ Followers never run this loop; they only maintain the lease-election tick and th
 **The loop is keyed by `(App, member)`, not by `App`.** An App with `replicas: 3` has three members, each independently carrying its own generation — so the state machine below is the *inner* loop, run per member, and multi-instance costs one level of iteration rather than a different algorithm.
 
 Members are **ordinals within a fixed-count App**, tagged `user.homelab-ops.member` alongside `.generation`, and named `<app.name>-<ordinal>-g<generation>` (`pg-0-g0`, `pg-1-g0`, …). Two cases have exactly one member and no ordinal, so their naming stays `<app.name>-g<generation>` and the loop degenerates to what it would be if members didn't exist:
-- `replicas: 1` (the default).
+- `replicas: 1`.
 - Every **synthesized per-node value** — its node identity is already in its `Name` (`agent-node0`), so it doesn't need a member segment too. Per-node fan-out produces *N single-member Apps*, not one App with N members; that's what keeps `internal/apprenderer` unable to tell a synthesized value from a real one, exactly as before.
 
 **`max_parallel: 1`**: never act on two members of the same App in one tick. Different Apps still proceed independently — including the per-node agent values, which are separate Apps by the rule above, so **every node's agent still upgrades concurrently, fleet-wide, exactly as today** (this rule constrains a future `replicas: 3` database or quorum member, and changes nothing for anything 0.x declares). It's a hard requirement rather than a throttle: for a quorum member (`docs/AppClasses.md` class 5) upgrading two of three at once loses quorum outright.

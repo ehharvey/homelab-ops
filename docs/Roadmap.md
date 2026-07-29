@@ -60,10 +60,10 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   proven by managing its own fleet (blue-green self-upgrade, driven
   fleet-wide by whichever agent is leader) — see #92,
   `docs/Decisions.md` § App Manager HA. Built in dependency order:
-  - [ ] `kind: App` schema + store/configdiff plumbing — no runtime
+  - [x] `kind: App` schema + store/configdiff plumbing — no runtime
     behaviour, pure parse/validate/store, prerequisite for every step
     below; `App` carries a cardinality field rather than a separate
-    `kind: AgentConfig` (see `docs/AppClasses.md`) — see #97
+    `kind: AgentConfig` (see `docs/AppClasses.md`): DONE; see #97
   - [ ] `internal/leaderelection` — an ETag-conditional-write lease over a
     dedicated Incus project, giving the fleet one elected leader with no
     etcd/Consul/Raft — see #108
