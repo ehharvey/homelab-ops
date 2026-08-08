@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/go-git/go-billy/v5 v5.9.1
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/lxc/incus/v7 v7.3.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.54.0
