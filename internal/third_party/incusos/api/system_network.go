@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ c7d492910b04a0b3a94ff18240967500f8395a84
+// Vendored from github.com/lxc/incus-os @ 24916c76d6e31b9b3db7a58598e8572e27b47bf6
 // (incus-osd/api/system_network.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Unmodified.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
@@ -26,6 +26,8 @@ const (
 )
 
 // SystemNetwork defines a struct to hold the three types of supported network configuration.
+//
+// swagger:model
 type SystemNetwork struct {
 	Config *SystemNetworkConfig `json:"config" yaml:"config"`
 
