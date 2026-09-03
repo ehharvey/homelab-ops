@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ c7d492910b04a0b3a94ff18240967500f8395a84
+// Vendored from github.com/lxc/incus-os @ 79a20aa517bd9469ad9989204f2bc0f6b26470c9
 // (incus-osd/api/seed/incus.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Unmodified — this one genuinely needs the real github.com/lxc/incus/v7/shared/api types (Incus's own InitPreseed/CertificatesPost), so its import is left as upstream wrote it rather than rewritten to our vendored package.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
