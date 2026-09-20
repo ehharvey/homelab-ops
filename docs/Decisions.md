@@ -466,6 +466,14 @@ envelope-decode logic (already three standalone functions in
 
 ## 17. App Manager HA — leader/follower via Incus-native lease (#92)
 
+> **Superseded in part — see §25.** The Incus ETag-CAS lease below (the
+> coordination project, the lease object, renewal at 1/3 TTL, "stop renewing
+> on self version mismatch") was replaced after #160 measured that Incus's
+> `If-Match` is not a compare-and-swap. Leader election is now a pluggable
+> interface, shipping operator-designated leadership first. Everything else
+> here — one leader, leader-only fleet reconciliation, self-recognition,
+> blue-green — stands.
+
 #98's original design ran exactly one app-manager agent for the whole
 0.x fleet (trivially "the one node" today), reconciling only that node's
 own Apps, with no leader concept — safety came from partitioning
@@ -1464,8 +1472,82 @@ path has exposed the next latent defect underneath. Worth expecting a third:
 until an assertion has actually passed, nothing downstream of it has been
 exercised, and "the suite is green" says only that no one has looked yet.
 
+## 25. Leader election: designated primary now, pluggable, ranked-over-Incus later (#108, #160)
+
+§17 chose an Incus ETag-conditional-write lease. #160's spike found the primitive doesn't do what that design needs, and this section replaces it. §17's lease bullets are superseded; the rest of §17 (one leader, leader-only fleet reconciliation, self-recognition, blue-green) stands.
+
+### What the spike found (Incus 7.3, non-clustered; `scripts/validate/incus-etag-write-guards-lost-updates-not-races.sh`)
+
+§17 claimed Incus's conflict rejection "is the entire concurrency mechanism". It isn't:
+
+| Probe | Result |
+|---|---|
+| Matching `If-Match` on instance `PATCH`/`PUT` | lands (config-only `PATCH` on a never-started instance is synchronous, 200) |
+| Stale `If-Match` | 412, nothing changes |
+| A one-key `user.*` change | moves the ETag, so a renewal is visible |
+| 16 concurrent writers, one shared ETag, on an **instance** | usually exactly one wins, but ~15% of rounds admit **two** |
+| Same race on a **project** | 4–15 of 16 writers win per round |
+| 16 concurrent `POST`s of one **profile** name | exactly one 201 in 8/8 (then 10/10) rounds; losers get a raw 500 |
+| 16 concurrent `POST`s of one **instance** name | 9–16 accepted (202): creation is async, the conflict surfaces later |
+
+The Incus REST docs promise only this: send the ETag as `If-Match` "to avoid race conditions … This will cause Incus to fail the request if the object was modified between GET and PUT." That is lost-update protection for one client's GET-then-PUT, not exactly-one-winner under contention, and `PATCH` accepting it is observed behaviour, not documented. The check and the write are evidently not atomic (cause inferred, not confirmed against `incusd`'s source). Two winners both believe they lead; the fencing `term` can't help, since both read the same state and write the same `term`+1.
+
+Unverified: the clustered path. All numbers are from a non-clustered host, and 0.x runs a one-member cluster.
+
+### The design space, and why each was or wasn't chosen
+
+Requirement: **at most one agent performs leader-only writes at a time.** Idle periods of minutes are acceptable (0.x's HA bar is minutes-scale RTO, §17); zero leaders is safe, two is not.
+
+1. **Incus instance lease, ETag CAS + read-after** (§17's design, with a token-and-settle-delay workaround). *Rejected.* Correct only if the settle delay exceeds a race window that can't be bounded or documented.
+2. **Incus profile-create arbiter** (`lease-<term>` profiles in the coordination project; a database uniqueness constraint picks exactly one creator). *Viable fallback, not chosen.* Real arbitration with no new dependency, and the term is the name so fencing is free. Costs: relies on an undocumented property; losers see a 500 that must be confirmed by re-reading; old terms must be pruned. Profile names cap at **64 characters** (measured: 64 accepted, 65 rejected); `lease-` plus an int64 is at most 25, so the limit never binds and the counter never wraps in practice, but the term must be parsed as a number (never sorted as a string) and reaching int64 max must be a hard stop, not a wrap. Unclustered-only evidence.
+3. **External lease service (etcd, Consul).** *Rejected.* Real HA needs three members, which on one physical node is no better than today; and it is a class-5 quorum App (`docs/AppClasses.md`) deployed by the manager that depends on it — a bootstrap circularity. §17 had already ruled out a new coordination dependency.
+4. **Embedded `hashicorp/raft` in the agent.** *Rejected.* It makes the agent stateful (a log and stable store that must survive blue-green replacement, and two instances can't share one identity), makes it a class-5 quorum member (whose upgrades need `max_parallel: 1`, contradicting fleet-wide concurrent agent upgrades), turns every upgrade into a Raft membership change run by the reconcile loop, and adds a peer network. Incus is already a dqlite/Raft cluster, so this duplicates a consensus group that exists. Gains nothing in 0.x, which has one node.
+5. **`hashicorp/memberlist` (SWIM gossip).** *Rejected.* It provides membership and failure detection, not election, so a rule (highest rank) is still needed. Its failure detector runs over a different path than the actions: agents that can't gossip but can all reach Incus each see the others as dead and elect themselves, producing extra leaders. Heartbeating *through Incus* makes liveness and the ability to act one channel.
+6. **Kubernetes leases / leaderless deterministic apply.** *Deferred, and not a substitute.* Workloads inside a cluster can be applied by several managers as no-ops (server-side apply, pure rendering, a recorded applied revision to stop flip-flop between managers on different git commits, ownership-labelled pruning), or better handed to an in-cluster controller that uses Kubernetes Leases. But the cluster's own lifecycle (bootstrap, control-plane join, drain, upgrade, etcd membership) is choreographed and single-actor, and it can't use the cluster's leases to decide who builds the cluster. Kubernetes would sit above election, not replace it. See §19.
+7. **Temporal.** *Deferred.* It removes the leader entirely — a fixed workflow ID allows one reconcile per App, workers compete for tasks, a Schedule with overlap policy `SKIP` replaces the tick — moving the single point of coordination to the Temporal server. Hosting it needs a database (a stateful App the manager can't safely upgrade with itself) or a cloud VM. `Renderer.Promote` is the seam: the first class-3 renderer can start a workflow there without Temporal becoming a tier-0 dependency of everything. If Temporal is adopted, this section's election machinery is moot.
+8. **Web app as arbiter** (grants leases from a cloud VM). *Rejected by the operator.* It would make the web app a hard availability dependency for management.
+9. **Ranked election over Incus heartbeats.** *Specified below; deferred.*
+10. **Operator-designated primary with epoch fencing.** ***Chosen for 0.x.***
+
+### Decision
+
+Leader election is an interface, `internal/leaderelection.Elector`, answering `MayAct(ctx) (Decision, error)`. Callers ask before every leader-only action and treat an error as "not leader". 0.x ships one implementation, `Designated`; a second (ranked) can replace it with no change to the reconcile loop.
+
+**Designated.** Git config names a `Primary` node and a monotonic `Epoch`. An agent may act iff it runs on the designated primary *node*, no agent has recorded an epoch higher than the designation's, and it is the one instance on that node that should act: not draining, with no older non-draining instance beside it. The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself. Every agent, primary or not, records the epoch it sees on its own instance (a `user.*` key it alone writes — no CAS, no contention) *before* reading its peers'; the record is a ratchet that never lowers. A resurrected old primary on a stale git checkout therefore stands down the moment any peer has seen the newer designation.
+
+The operator's half of the protocol is what makes it a single-writer guarantee: **fence the old primary (stop or delete its agent instance) before raising the epoch.** The code holds no timers and detects no failures; it is a pure function of the designation and the recorded epochs. The web app already polls, so it alerts on a missing primary heartbeat; a person acts on it. Failover time is however long that takes, which is within 0.x's minutes-scale bar, and in 0.x — one physical node — there is no second node to fail over to, so nothing is lost.
+
+Consequence for the rest of §17: with one designated primary, the lease renewal and "stop renewing on self version mismatch" (#109) reduce to the primary being told, by a designation change, to step down.
+
+### Deferred: ranked election over Incus (the automated implementation)
+
+Recorded so it can be built later without re-deriving it. Everything registers against the same `Elector`.
+
+*Idea.* Every agent runs the same pure function over the same `incus list` snapshot; the leader is the highest-ranked (node name, then instance name) member that looks alive. Mutual exclusion is built from single-writer registers (each agent's own `user.*` keys — Dekker/bakery style), so it needs no CAS; timing enters only to recover from a crash.
+
+*Protocol.* Constants (proposals, untuned): settle `S`≈30s, self-fence lease `L`≈60s, takeover dead-time `D`≈5min, tick≈5s.
+1. **Claim.** Publish `claim=<rank, epoch>` on your own instance; wait `S`.
+2. **Verify.** Read every peer. If a live claim outranks yours, withdraw. Publish-then-read means of two simultaneous claimants at least one sees the other, and the lower rank yields.
+3. **Self-fence.** Act only while your last successful heartbeat write is younger than `L`. If Incus is unreachable you stop acting after `L`: the ability to heartbeat and the ability to act are one channel.
+4. **Liveness** is judged on the *observer's* clock — a peer is alive if its counter changed within the TTL — so no clock is compared across machines. A freshly started agent stays passive for one TTL.
+5. **Takeover of a crashed leader** only after its heartbeat has been unchanged for `D`, with `D` well above `L` plus any pause and drift margin.
+6. **Planned handoff is fast.** A draining leader clears its claim and waits out its longest in-flight action; peers may claim immediately. Only a crash costs `D`.
+7. **Guard every action** with a hard per-call deadline under `L`, and re-verify immediately before it.
+
+*Guarantee, and its assumptions.* No two leaders unless a process is frozen longer than the margin between its last check and its API call, or clock rates drift beyond it — the assumption every lease system (etcd, Chubby) makes; no protocol in an asynchronous system can promise more. Minutes of idle time buy a very large margin. Before building it, verify what is *assumed*: that one agent's write is visible to another's next read (measure stale reads), and the clustered path.
+
+*Cost.* One small config write per agent per tick and one list read; ~300–500 lines of Go plus a fake clock and simulator; three interacting timing knobs; real-Incus validation that freezes, partitions and kills a leader mid-action. Roughly 5× the code and 10× the validation of `Designated`, which is why it is deferred.
+
+### Consequences
+
+- `internal/leaderelection` (#108) ships the interface and `Designated`. Where the designation is parsed from git, and the Incus-backed `PeerEpochs` (a `user.*` key on the agent's own instance), belong to #101's wiring.
+- The `homelab-ops-meta` coordination project, the lease instance, and lease renewal at 1/3 TTL (§17, `docs/AppManager.md`) are dropped. Nothing needs the project; #99/#101 need not create it.
+- The spike script stays as characterization: it guards against re-adopting If-Match as a CAS, and an upgrade that makes it atomic would be news worth noticing (a change in its informational output is not a failure).
+- Two-instance colocation on one member no longer "proves the lease"; 0.x validates the designation gate and fencing instead (#103 is reworded accordingly).
+
 ## Sources consulted
 
+- [Incus — REST API ("PUT vs PATCH": ETag / `If-Match`)](https://linuxcontainers.org/incus/docs/main/rest-api/) (§25: the documented contract is lost-update protection for one client's GET-then-PUT, not exactly-one-winner)
 - [IncusOS — Installation seed reference](https://linuxcontainers.org/incus-os/docs/main/reference/seed/)
 - [IncusOS — System security](https://linuxcontainers.org/incus-os/docs/main/reference/security/)
 - [IncusOS — Operations Center application](https://linuxcontainers.org/incus-os/docs/main/reference/applications/operations-center/)

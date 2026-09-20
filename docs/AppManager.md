@@ -4,15 +4,15 @@ Purpose
 - Define `kind: App`: a workload instance the app-manager agent fleet (#92) reconciles against live Incus, via a small renderer registry. Placement is Incus's problem, not the operator's — see `kind: App` schema below.
 - Run one agent instance **per node**, electing a single fleet-wide leader — not one agent for the whole cluster — so the reconciliation loop survives losing whichever node happens to be running it. Incus itself has no mechanism to relocate a stateless instance onto a healthy node without shared storage (ceph) backing it, so the agent has to already be running everywhere ahead of time.
 - Give every App type a blue-green upgrade path — create a candidate alongside the current instance, health-check it, then promote or revert — without hardcoding one cutover algorithm for every App type.
-- Prove the mechanism by having the agent fleet manage its own upgrade (declared like any other App, via `replicas: per-node`), with no operator intervention, no reconciliation gap, and survival of losing the node currently hosting the leader.
+- Prove the mechanism by having the agent fleet manage its own upgrade (declared like any other App, via `replicas: per-node`), with no operator intervention for a routine upgrade and no reconciliation gap while it happens. Losing the primary is an operator failover (fence, then raise the epoch), not an automatic one — see § Leader election.
 
-This doc complements `docs/Architecture.md` (system-wide shape) and `docs/Ipam.md` (the sibling per-subsystem policy doc this one mirrors); `docs/AppClasses.md` is its companion reference, classifying the workloads this mechanism runs (which cutover shape a renderer implements, and why the registry is curated). Implementation-level detail lives in `internal/config` (schema), `internal/apprenderer` (registry + fleet reconcile algorithm), `internal/apprenderer/agentrenderer` (the built-in `agent` renderer), and `internal/leaderelection` (the lease/CAS mechanism). See `docs/Decisions.md` § App Manager HA for the full design rationale and the trade-offs accepted along the way.
+This doc complements `docs/Architecture.md` (system-wide shape) and `docs/Ipam.md` (the sibling per-subsystem policy doc this one mirrors); `docs/AppClasses.md` is its companion reference, classifying the workloads this mechanism runs (which cutover shape a renderer implements, and why the registry is curated). Implementation-level detail lives in `internal/config` (schema), `internal/apprenderer` (registry + fleet reconcile algorithm), `internal/apprenderer/agentrenderer` (the built-in `agent` renderer), and `internal/leaderelection` (the pluggable `Elector`; `Designated` in 0.x). See `docs/Decisions.md` § App Manager HA for the full design rationale and the trade-offs accepted along the way.
 
 ## Deployment topology
 
 One agent instance runs per node — but this is **not** operator-declared placement. The agent is an ordinary `kind: App` declaring `replicas: per-node` (see schema below): the leader synthesizes one App-shaped value per known `kind: Instance` from it, directly from the fleet's node list. Adding a node to the fleet is enough to get an agent on it; nothing node-specific needs to be authored for the agent. This is cardinality, not placement — the operator says *how many* ("one per node"), never *where* (see `docs/AppClasses.md` § Placement is a third axis).
 
-Every agent process participates in leader election every tick; exactly one is ever active as **leader**, doing all reconciliation work fleet-wide (every App, real or synthesized). The rest are **followers**: they compete for the lease and keep their own instance's heartbeat alive, but otherwise do nothing — no independent per-node reconciliation, no self-initiated upgrades.
+Every agent process asks the `Elector` every tick; exactly one is ever active as **leader**, doing all reconciliation work fleet-wide (every App, real or synthesized). The rest are **followers**: they record the epoch they see and keep their own instance's heartbeat alive, but otherwise do nothing — no independent per-node reconciliation, no self-initiated upgrades.
 
 This is a deliberate departure from a leaderless, partitioned design (each agent reconciling only its own node's Apps): a single active reconciler avoids two agents racing to act on the same App, and — combined with agents already running on every node — gives the whole mechanism HA without needing Incus to relocate anything.
 
@@ -72,7 +72,7 @@ type Renderer interface {
 This is the seam for renderer-specific cutover behavior instead of one hardcoded blue-green algorithm. **`docs/AppClasses.md` is the reference for which cutover shapes exist** — it classifies Apps by what blue/green *overlap* costs, which is what determines how much work `Promote` has to do. In its terms:
 - An **asymmetric-handover** renderer (class 3 — e.g. a future database App, blue = read/write, green = read-only) does real promotion work in `Promote` — a failover/handshake before the old instance is safe to delete.
 - A **symmetric scale-out** renderer (class 4 — e.g. Incus-hosted k8s worker nodes, both blue and green can serve/write at once) can make `Promote` a no-op or a short drain.
-- The built-in `agent` renderer is a **lease-guarded singleton** (class 2, not "stateless"): its `Promote` is a no-op returning the old instance as safe to retire, but the reason overlap is *safe* is the lease — only the holder acts, so a candidate running alongside the current leader does nothing until it wins an election. The App *is* the blue-green control plane being exercised, not a workload sitting on top of it.
+- The built-in `agent` renderer is a **leader-gated singleton** (class 2, not "stateless"): its `Promote` is a no-op returning the old instance as safe to retire, but the reason overlap is *safe* is the `Elector` — only the one instance it names acts, so a candidate running alongside the current leader does nothing until the old leader drains. The App *is* the blue-green control plane being exercised, not a workload sitting on top of it.
 
 Registration is explicit (`apprenderer.Register("agent", agentrenderer.Renderer{})`, called from `cmd/agent`'s own setup), not a self-registering blank import — v1 ships exactly one renderer.
 
@@ -80,20 +80,25 @@ Registration is explicit (`apprenderer.Register("agent", agentrenderer.Renderer{
 
 ## Leader election
 
-A dedicated Incus project (e.g. `homelab-ops-meta`) holds a single never-started, config-bearing instance as the durable coordination record — the same "tag an Incus object, don't keep a separate store" philosophy the reconcile algorithm already uses for App generations, extended to fleet-wide coordination state. This project holds **only** the lease object below — there's no second "desired version" object; the leader detects its own staleness the same generic way it detects any App's version bump (see Fleet-wide blue-green upgrade).
+Leader election is a **pluggable interface** (`internal/leaderelection.Elector`: `MayAct(ctx) (Decision, error)`); the reconcile loop asks it before every leader-only action and treats an error as "not leader". "Am I leader" is always re-derived, never cached. What sits behind the interface is `docs/Decisions.md` §25's call; this section describes what 0.x ships.
 
-- **Leader lease object**: `user.homelab-ops.lease.owner` (the agent instance holding it), `user.homelab-ops.lease.expiry` (RFC3339), `user.homelab-ops.lease.term` (a monotonically incrementing fencing counter, bumped on each new acquisition — cheap insurance against a stale writer acting after a handoff).
-- **Acquisition/renewal** happens via Incus's ETag/`If-Match` conditional-write support: every agent, every tick, attempts to acquire-or-renew the lease with a conditional write keyed on the last-seen ETag. Only one write ever lands per contested tick — Incus's own conflict rejection is the entire concurrency mechanism, no separate distributed lock.
-- **Renewal cadence is faster than the TTL** (e.g. renew at 1/3 of the lease lifetime) specifically to make losing the lease to a false expiry a non-event during normal operation — this is what "re-lease itself more frequently to avoid leader churn" means in practice.
-- **"Am I leader" must always be re-derived from the last successful write**, never cached — a process that *believes* it's leader (e.g. after a GC-style pause) must re-check the lease before taking any leader-only action, since only the CAS write is authoritative.
-- **Exactly one leader.** No sharded/multi-leader variant is used: splitting reconciliation work across simultaneously-active leaders reintroduces the coordination problem this design exists to avoid, for a scale this project doesn't operate at.
-- **Incus's live instance state remains the source of truth for everything else.** The coordination project only ever holds a hint (the lease) — never a competing record of "what's actually running." That's still derived from `incus list` alone, exactly as the original per-node design already established.
+**0.x ships `Designated`: an operator-designated primary with epoch fencing.**
 
-### Scope note: this requires Incus running as a real cluster
+- **The designation** lives in git config: a `Primary` node and a monotonic `Epoch`. It names a *node*, not an instance, so the agent's own blue-green self-upgrade needs no designation change.
+- **Every agent records the epoch it sees** on its own instance (a `user.*` key only it writes — no compare-and-swap anywhere), primary or not, *before* reading its peers'. The record is a ratchet that never lowers.
+- **An agent acts iff** it runs on the primary node, no agent has recorded a higher epoch (so a stale git checkout isn't obeyed), and it is the one instance on that node that should act: not draining, no older non-draining instance beside it.
+- **Self-upgrade hand-off.** The old leader creates its candidate as for any App, then — once it sees the candidate sustained-healthy — marks itself `draining` (#109). The candidate now leads, runs `Promote`, and deletes the old instance; the old one never deletes itself.
+- **Failover is the operator's.** The web app already polls and alerts on a missing primary heartbeat; a person **fences the old primary (stops or deletes its agent instance), then raises the epoch** naming a new primary. That ordering is what makes this a single-writer guarantee: the code holds no timers and detects no failures. A resurrected old primary on a stale checkout stands down once any peer has recorded the new epoch. Failover time is however long the person takes, within this project's minutes-scale RTO — and 0.x provisions one physical node, so there is no second node to fail over to yet.
 
-Any agent, wherever it happens to run, needs to read/write the same lease object and reach every node's instances — which only works if Incus is initialized as a cluster (even a one-member one, as 0.x runs today) rather than a bare per-node daemon. See `docs/Decisions.md` § App Manager HA for the corrected single-node framing this implies.
+**Why not an Incus-native lease.** #160 measured that Incus's `If-Match` is a lost-update guard, not a compare-and-swap: with 16 concurrent writers on one ETag about 15% of rounds admit two winners. The project-based variant admits most writers. §25 records that evidence and every alternative weighed (a profile-create arbiter, etcd/Consul, embedded Raft, memberlist, Kubernetes leases, Temporal, a web-app arbiter).
 
-**What 0.x actually validates.** 0.x provisions one physical node only, so there's only ever one real Incus cluster member — "leader failover" in this phase means multiple agent *instances* (one per declared `Instance`, all colocated on that single member) contesting the lease, proving the acquire/renew/handoff mechanism itself. It does not prove surviving the loss of an actual physical node, which additionally needs Incus's own dqlite fault-tolerance (an odd member count ≥3) once real multi-member clustering lands — see `docs/Decisions.md` § App Manager HA's trade-offs and #92's done-when.
+**Automated election is deferred, not dropped.** §25 specifies *ranked election over Incus heartbeats* — a register-based claim/verify protocol with self-fencing and a takeover dead-time — precisely enough to build later behind the same interface, plus what to verify first. Choosing it later changes who gets designated, not the reconcile loop.
+
+### Scope note: this still requires Incus running as a real cluster
+
+Any agent, wherever it runs, needs to read every other agent's published state and reach every node's instances — which only works if Incus is initialized as a cluster (even a one-member one, as 0.x runs today) rather than a bare per-node daemon. See `docs/Decisions.md` § App Manager HA for the corrected single-node framing this implies.
+
+**What 0.x actually validates.** With one physical node there is only one real Incus cluster member, so this validates the designation gate and epoch fencing (a stale-checkout primary stands down; exactly one instance acts through a self-upgrade), not survival of a physical node's loss. That additionally needs real multi-member Incus clustering with an odd member count ≥3 — see `docs/Decisions.md` § App Manager HA and #92's done-when.
 
 ## Reconcile algorithm (leader-only, fleet-wide)
 
@@ -103,7 +108,7 @@ Only the current leader runs this loop, over the union of two App sets, each ind
 1. Every real, git-declared `App` (no `Node` filter — placement is Incus's problem, see schema above).
 2. For every App declaring `replicas: per-node`, one synthesized `App` per known `Instance`, built fresh each tick — never parsed from git as literal documents. In 0.x that's the `agent` App; Alloy (#77) is the next one.
 
-Followers never run this loop; they only maintain the lease-election tick and their own heartbeat.
+Followers never run this loop; they only record the epoch and keep their own heartbeat.
 
 **The loop is keyed by `(App, member)`, not by `App`.** An App with `replicas: 3` has three members, each independently carrying its own generation — so the state machine below is the *inner* loop, run per member, and multi-instance costs one level of iteration rather than a different algorithm.
 
@@ -145,7 +150,7 @@ The "two matches" branch is what makes this restart-safe with zero external stat
 
 One rule lets a single, unmodified reconcile function handle self-management as a special case of the general algorithm, and guarantees the leader never issues a delete against its own running container.
 
-**`Healthy` keeps its original meaning** — freshness of a heartbeat file the agent's own process writes on every tick. This write is independent of leader/follower status: every agent process writes its own heartbeat regardless of whether it currently holds the lease, purely so the check works whenever the *leader* evaluates that instance during a blue-green transition. This is not a new liveness/watchdog concept layered on top — ordinary instance disappearance is already covered by the zero-match → recreate branch above, and day-to-day process liveness inside an already-converged instance is Incus's own restart policy's job, not the leader's.
+**`Healthy` keeps its original meaning** — freshness of a heartbeat file the agent's own process writes on every tick. This write is independent of leader/follower status: every agent process writes its own heartbeat regardless of whether it currently leads, purely so the check works whenever the *leader* evaluates that instance during a blue-green transition. This is not a new liveness/watchdog concept layered on top — ordinary instance disappearance is already covered by the zero-match → recreate branch above, and day-to-day process liveness inside an already-converged instance is Incus's own restart policy's job, not the leader's.
 
 ## Fleet-wide blue-green upgrade: one mechanism, not two
 
@@ -156,24 +161,25 @@ Followers never self-initiate anything, so a follower that crashes before ever g
 ```mermaid
 sequenceDiagram
     participant Git as git config
-    participant Old as old leader (node A)
+    participant Old as old leader (primary node, gen N)
     participant Incus as cluster-wide Incus
-    participant New as new leader (node B, was follower)
+    participant New as candidate (same node, gen N+1)
 
     Git->>Old: agent App's image bump observed (next tick)
-    Old->>Incus: ReconcileFleet creates every stale member's<br/>candidate generation, including its own (node A: gen N+1)
-    Note over Old,Incus: node A now has both gen N (old leader, self) and gen N+1 (candidate)<br/>every other node's agent member gets the same candidate-creation treatment
-    Old->>Old: notices its own member's image is now stale<br/>(same generic check ReconcileFleet already ran)
-    Old->>Old: stop renewing lease (self-recognition: never delete self)
-    Note over Old,New: lease expires — New (already running new image, e.g. on node B) wins next CAS acquisition
-    New->>New: becomes leader
+    Old->>Incus: ReconcileFleet creates every stale member's<br/>candidate generation, including its own (gen N+1)
+    Note over Old,New: the primary node now has both gen N (leading) and gen N+1 (candidate)<br/>the Elector names only the older non-draining instance, so N+1 does nothing yet
+    Old->>Incus: polls N+1's heartbeat until sustained healthy
+    Old->>Old: own member is stale and candidate is sustained-healthy →<br/>set draining (never delete self)
+    New->>New: Elector: N is draining → N+1 leads
     New->>Incus: ReconcileFleet resumes every in-flight App from live state alone
-    New->>Incus: node A's agent member is "two matches" (N, N+1) → poll N+1 healthy → Promote → delete N
-    Incus--)Old: gen N (old leader's own instance) torn down as a side effect
+    New->>Incus: this node's agent member is "two matches" (N, N+1) → Promote → delete N
+    Incus--)Old: gen N torn down as a side effect
     New->>Incus: continues fleet-wide reconciliation alone, including cleanup<br/>of every other node's stale old-generation agent instances
 ```
 
-Green's own `main()` never waits for a handoff signal — the moment the new leader is elected, it resumes fleet reconciliation purely from what `incus list` shows, with no memory of what the old leader was doing. The old leader never deletes itself; its own instance is torn down as a side effect of the new leader's ordinary `Promote`/delete call once healthy, exactly the same as any other App's handoff, just now potentially executed by a *different node's* process than the one that created the candidate.
+The candidate's own `main()` never waits for a handoff signal — the moment the `Elector` names it, it resumes fleet reconciliation purely from what `incus list` shows, with no memory of what the old leader was doing. The old leader never deletes itself; its own instance is torn down as a side effect of the new leader's ordinary `Promote`/delete call, exactly the same as any other App's handoff. Because the designation names a *node*, no operator step is needed for a routine agent upgrade; a designation change is only for failover.
+
+If the candidate never becomes healthy the old leader is still leading and reverts as normal (deadline exceeded → delete the candidate, keep N). If a candidate passes the gate and then breaks once leading, the fleet is unmanaged until the operator reverts the agent's `image` in git or fails over; the web app's missing-heartbeat alert is what surfaces it.
 
 ## Prior art
 
@@ -182,10 +188,10 @@ This design's shape — create a candidate alongside the current instance, healt
 - **Nomad's [`update` stanza](https://developer.hashicorp.com/nomad/docs/job-specification/update)** — `canary`/`max_parallel`/`min_healthy_time`/`healthy_deadline`/`auto_revert`/`auto_promote`: canary allocations run alongside old ones, get health-evaluated, then are promoted (old allocations stopped) or auto-reverted. This is the direct model for the create-candidate/health-poll/promote-or-revert loop above — `min_healthy_time` and `healthy_deadline` specifically are directly implemented (the `healthy-since` tag and `MinHealthyDuration`/overall-deadline pair above), not just loose inspiration. Nomad's own guidance that host-volume-pinned singleton services can't truly canary (only one allocation can hold the volume) and instead do destructive updates, or app-level replication for read replicas, is exactly why this design leaves single-writer cutover semantics to each `Renderer.Promote` rather than a generic volume-aware canary mechanism. `auto_revert` is also directly implemented (deadline-exceeded → delete candidate, keep old); `auto_promote` has no analog here — promotion is always automatic once sustained-healthy, there's no separate manual-promotion mode.
 - **Kubernetes' [Recreate vs. RollingUpdate](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy)** deployment strategies, and the replica-1 StatefulSet shape more generally — this project's dominant workload shape (one active instance per App) is closer to a StatefulSet than a horizontally-scaled Deployment.
 - **[Argo Rollouts' BlueGreen strategy](https://argo-rollouts.readthedocs.io/en/stable/features/bluegreen/)** — preview service, analysis, promotion, `scaleDownDelay` for fast rollback. The candidate/health-poll/promote shape above is a direct, much-simplified descendant of this.
-- **Lease-based leader election** (etcd/Consul-style, or Kubernetes' own `client-go leaderelection` package built on the same CAS-lease idea) — the model for the acquire/renew/fencing-term mechanism above, minus the extra dependency: an ETag-conditional write against an Incus instance object stands in for etcd/Consul's own CAS primitive, since the project already needs Incus reachability everywhere and doesn't want a second coordination service.
+- **Operator-designated leadership**, the shape of a manually-failed-over primary (a Postgres primary without Patroni, or a Redis primary without Sentinel): a named primary plus a monotonic epoch that fences a stale writer, with a person doing failover. The lease-based alternatives — etcd/Consul-style, or Kubernetes' own `client-go leaderelection` — were weighed and set aside; `docs/Decisions.md` §25 records why (Incus's ETag write isn't a compare-and-swap; the external services are class-5 quorum Apps deployed by the manager that depends on them), and specifies the automated ranked-over-Incus election to build behind the same interface later.
 - **Incus cluster groups** (Incus's own capability-tagging mechanism for targeting instance creation at a group of members rather than one named member) — the anticipated foundation for real placement, if/when this project needs it (see `kind: App` schema above and `docs/Out of Scope.md`), rather than a hand-rolled scheduler.
 
-What was deliberately **not** carried over, and why: a distributed scheduler with bin-packing/placement (`kind: App` has no placement field at all in 0.x — this design only makes the *coordinator* HA, not workload placement; see `docs/Out of Scope.md`); cluster-wide canary traffic shifting (no load balancer/service mesh in scope — a renderer-specific `Promote` is the entire cutover surface); analysis-template-driven automated promotion (health is a single renderer-supplied boolean check, gated by sustained duration as above, not a metrics-driven analysis pipeline); **post-promotion auto-rollback** (Argo Rollouts' `scaleDownDelay` keeps the old ReplicaSet around briefly after promotion specifically so a fast rollback is possible if the new version degrades after taking traffic — this project deletes the old generation on promotion and has no equivalent: a version degrading *after* promotion isn't auto-detected or auto-reverted, only the pre-promotion sustained-health gate above guards against that, and only up to `MinHealthyDuration`'s window; see "Automatic rollback after a successful App promotion" in `docs/Out of Scope.md` and `docs/Decisions.md` § App Manager HA's leadership-churn trade-off); Raft/multi-node consensus for the lease itself (a single CAS-guarded object is enough at this project's scale and lease-churn tolerance — no need to reimplement etcd's replication). All are proportionate to this project's actual scale and HA requirements, which deliberately don't match Kubernetes/Nomad/etcd's (see #92's context: several-minutes RTO is fine, and the dominant shape is one instance per App, not a horizontally-scaled fleet).
+What was deliberately **not** carried over, and why: a distributed scheduler with bin-packing/placement (`kind: App` has no placement field at all in 0.x — this design only makes the *coordinator* HA, not workload placement; see `docs/Out of Scope.md`); cluster-wide canary traffic shifting (no load balancer/service mesh in scope — a renderer-specific `Promote` is the entire cutover surface); analysis-template-driven automated promotion (health is a single renderer-supplied boolean check, gated by sustained duration as above, not a metrics-driven analysis pipeline); **post-promotion auto-rollback** (Argo Rollouts' `scaleDownDelay` keeps the old ReplicaSet around briefly after promotion specifically so a fast rollback is possible if the new version degrades after taking traffic — this project deletes the old generation on promotion and has no equivalent: a version degrading *after* promotion isn't auto-detected or auto-reverted, only the pre-promotion sustained-health gate above guards against that, and only up to `MinHealthyDuration`'s window; see "Automatic rollback after a successful App promotion" in `docs/Out of Scope.md` and `docs/Decisions.md` § App Manager HA's leadership-churn trade-off); automated leader election in 0.x (a designated primary with epoch fencing is enough at this project's scale, and Raft or a lease service would reimplement etcd's replication; see `docs/Decisions.md` §25). All are proportionate to this project's actual scale and HA requirements, which deliberately don't match Kubernetes/Nomad/etcd's (see #92's context: several-minutes RTO is fine, and the dominant shape is one instance per App, not a horizontally-scaled fleet).
 
 ## Linkage
 
