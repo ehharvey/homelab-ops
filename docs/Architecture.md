@@ -1,14 +1,14 @@
 # Architecture — Homelab Ops App (0.x)
 
-Synthesized from the resolved decisions in `Decisions.md`. This is the 0.x shape only — anything Operations-Center-dependent, or requiring more than one Incus cluster member, is explicitly deferred (see "Out of scope for 0.x"). Note that 0.x *does* run Incus as a single-member cluster rather than a bare daemon, specifically so the App Manager's leader-election design (`Decisions.md` § App Manager HA) needs no later migration — "single-node" below refers to the fleet 0.x provisions, not to Incus running unclustered.
+Synthesized from the resolved decisions in `Decisions.md`. This is the 0.x shape only — anything Operations-Center-dependent is explicitly deferred (see "Out of scope for 0.x"). Growing past one Incus cluster member is *not* out of scope for 0.x — it's Roadmap Phase 4 (`Decisions.md` §26) — just not yet built. 0.x's App Manager leader-election design (`Decisions.md` § App Manager HA) needs Incus running as a cluster rather than a bare daemon, even at one member, so that a later migration to real multi-member clustering needs no rework; Phase 3 (Roadmap, `Decisions.md` §26 Tier A) is what actually sets that one-member cluster up — "single-node" below refers to the fleet 0.x provisions today, not to Incus running unclustered.
 
 ## 0.x framing
 
 0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Decisions) but dropped because:
 - Operations Center expects a trusted client cert in its own seed before it'll talk to anyone — for node #0 there's nothing yet to provide that, so it doesn't remove the bootstrap problem, it just relocates it.
-- Multi-*member* clustering (Operations Center's main value-add) is explicitly out of scope for 0.x anyway — 0.x's single Incus cluster member exists for the App Manager's leader-election design (`docs/AppManager.md`, `Decisions.md` § App Manager HA), not to build out real multi-node fleet management.
+- Multi-*member* clustering (Operations Center's main value-add) isn't what 0.x's Incus clustering is *for* — 0.x's cluster exists for the App Manager's leader-election design (`docs/AppManager.md`, `Decisions.md` § App Manager HA), not to build out real multi-node fleet management. Real multi-member clustering is Roadmap Phase 4 (`Decisions.md` §26), tracked but not yet built — see "Out of scope for 0.x" for what's deferred past it.
 
-So for 0.x, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Wrapping Operations Center is revisited once real multi-member clustering is actually on the table.
+So for 0.x, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Wrapping Operations Center is revisited once real multi-member clustering (Phase 4) is actually on the table.
 
 ## Components
 

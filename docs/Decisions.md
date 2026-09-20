@@ -1545,9 +1545,56 @@ Recorded so it can be built later without re-deriving it. Everything registers a
 - The spike script stays as characterization: it guards against re-adopting If-Match as a CAS, and an upgrade that makes it atomic would be news worth noticing (a change in its informational output is not a failure).
 - Two-instance colocation on one member no longer "proves the lease"; 0.x validates the designation gate and fencing instead (#103 is reworded accordingly).
 
+## 26. Incus clustering: 0.x claimed a one-member cluster it never built; splitting the fix into Tier A and Tier B (#177)
+
+Architecture.md and §17 have said since #92's original design that "0.x initializes Incus as a one-member cluster from the start" — deliberately, so the App Manager's leader-election design (§25) would need no later migration to real clustering. Rereading the seed code while asking what remains for 0.x found that this was never built: `internal/seed.renderIncusPreseed` only ever sets `Preseed.Certificates`; the vendored `InitPreseed.Cluster` field is never populated, and a fresh node's Incus is a bare, unclustered daemon. `server_clustered: false` on the current dev host confirms it. The doc's claim and the code have been out of sync since #92 (2026-07-14).
+
+This splits the remaining clustering work into two tiers of very different size, and schedules the small one now.
+
+### Tier A: make the existing claim true — a real one-member cluster (Phase 3)
+
+What §25's `leaderelection` design and #101's agent already assume — one Incus API surface, reachable identically from wherever an agent runs — needs Incus actually clustered, even at one member. This is config, not a new mechanism.
+
+**Spike (done by reading source, not yet by booting a node).** IncusOS's `incus-osd` applies the Incus seed with no clustering-specific gate at all: `internal/applications.(*incus).Initialize` calls `incusSeed.Preseed` straight into `github.com/lxc/incus/v7/client`'s `ApplyServerPreseed` — the exact function `incus admin init --preseed` itself calls. Reading that function (`client/incus_server.go`):
+- It applies `config.Config` (server config, e.g. `core.https_address`) *before* it looks at `config.Cluster` — so setting `core.https_address` in our own preseed's `Config` map, not relying on `incus-osd`'s own post-init fallback (which runs *after* `Initialize`'s preseed call), is what makes the ordering work.
+- Becoming a one-member cluster is `config.Cluster != nil && config.Cluster.Enabled`, which calls `UpdateCluster(config.Cluster.ClusterPut, etag)` — **bootstrap**, not join: `ClusterAddress`/`ClusterCertificate`/the join token are join-only fields and stay empty. Only `Enabled: true` and `ServerName` are needed.
+
+So the seed change is additive and small:
+
+```yaml
+incus:
+  preseed:
+    config:
+      core.https_address: ":8443"
+    cluster:
+      server_name: <instance name>
+      enabled: true
+    certificates: [...]   # unchanged
+```
+
+**Not yet verified**: an actual boot. This repo's own lesson (CLAUDE.md, issue #5) is that a seed field can be silently dropped and only a real VM boot catches it — the code reading above is necessary, not sufficient. The Tier A issue's done-when is a `scripts/validate/` run against a real booted node asserting `GET /1.0` reports `environment.server_clustered: true` and exactly one entry in `/1.0/cluster/members`.
+
+**Scope, deliberately small.** One member is still Incus's whole scheduler decision (§17's "no placement field" reasoning is unaffected — `Target`/cluster groups still buy nothing with one member). No join token, no membership config, no networks/storage-pool parity work: all of that is Tier B.
+
+### Tier B: real multi-member clustering (new Phase 4)
+
+Growing to N≥2 members is a materially bigger project — Architecture.md's "explicitly out of scope for 0.x" framing was right about *this* half of clustering, just conflated with Tier A under one sentence. It gets its own roadmap phase (the existing Phase 4, "Tailscale, logging + metrics," renumbers to Phase 5 to make room — pure renumbering, no content change, same pattern as #58's v1→0.x rename).
+
+What it needs, roughly in dependency order:
+
+- **Join-token flow.** A second node's seed can't be a pure function of git config the way today's is (`docs/Decisions.md` §13 assumed this) — `InitClusterPreseed` needs a `ClusterAddress`/`ClusterCertificate`/join token minted by the *already-running* cluster at seed-render time. The image route gains a live dependency on cluster state and token expiry it doesn't have today.
+- **A membership config model.** Which node is member 1 (bootstrap) vs. joiners, and where that's declared — `kind: Instance`, or a new field/kind.
+- **Cluster groups / `Target`.** §17 deleted `App.Node` and left `kind: App` with no placement field because one member makes placement moot. With real members it stops being moot: a `replicas: per-node` agent (or Alloy, #77) needs to land correctly, and `docs/AppManager.md`'s anticipated mechanism (tag members with a capability, target creation at the cluster group) has to actually be built.
+- **Storage/network parity across members**, and a 3-VM validate script proving a lost member doesn't take the fleet down with it — Incus's own dqlite fault tolerance needs an odd count ≥3, so this is also what finally lets #92's done-when be re-measured for real (§17's "0.x proves the mechanism, not node-death fault tolerance" caveat is what this phase removes).
+- **Member add/remove and quorum-loss recovery** as an operator workflow.
+- **Revisit `leaderelection`.** §25's `Designated` and the deferred ranked-over-Incus election are both node-scoped already and don't need rework to keep working across real members; N≥3 real Incus members are what would make automated (ranked) election worth its cost over `Designated`'s operator step, per §25's own trade-off.
+
+Tier B is filed as a tracking issue plus its workstreams, all `later` — nothing here blocks Phase 3.
+
 ## Sources consulted
 
 - [Incus — REST API ("PUT vs PATCH": ETag / `If-Match`)](https://linuxcontainers.org/incus/docs/main/rest-api/) (§25: the documented contract is lost-update protection for one client's GET-then-PUT, not exactly-one-winner)
+- [Incus — `ApplyServerPreseed`, `client/incus_server.go`](https://github.com/lxc/incus/blob/main/client/incus_server.go) and [IncusOS — `incus-osd/internal/applications/app_incus.go`](https://github.com/lxc/incus-os/blob/main/incus-osd/internal/applications/app_incus.go) (§26: the exact call path a seed's `cluster:` preseed goes through, and why `core.https_address` must be set via `Preseed.Config`, not left to `incus-osd`'s own post-init fallback)
 - [IncusOS — Installation seed reference](https://linuxcontainers.org/incus-os/docs/main/reference/seed/)
 - [IncusOS — System security](https://linuxcontainers.org/incus-os/docs/main/reference/security/)
 - [IncusOS — Operations Center application](https://linuxcontainers.org/incus-os/docs/main/reference/applications/operations-center/)
