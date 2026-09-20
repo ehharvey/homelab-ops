@@ -42,12 +42,13 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 ## Phase 3 — Local app-manager agent + node connectivity
 
 > **Rejig note (2026-07-14):** this phase used to be "Tailscale, logging +
-> metrics." That content didn't disappear — it moved to the new Phase 4
-> below, displaced by two pieces of infrastructure everything after it now
-> builds on: node↔app connectivity, and a self-managing app-manager agent.
-> See `docs/Decisions.md` for the full rationale (cert custody, why a local
-> agent instead of the always-on app driving Incus directly, the WireGuard
-> vs. Tailscale/NetBird seed-hook comparison).
+> metrics." That content didn't disappear — it moved to what was then Phase 4
+> below (now **Phase 5**, since 2026-09-20 — see #177), displaced by two
+> pieces of infrastructure everything after it now builds on: node↔app
+> connectivity, and a self-managing app-manager agent. See `docs/Decisions.md`
+> for the full rationale (cert custody, why a local agent instead of the
+> always-on app driving Incus directly, the WireGuard vs. Tailscale/NetBird
+> seed-hook comparison).
 
 - [x] Seed WireGuard connectivity between nodes and the web app: web app
   generates its own identity + a per-node keypair at seed-render time,
@@ -61,6 +62,12 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   covering `10.100.0.0/24`. Not fixed the way #157 proposed (a `Routes` entry),
   because IncusOS's validator rejects the only route the vendored API can
   emit; resolves `docs/Decisions.md` §24: DONE; see #157
+- [ ] Seed Incus as a real one-member cluster (Tier A of `docs/Decisions.md`
+  §26): `docs/AppManager.md`'s leader-election design and the agent below both
+  assume one Incus API surface reachable fleet-wide, which the seed has never
+  actually set up — `core.https_address` and a `cluster: {enabled: true}`
+  preseed, not a new mechanism; growing past one member is Phase 4 — see
+  `docs/Decisions.md` §26
 - [ ] Per-node app-manager agent with an operator-designated leader: one agent
   instance per node; a single primary named in git (with a monotonic epoch that
   fences a stale checkout) is the only one that reconciles a new `kind: App`
@@ -115,8 +122,8 @@ with no reconciliation gap) from git-declared config, with a stale-checkout
 primary fencing itself out once a higher epoch exists. (0.x provisions one
 physical node only, so this proves the designation gate and epoch fencing, not
 genuine node-death fault tolerance — that needs real multi-member Incus
-clustering, deferred, and automated election on top of it; see
-`docs/Decisions.md` §25 and § App Manager HA.)
+clustering (Phase 4, `docs/Decisions.md` §26), and automated election on top
+of it; see `docs/Decisions.md` §25 and § App Manager HA.)
 
 ## Phase 3.5 — The validate suite made runnable
 
@@ -167,7 +174,40 @@ what it proves and what it needs without being read. (Reached. What
 remains is *enforcement* — nothing runs the suite automatically yet; that
 work is tracked separately and is not part of this section.)
 
-## Phase 4 — Tailscale, logging + metrics
+## Phase 4 — Multi-member Incus clustering
+
+> **New phase (2026-09-20, see #177, `docs/Decisions.md` §26):** displaces the
+> old Phase 4 ("Tailscale, logging + metrics"), which renumbers to Phase 5
+> below with no content change — same pattern as #58's v1→0.x rename. Phase 3
+> grows Incus into a real *one-member* cluster (`docs/Decisions.md` §26's Tier
+> A, tracked there, not here); this phase is Tier B, growing that to real
+> multi-member clustering. Genuinely out of scope for 0.x until now — see the
+> corrected framing in `docs/Architecture.md` and `docs/Out of Scope.md`.
+> Tracked by #179, mirroring #92's role for Phase 3.
+
+- [ ] Join-token flow: a joining node's seed needs live cluster state (a
+  token minted by the already-running cluster), not just git config — see
+  #180
+- [ ] Cluster membership config model: declare which `Instance` bootstraps
+  the cluster vs. joins it — see #181
+- [ ] Cluster-group placement: a `Target` field on `kind: App`, since
+  Incus's scheduler stops being a trivial decision once members > 1 — see
+  #182
+- [ ] Storage/network parity across members — see #183
+- [ ] A 3-VM validate script proving real node-loss fault tolerance, closing
+  #92's own done-when caveat that 0.x never proved surviving an actual
+  physical node's loss — see #184
+- [ ] Member add/remove and quorum-loss recovery runbook — see #185
+
+**Done when:** a fleet of ≥3 real Incus cluster members survives losing any
+one member with no operator intervention beyond eventually replacing it, and
+`kind: App`'s placement (`replicas: per-node` today, plus whatever placement
+field #182 adds) lands workloads on the correct members. `docs/Decisions.md`
+§25's `leaderelection.Designated` is re-weighed against the deferred
+ranked-over-Incus election once real membership exists to make the automated
+option's cost worth paying.
+
+## Phase 5 — Tailscale, logging + metrics
 
 - [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service (blocked on upstream seed support — see #76, deferred)
 - [x] Add a local Grafana + Loki + Prometheus dev stack under `docker-compose.yml`, so log/metric forwarding can be validated without live Grafana Cloud credentials (see #82)

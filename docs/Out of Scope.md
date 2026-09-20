@@ -1,7 +1,7 @@
 # Out of Scope
 This page tracks work that is out-of-scope, but still worth documenting.
 
-- Running more than one Incus cluster member (0.x initializes Incus as a single-member cluster from the start — see `Decisions.md` § App Manager HA; scaling to N members, and the operator workflow for joining them, is deferred). Revisit wrapping Operations Center once real multi-member clustering is on the table.
+- Running more than one Incus cluster member — no longer "deferred with no home," as of 2026-09-20 this is Roadmap **Phase 4** (`Decisions.md` §26), tracked as its own set of issues (join tokens, membership config, cluster-group placement, storage/network parity, real node-loss proof, add/remove + quorum recovery). Phase 3 only takes Incus from a bare daemon to a real *one-member* cluster (`Decisions.md` §26 Tier A), which is what the App Manager's leader-election design (`Decisions.md` § App Manager HA) actually needs. Revisit wrapping Operations Center once Phase 4 lands.
 - GitOps auto-apply and rollback (today: diff-and-warn only)
 - Private repos, repo-sharing across environments
 - IPv6, DHCP/DNS write-back
