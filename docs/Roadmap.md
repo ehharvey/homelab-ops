@@ -61,36 +61,47 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   covering `10.100.0.0/24`. Not fixed the way #157 proposed (a `Routes` entry),
   because IncusOS's validator rejects the only route the vendored API can
   emit; resolves `docs/Decisions.md` §24: DONE; see #157
-- [ ] Per-node app-manager agent, leader/follower HA: one agent instance
-  per node, electing a single fleet-wide leader via an ETag-CAS lease
-  stored in Incus itself (no new dependency) — the leader reconciles a new
-  `kind: App` object across the whole fleet via a small renderer registry,
-  proven by managing its own fleet (blue-green self-upgrade, driven
-  fleet-wide by whichever agent is leader) — see #92,
-  `docs/Decisions.md` § App Manager HA. Built in dependency order:
+- [ ] Per-node app-manager agent with an operator-designated leader: one agent
+  instance per node; a single primary named in git (with a monotonic epoch that
+  fences a stale checkout) is the only one that reconciles a new `kind: App`
+  object across the whole fleet via a small renderer registry, proven by
+  managing its own fleet (blue-green self-upgrade, driven fleet-wide by the
+  primary) — see #92, `docs/Decisions.md` §25. Leader election is a pluggable
+  interface, so the automated ranked-over-Incus election (specified in §25) can
+  replace the designation later without touching the reconcile loop. Built in
+  dependency order:
   - [x] `kind: App` schema + store/configdiff plumbing — no runtime
     behaviour, pure parse/validate/store, prerequisite for every step
     below; `App` carries a cardinality field rather than a separate
     `kind: AgentConfig` (see `docs/AppClasses.md`): DONE; see #97
-  - [ ] `internal/leaderelection` — an ETag-conditional-write lease over a
-    dedicated Incus project, giving the fleet one elected leader with no
-    etcd/Consul/Raft — see #108
+  - [x] `internal/leaderelection` — the pluggable `Elector` interface and the
+    `Designated` implementation (designated primary + epoch fencing +
+    one-acting-instance-per-node through a self-upgrade). Replaces the Incus
+    ETag-CAS lease #160's spike showed isn't a compare-and-swap; records every
+    alternative weighed, and the deferred ranked-over-Incus protocol, in
+    `docs/Decisions.md` §25: DONE; see #108
+  - [ ] `internal/incuslocal` — the unix-socket Incus client the reconciler and
+    the `Registry` share — see #160
   - [ ] App renderer registry + fleet-wide reconcile algorithm; fleet
-    reconciliation only ever runs while the caller holds the lease — see
+    reconciliation only ever runs while the caller's `Elector` says it may — see
     #98
   - [ ] Preseed the `incus-socket` profile onto every node
     unconditionally, since an agent now runs everywhere — see #99
   - [ ] Deploy the agent's first instance — web app route +
     `bootstrap deploy-agent` — see #100
-  - [ ] `cmd/agent` binary tying election and the reconcile loop together;
-    every node runs the same binary and election decides which is active
-    each tick — see #101
-  - [ ] Leader declines to renew its lease on self version mismatch, so a
-    stale leader steps aside during a self-upgrade — see #109
+  - [ ] `cmd/agent` binary tying the `Elector`, the Incus-backed `Registry`, the
+    designation's git parsing and the reconcile loop together; every node runs
+    the same binary and the `Elector` decides which is active each tick — see
+    #101
+  - [ ] The leader marks itself draining on self version mismatch, once its
+    candidate is sustained-healthy, so the candidate takes over and retires it
+    during a self-upgrade — see #109
   - [ ] Publish the agent image to GHCR; local registry for
     dev/validation — see #102
-  - [ ] `scripts/validate/` script proving fleet-wide blue-green +
-    leader failover end-to-end against #92's own done-when — see #103
+  - [ ] `scripts/validate/` script proving fleet-wide blue-green + the
+    designation gate (a stale-checkout primary stands down; one acting
+    instance through a self-upgrade) end-to-end against #92's own done-when —
+    see #103
 - [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
   the two cannot drift from one another — see #68
 - [ ] Unified config: consolidate config passing into one place and fail
@@ -98,14 +109,14 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   across the codebase — see #67
 
 **Done when:** a managed node has a persistent WireGuard tunnel to the web
-app, and a per-node app-manager agent fleet that elects a single leader,
-deploys and upgrades itself (blue-green, fleet-wide) from git-declared
-config, and survives losing the specific agent instance currently holding
-leadership — another already-running agent takes over within the lease
-TTL with no reconciliation gap. (0.x provisions one physical node only,
-so this proves the lease/election mechanism itself, not genuine
-node-death fault tolerance — that needs real multi-member Incus
-clustering, deferred; see `docs/Decisions.md` § App Manager HA.)
+app, and a per-node app-manager agent fleet whose designated primary deploys
+and upgrades the fleet (blue-green, fleet-wide, including its own self-upgrade
+with no reconciliation gap) from git-declared config, with a stale-checkout
+primary fencing itself out once a higher epoch exists. (0.x provisions one
+physical node only, so this proves the designation gate and epoch fencing, not
+genuine node-death fault tolerance — that needs real multi-member Incus
+clustering, deferred, and automated election on top of it; see
+`docs/Decisions.md` §25 and § App Manager HA.)
 
 ## Phase 3.5 — The validate suite made runnable
 
