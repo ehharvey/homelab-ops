@@ -62,12 +62,15 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   covering `10.100.0.0/24`. Not fixed the way #157 proposed (a `Routes` entry),
   because IncusOS's validator rejects the only route the vendored API can
   emit; resolves `docs/Decisions.md` §24: DONE; see #157
-- [ ] Seed Incus as a real one-member cluster (Tier A of `docs/Decisions.md`
+- [x] Seed Incus as a real one-member cluster (Tier A of `docs/Decisions.md`
   §26): `docs/AppManager.md`'s leader-election design and the agent below both
-  assume one Incus API surface reachable fleet-wide, which the seed has never
-  actually set up — `core.https_address` and a `cluster: {enabled: true}`
-  preseed, not a new mechanism; growing past one member is Phase 4 — see
-  `docs/Decisions.md` §26
+  assume one Incus API surface reachable fleet-wide, which the seed had never
+  actually set up. `core.https_address` must be the instance's own static IP,
+  not a wildcard bind — Incus rejects clustering outright otherwise, caught
+  only by a real boot, not the initial source-read spike; a DHCP-only
+  Instance skips clustering rather than erroring. Verified against a real
+  booted node (`node-boots-and-trusts-bootstrap-cert.sh`, 12/0/0); growing
+  past one member is Phase 4: DONE; see #178, `docs/Decisions.md` §26
 - [ ] Per-node app-manager agent with an operator-designated leader: one agent
   instance per node; a single primary named in git (with a monotonic epoch that
   fences a stale checkout) is the only one that reconciles a new `kind: App`

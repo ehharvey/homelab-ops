@@ -186,7 +186,21 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 		applications = append(applications, incusseed.Application{Name: app})
 	}
 
-	incusPreseed, err := renderIncusPreseed(inst.Name, clientCertPEM, bootstrapCertPEM)
+	// Clustering (see renderIncusPreseed) needs a concrete address to
+	// advertise to future members — Incus rejects a wildcard bind outright
+	// ("Cannot use wildcard core.https_address \"\" for cluster.https_address",
+	// confirmed against a real boot, docs/Decisions.md §26). A DHCP-only
+	// Instance (no static_ip) has no such address at seed-render time, so it
+	// keeps today's behavior — a bare, unclustered daemon — rather than
+	// erroring: DHCP is a supported mode (Roadmap Phase 0), and every
+	// Instance IPAM actually assigns (the normal path from Phase 2 on) has a
+	// static_ip already, which is when clustering actually applies.
+	var clusterHTTPSAddress string
+	if inst.StaticIP.IsValid() {
+		clusterHTTPSAddress = fmt.Sprintf("%s:%s", inst.StaticIP, incusHTTPSPort)
+	}
+
+	incusPreseed, err := renderIncusPreseed(inst.Name, clientCertPEM, bootstrapCertPEM, clusterHTTPSAddress)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("render incus.yaml: %w", err)
 	}
@@ -199,13 +213,38 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 	}, nil
 }
 
+// incusHTTPSPort is the port Incus listens on inside every node — the same
+// port every scripts/validate/*.sh script already dials
+// (https://<ip>:8443).
+const incusHTTPSPort = "8443"
+
 // renderIncusPreseed builds the Incus seed file that preconfigures Incus to
 // trust certName's client certificate before first boot, plus a second
 // bootstrapCertPEM-derived trusted cert when non-nil — the one-time
 // credential nodeprovision.CreateInstance authenticates with over the
 // WireGuard tunnel, distinct from the standing break-glass cert (see
-// WireGuard's doc comment and docs/Decisions.md §4).
-func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte) (incusseed.Incus, error) {
+// WireGuard's doc comment and docs/Decisions.md §4) — and bootstraps Incus
+// as a one-member cluster named certName, rather than a bare daemon. 0.x
+// provisions one physical node only, so this is bootstrap, never join: no
+// ClusterAddress/ClusterCertificate/join token, which are join-only fields
+// (docs/Decisions.md §26 Tier A; growing past one member is Tier B).
+//
+// httpsAddress, when non-empty, must be a concrete <ip>:port, never a
+// wildcard bind like ":8443" — confirmed against a real boot
+// (docs/Decisions.md §26): Incus rejects wildcard-bind clustering outright
+// ("Cannot use wildcard core.https_address \"\" for cluster.https_address"),
+// since a cluster member has to advertise a real address for others to dial,
+// and a wildcard names none. Setting it explicitly, rather than relying on
+// incus-osd's own post-init fallback to the same port, is also what makes
+// the Cluster block possible at all: ApplyServerPreseed applies Config
+// before it looks at Cluster, so core.https_address must already be set by
+// the time the Cluster block runs — incus-osd's fallback runs only after the
+// whole preseed call returns, too late.
+//
+// httpsAddress empty means no address is knowable at render time (a
+// DHCP-only Instance, see Render) — clustering is skipped entirely and the
+// node comes up as a bare daemon, exactly as before this existed.
+func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte, httpsAddress string) (incusseed.Incus, error) {
 	certs := []lxcapi.CertificatesPost{}
 
 	clientEntry, err := certEntry(certName, clientCertPEM)
@@ -222,12 +261,25 @@ func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte)
 		certs = append(certs, bootstrapEntry)
 	}
 
+	local := lxcapi.InitLocalPreseed{Certificates: certs}
+	var cluster *lxcapi.InitClusterPreseed
+	if httpsAddress != "" {
+		local.Config = lxcapi.ConfigMap{"core.https_address": httpsAddress}
+		cluster = &lxcapi.InitClusterPreseed{
+			ClusterPut: lxcapi.ClusterPut{
+				Cluster: lxcapi.Cluster{
+					ServerName: certName,
+					Enabled:    true,
+				},
+			},
+		}
+	}
+
 	return incusseed.Incus{
 		ApplyDefaults: true,
 		Preseed: &lxcapi.InitPreseed{
-			InitLocalPreseed: lxcapi.InitLocalPreseed{
-				Certificates: certs,
-			},
+			InitLocalPreseed: local,
+			Cluster:          cluster,
 		},
 	}, nil
 }
