@@ -207,6 +207,74 @@ func TestRenderIncusPreseedTrustsClientCert(t *testing.T) {
 	}
 }
 
+func TestRenderIncusPreseedBootstrapsOneMemberCluster(t *testing.T) {
+	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if b.Incus.Preseed == nil {
+		t.Fatalf("Incus.Preseed = nil, want non-nil")
+	}
+
+	// core.https_address must be the instance's own concrete address, not a
+	// wildcard bind: confirmed against a real boot, Incus rejects clustering
+	// outright ("Cannot use wildcard core.https_address... for
+	// cluster.https_address") since a member has to advertise a real address
+	// for others to dial. It also must be set via Config, not left to
+	// incus-osd's own post-init fallback: ApplyServerPreseed applies Config
+	// before it looks at Cluster, so the address has to already be there by
+	// the time UpdateCluster runs. (docs/Decisions.md §26.)
+	wantAddr := "192.168.1.201:" + incusHTTPSPort
+	if got := b.Incus.Preseed.Config["core.https_address"]; got != wantAddr {
+		t.Errorf(`Preseed.Config["core.https_address"] = %q, want %q`, got, wantAddr)
+	}
+
+	cluster := b.Incus.Preseed.Cluster
+	if cluster == nil {
+		t.Fatalf("Preseed.Cluster = nil, want non-nil")
+	}
+	if !cluster.Enabled {
+		t.Errorf("Preseed.Cluster.Enabled = false, want true")
+	}
+	if cluster.ServerName != "node0" {
+		t.Errorf("Preseed.Cluster.ServerName = %q, want %q", cluster.ServerName, "node0")
+	}
+	// Bootstrap, never join: 0.x provisions one physical node only, so these
+	// join-only fields must stay empty.
+	if cluster.ClusterAddress != "" {
+		t.Errorf("Preseed.Cluster.ClusterAddress = %q, want empty (bootstrap, not join)", cluster.ClusterAddress)
+	}
+	if cluster.ClusterCertificate != "" {
+		t.Errorf("Preseed.Cluster.ClusterCertificate = %q, want empty (bootstrap, not join)", cluster.ClusterCertificate)
+	}
+	if cluster.ClusterToken != "" {
+		t.Errorf("Preseed.Cluster.ClusterToken = %q, want empty (bootstrap, not join)", cluster.ClusterToken)
+	}
+}
+
+func TestRenderDHCPSkipsClustering(t *testing.T) {
+	inst := sampleInstance()
+	inst.StaticIP = netip.Addr{} // no static_ip — matches a DHCP-only Instance
+
+	b, err := Render(sampleNetwork(), inst, sampleClientCertPEM(t), nil, Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if b.Incus.Preseed == nil {
+		t.Fatalf("Incus.Preseed = nil, want non-nil (certificates still need trusting)")
+	}
+	// No knowable address to advertise, so clustering is skipped entirely —
+	// same bare-daemon behavior as before clustering existed — rather than
+	// erroring: DHCP is a supported mode (TestRenderDHCP), and erroring here
+	// would regress it.
+	if _, ok := b.Incus.Preseed.Config["core.https_address"]; ok {
+		t.Errorf(`Preseed.Config["core.https_address"] = %q, want unset (no static_ip to advertise)`, b.Incus.Preseed.Config["core.https_address"])
+	}
+	if b.Incus.Preseed.Cluster != nil {
+		t.Errorf("Preseed.Cluster = %+v, want nil (no static_ip to advertise)", b.Incus.Preseed.Cluster)
+	}
+}
+
 func TestRenderWithWireGuard(t *testing.T) {
 	inst := sampleInstance()
 	inst.TunnelIP = netip.MustParseAddr("10.100.0.5")
@@ -355,7 +423,10 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal incus: %v", err)
 	}
-	for _, want := range []string{"apply_defaults:", "preseed:", "certificates:", "type: client"} {
+	for _, want := range []string{
+		"apply_defaults:", "preseed:", "certificates:", "type: client",
+		"core.https_address: 192.168.1.201:8443", "cluster:", "server_name: node0", "enabled: true",
+	} {
 		if !strings.Contains(string(incusYAML), want) {
 			t.Errorf("incus.yaml missing %q, got:\n%s", want, incusYAML)
 		}
