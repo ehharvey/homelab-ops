@@ -44,9 +44,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib-incus.sh
 . "$ROOT_DIR/scripts/validate/lib-incus.sh"
 
-VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, and trusts the bootstrap cert (#5)"
+VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, and comes up as a real one-member Incus cluster (#5, #178)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="incus go pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_NEEDS="incus go jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~9m"
 
 validate_parse_args "$@"
@@ -120,7 +120,7 @@ echo "== 0. Hard prerequisites =="
 # require_flasher_tool exists because of #136: build-image shells out to it, and
 # without this the CLI's own perfectly clear error was swallowed by `check`,
 # producing five cascading failures that read like a provisioning regression.
-require_cmd incus go
+require_cmd incus go jq
 require_flasher_tool
 require_incus_remote "$REMOTE"
 require_incus_project "$REMOTE" "$PROJECT"
@@ -271,8 +271,25 @@ else
     else
       record_fail "node trusts the bootstrap cert and is reachable over Incus API (reachable, but auth was not \"trusted\": $response)"
     fi
+
+    # #178 (docs/Decisions.md §26 Tier A): the seed now bootstraps Incus as a
+    # one-member cluster rather than a bare daemon — the property
+    # docs/AppManager.md's leader-election design has assumed since #92 but
+    # that was never actually built. A real boot is what catches a silently
+    # dropped seed field (CLAUDE.md, issue #5); the source-level spike in
+    # §26 established the mechanism, not that it survives a real install —
+    # a real boot is in fact what caught core.https_address needing to be
+    # the node's own concrete address rather than a wildcard bind, which the
+    # spike's source-reading missed.
+    check_json "node reports itself as a clustered member" "$response" '.metadata.environment.server_clustered == true'
+
+    members=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
+      curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0/cluster/members" 2>/dev/null)
+    check_json "node is the cluster's only member" "$members" '(.metadata | length) == 1'
   else
     record_fail "node trusts the bootstrap cert and is reachable over Incus API (node never became reachable)"
+    record_fail "node reports itself as a clustered member (node never became reachable)"
+    record_fail "node is the cluster's only member (node never became reachable)"
   fi
 fi
 
