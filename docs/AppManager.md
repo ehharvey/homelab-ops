@@ -1,5 +1,18 @@
 # App Manager — per-node agents, leader/follower HA, fleet-wide blue-green (0.x)
 
+> **Pivot note (2026-09-28, `docs/Decisions.md` §27):** the agent's first
+> jobs are cluster membership, not App reconciliation:
+>
+> - joining new members (#180);
+> - making sure every member runs an agent (#203) — the zero-match branch of
+>   the reconcile algorithm below, for the agent App alone.
+>
+> Each per-node agent is created on its own member (`target=<member>`), since
+> it reaches that member's Incus through the `incus-socket` proxy. The "no
+> `Target`" rule below still holds for declared Apps. The rest of this
+> document — App reconciliation, blue-green and the self-upgrade (#98, #103,
+> #109) — is paused, not withdrawn, and resumes on a real multi-member cluster.
+
 Purpose
 - Define `kind: App`: a workload instance the app-manager agent fleet (#92) reconciles against live Incus, via a small renderer registry. Placement is Incus's problem, not the operator's — see `kind: App` schema below.
 - Run one agent instance **per node**, electing a single fleet-wide leader — not one agent for the whole cluster — so the reconciliation loop survives losing whichever node happens to be running it. Incus itself has no mechanism to relocate a stateless instance onto a healthy node without shared storage (ceph) backing it, so the agent has to already be running everywhere ahead of time.

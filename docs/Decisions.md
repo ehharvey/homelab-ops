@@ -1622,10 +1622,294 @@ What it needs, roughly in dependency order:
 
 Tier B is filed as a tracking issue plus its workstreams, all `later` — nothing here blocks Phase 3.
 
+## 27. Pivot to a real 3-member cluster; the agent joins members; AppManager's app reconciliation paused (2026-09-28)
+
+The project's next goal is a real 3-member Incus cluster (Phase 4), ahead of the rest of #92.
+
+**Why.** An operational cluster now matters more than AppManager. Work so far has run into problems that came from not having a real cluster, and the operator needs a working cluster in any case. AppManager's app reconciliation resumes afterwards, on a real physical cluster, where its HA can be tested for real rather than on one member.
+
+The app-manager agent still ships, but its first real jobs are **cluster membership**, not app deployment:
+
+- joining new members (#180);
+- making sure every member runs an agent (#203).
+
+The rest of the blue-green reconcile machinery (#98, #103, #109) is paused, and so is cluster-group placement (#182). An agent that is deployed and does little else is an acceptable Phase 3 end state.
+
+This section records what reading the code found, which is not yet proven on real hardware. A manual join spike (below) comes first, before any of it is built. The web app's interim security posture was raised at the same time but is independent of this pivot; it is §28.
+
+### What a join actually does to the joining node
+
+Read from `lxc/incus/v7` v7.5.1 and IncusOS at the pinned submodule commit. Not yet exercised against a real booted node.
+
+- **The joiner's global database is wiped.** `cluster.Join` removes `GlobalDatabaseDir()` and adopts the cluster's (`internal/server/cluster/membership.go`). Anything recorded there on the joiner — instances, profiles, trusted certificates — is gone afterwards. `clusterPutJoin` also rejects a server that is already clustered.
+- **So an agent cannot join its own node.** It would be an instance whose record disappears mid-call. The joiner must be driven from outside, and must be empty when it joins.
+- **Today's seed does the wrong things on a joiner, whichever way it joins.** `ApplyServerPreseed` applies config, then pools, networks and profiles, then `certificates`, and only then `cluster`. IncusOS's `applyDefaults` runs after the whole preseed.
+  - The break-glass cert, the one-shot bootstrap cert and (#99) the `incus-socket` profile are written locally and then discarded by the join.
+  - The join needs `member_config` values for member-specific keys, which the seed doesn't carry: the `local` zfs pool's `source=local/incus`, and a physical network's `parent`.
+  - **If the join happens from the seed** (a `cluster_token` in the preseed), it runs before `applyDefaults`. `applyDefaults` then skips pool creation because the cluster's pools already exist. The joiner never gets the `backups`/`images`/`logs` volumes or its member-scoped `storage.*_volume` settings.
+  - **If the join happens over the API after boot** (the route chosen below), `applyDefaults` has already created `local`, the three volumes and `incusbr0`. The join wipes the volume records but keeps the `storage.*_volume` keys. Those keys are member-local config in the node database, which the join doesn't wipe (`internal/server/node/config.go`). So the joiner is left pointing at volumes the cluster doesn't know about.
+- **Members must match versions.** `Accept` rejects a joiner whose schema or API version differs from the cluster's. #68 (one flasher-tool/IncusOS pin) helps. But IncusOS updates itself, so members also drift apart depending on when each one updated. The join loop has to tolerate a mismatch (below).
+
+### Decision: an agent on an existing member drives the join
+
+The designated primary's agent (§25) reconciles declared membership (#181) against `GET /1.0/cluster/members` and joins what is missing:
+
+1. **Find the joiner** on its own subnet (below).
+2. **Check its version.** Read `GET /1.0` on the joiner, which trusts the joiner cert. While its version differs from the cluster's, wait; IncusOS's own updates usually close the gap. A version mismatch at `Accept` is retried, not treated as a failure.
+3. **Mint the token over its own unix socket** (`POST /1.0/cluster/members`, through the `incus-socket` proxy, #99). No credential trusted by the cluster exists outside the node, so §4's custody principle holds without new machinery. This also removes the need for the web app to mint tokens.
+4. **Build `member_config` from live state.** `GET /1.0/cluster` lists the member-specific keys a joiner must supply. Most of #183 (storage/network parity) is this step.
+5. **Call `PUT /1.0/cluster` on the joiner** over the LAN. The call carries the token, the filled `member_config`, and the address discovery found as `ServerAddress`.
+6. **Fix up the new member** afterwards: create its volumes and set its member-scoped server config (`target=<member>`).
+
+Consequences:
+
+- **Seeds don't depend on live cluster state.** No token is baked into an image, so a token can't expire between building the image and flashing it. This reverses §26's expectation that a joiner's seed would carry a join token.
+- **Bring-up order:**
+  1. Member 1 bootstraps itself from its seed (§26 Tier A).
+  2. The web app deploys the agent onto member 1 (#100).
+  3. The agent joins members 2 and 3, and puts an agent on each (#203, below).
+- **The joiner's seed changes:**
+  - it skips clustering and profiles;
+  - it sets `apply_defaults: false` **explicitly**, because IncusOS applies defaults when there is no Incus seed at all;
+  - it trusts the joiner cert (below).
+
+  This needs the membership model (#181) to tell the renderer which role an `Instance` has.
+- **The agent's scope, in issue terms:**
+  - Needed: #99, #100 (both the web app route and the `bootstrap deploy-agent` CLI path), #101, #102, #160 and #203.
+  - Paused: #98 (apart from #203's slice), #103, #109 and #182.
+
+### Decision: every member runs an agent (#203)
+
+Per-node agents come from #98's reconcile loop ("the fleet self-expands", `docs/AppManager.md`). Pausing all of #98 would leave only member 1 with an agent.
+
+The web app can't fill the gap. Its one-shot bootstrap cert is revoked after first use (`internal/nodeprovision`), and the join wipes the joiners' copies, so after the first agent it holds no credential on any member. Losing member 1 would then leave nothing to join a replacement, and no agent for a `Designated` failover to promote.
+
+So #98's zero-match branch is un-paused for the agent App alone (#203). Each tick, the designated primary creates generation 0 of the agent on any declared member that has none. Nothing else of #98 comes with it: no image-change handling, no blue-green, no teardown. Agent upgrades stay an operator step until #98 and #109 resume.
+
+- **Each agent is placed on its own member** (`target=<member>`), since it reaches that member's Incus through the `incus-socket` proxy. This is the first place 0.x sets a target. The target comes from per-node synthesis, not from a declared placement field. So `docs/AppManager.md`'s "no `Target`" rule still holds for declared Apps, and #182 stays paused.
+- **The CLI deploy path is no longer deferred.** `bootstrap deploy-agent` (#100) uses the break-glass cert over the LAN and needs no web app. If every agent is lost, nothing is left to recreate one, so this is the recovery path.
+
+### Decision: the joiner credential is operator-generated, for now
+
+The join call (step 5) needs a credential the *unjoined* node trusts. Its seed currently trusts only two certs: the break-glass cert (key held by the operator) and the web app's one-shot cert (key held by the web app). Neither belongs in the agent.
+
+**A dedicated joiner cert.** The operator generates it with `bootstrap gen-cert`.
+
+- Its public half goes into the web app's deployment config, like the break-glass cert, and is preseeded into joining nodes' seeds only.
+- Its private half goes to the agents.
+- It limits itself by construction. It only works against fresh, unjoined nodes. The join replaces the node's trust store, so each node stops trusting the cert as soon as it joins. The exposure window is a node that has booted but not yet joined.
+
+**Not yet decided: how the private half reaches the agents.** The config repo is public, so git is out. Any agent that may become primary needs the key, so a `Designated` failover (§25) shouldn't require pushing it again. #194 decides, alongside the joiner seed variant. Options:
+
+- **Push it into each agent.** The operator uses the break-glass cert to push the key into each agent instance (`incus file push`) or into a custom volume. Simple, but a failover or a recreated agent needs another push.
+- **Store it once in cluster state**, e.g. in a `user.*` key in a dedicated project. Whichever agent is primary reads it over its socket, so a failover needs no re-push. This doesn't widen exposure today, because every client the cluster trusts already has full admin rights. A restricted cert added later could read project config, so this would need revisiting then.
+- **Put it in a private S3 bucket.** This waits on the deferred secrets overlay (§28).
+
+Deferred alternative: the agent generates the keypair itself and publishes the public half to the web app. That removes the operator step but needs an agent-to-web-app channel that doesn't exist yet.
+
+### Decision: the agent discovers joiners on its own subnet; trust on first use for now
+
+The agent needs a joiner's address for `PUT /1.0/cluster`. But IPAM-assigned addresses live only in the web app's store (§12; git write-back was deferred), and the joiner isn't in Incus yet to ask. Addresses should also stay out of the public config repo (§28).
+
+**Discovery (chosen).** Members cluster over one LAN, so a joiner is on the same subnet as the agent's own node.
+
+- The agent reads that subnet from its host's network state over the Incus socket, so no address ranges are needed in git.
+- It probes those addresses on `:8443` with the joiner cert. Only fresh, unjoined nodes trust that cert.
+- It matches a host that responds to a declared `Instance` by the server name the host reports.
+
+This needs no web app, no addresses in git and no new credential, and the web app's IPAM stays authoritative. An explicit `static_ip` in a git-addressed network (§28) skips discovery for that node. To verify in the spike: what server name an unjoined IncusOS node reports, and that the agent's instance can reach the LAN through `incusbr0`'s NAT.
+
+Rejected alternatives:
+
+- **The agent asks the web app** for the joiner's address over the tunnel. That puts the web app on the join path through a node-to-web-app call, which breaks the rule below.
+- **The web app records pending members in the cluster at render time**, through a restricted Incus cert. That gives the web app a standing cluster credential, which §4 has so far avoided.
+
+**What discovery doesn't prove.** A client cert proves the agent's identity to the joiner. It proves nothing about the joiner to the agent.
+
+- Any host on the LAN can accept the joiner cert and report a declared name, and the agent would then hand it a join token.
+- The token is a bearer credential: whoever redeems it becomes a member and receives the cluster certificate's private key.
+- A joiner's server certificate is generated on first boot, so there is nothing to pin when the seed is rendered.
+- A `static_ip` has the same gap, only narrowed from "whoever answers on the subnet" to "whoever holds that address".
+
+**Interim: trust on first use, accepted for the homelab LAN.** The risk is narrowed three ways:
+
+- mint a token only after discovery has found a candidate, and only one per declared name;
+- keep `cluster.join_token_expiry` short;
+- raise an alert if the declared node still answers as unjoined after its name has already joined, since that means someone else redeemed the token.
+
+This sits uneasily with §28, which treats anyone on the LAN as a real threat to the web app. It is accepted because joins are rare and the operator starts them, and because the alternative needs a channel that doesn't exist yet.
+
+**Deferred: pin the joiner's server certificate.**
+
+- The WireGuard tunnel is the one channel whose node identity is fixed at render time, since the web app generated each node's key. So the web app can read a joiner's certificate fingerprint from a TLS handshake over the tunnel.
+- The open question is how that fingerprint reaches the agent. Either the operator commits it to git beside the instance (one manual step per join; fingerprints aren't secret), or the agent reads it from a read-only web-app route (automatic, but it puts the web app on the join path).
+- Either way, the fingerprint would also replace the self-reported server name as the way to match a joiner.
+
+Not decided; revisit with #194 or after the spike.
+
+### The web app must be able to be down without affecting the cluster
+
+The web app is a provisioning and observation plane, never on the cluster's runtime path. Checked against the design above:
+
+- **Cluster traffic** runs member to member over the LAN. The WireGuard tunnels only carry web-app-to-node management, so a down web app idles them and nothing else.
+- **The agent** syncs git itself (`docs/AppManager.md`). It discovers and joins members, mints tokens over its own socket, and holds the joiner key. Joins and, later, reconciliation keep working with the web app down.
+- **Lost while the web app is down, by design:**
+  - rendering seeds and images for new nodes;
+  - the web app's `deploy-agent` route (the CLI path still works);
+  - the missing-primary-heartbeat alert (`docs/AppManager.md`). That one is monitoring, not function; Phase 5's Grafana stack is its longer-term home.
+- **Rule for future work:** nothing on a node or in the agent may call the web app synchronously. If a feature seems to need that, it belongs in git or in the agent.
+
+### The spike that comes first (#193)
+
+Before building any of the above, join a second VM to a Tier A cluster **by hand** on `homelab-host`:
+
+- mint the token on member 1;
+- boot the joiner from a seed with no clustering or profiles, and `apply_defaults: false`;
+- `PUT /1.0/cluster` with a hand-filled `member_config`;
+- record exactly what fails and what the new member is missing afterwards.
+
+Also try:
+
+- the join both ways — from the seed and after boot over the API — because the source reading above could be wrong in either direction;
+- an API join of a node booted from today's seed (`apply_defaults: true`), then check its `storage.*_volume` keys and volume list.
+
+The result is what the agent has to automate, and it sets the scope of #180, #181, #183 and #194.
+
+### Operations Center, again
+
+`docs/Architecture.md` said wrapping Operations Center would be revisited "once real multi-member clustering (Phase 4) is actually on the table". It now is.
+
+- Operations Center already clusters IncusOS nodes and generates the seeds for joining them, which overlaps with most of this section.
+- §0's other objection still stands. Operations Center needs a trusted cert in its own seed before it will talk to anyone, so it moves the node #0 bootstrap problem rather than removing it.
+
+It's worth an hour's read of how Operations Center joins members before building #180, if only to borrow its answers to the questions above.
+
+## 28. The web app's interim security posture: WireGuard-only API, one operator-held key (2026-09-28)
+
+Raised alongside §27 but independent of it: none of this blocks Phase 4. It is scheduled in `docs/Roadmap.md` § Web app hardening (#195–#200). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
+
+**The problem.**
+
+- `POST /instances/{name}/seed` and `GET /instances/{name}/image` are unauthenticated (#63).
+- Every seed contains that node's WireGuard **private** key (`internal/seed`'s `network.yaml`).
+- Compose publishes the API on every interface of the host.
+
+So anyone who can reach the web app can fetch a node's key and pose as that node on the tunnel. The store also holds every instance's credentials and its IPAM history in plaintext, with no backup (§12 already noted it "needs a backup/migration story it doesn't have today").
+
+### Decision: serve the API only over WireGuard, to operator peers (#195)
+
+The HTTP API moves off the host port and onto the web app's existing in-process tunnel.
+
+- **How.** `internal/wireguard` already runs a userspace netstack, whose `netstack.Net` provides `ListenTCP`. The same `http.Handler` is served on `WebAppAddr` (`10.100.0.1`) inside the tunnel, so it still needs no TUN device and no `NET_ADMIN`. Only the WireGuard UDP port stays exposed on the host.
+- **The operator becomes a peer.** The operator generates their own WireGuard keypair. Its public half reaches the web app through deployment config, like the break-glass cert (§4); the private half never leaves the operator. Several devices means a list of keys. When sync reconciles tunnel peers, it must keep the operator peers, not just instances.
+- **Nodes are peers too, so filter by source address.** WireGuard drops any packet whose source address isn't in the sending peer's `AllowedIPs`. So a connection's source overlay address reliably identifies which key sent it. Middleware admits only operator overlay addresses. Nodes, and anyone holding a node's leaked key, are refused.
+- **What this buys.** Mutual, key-based authentication and encryption in transit for the operator, with no auth code beyond an address check.
+- **What it doesn't.**
+  - No multi-user support, and no per-person audit beyond "which key".
+  - Browsers treat plain HTTP over the tunnel as insecure, so anything that needs a secure context waits for TLS.
+
+  Full auth comes back when the web app must be reachable off the tunnel or by more than one person.
+- **Dev and validate.** `docker compose` and the `scripts/validate/` web-app family call `:8080` directly today. They will either:
+  - join as a peer (`cmd/validate-tunnel-harness` already dials through the tunnel in-process), or
+  - keep a plain-HTTP listener behind an explicit dev-only flag, bound to localhost.
+
+  `/healthz` stays on a local port for container health checks.
+
+### Decision: a CLI first, no web UI yet (#196)
+
+The web app's API is small (sync, status, list networks and instances, seed, image) and nearly read-only, because desired state is edited in git, not in the app. There is one operator. A CLI subcommand group fits that: in the existing `bootstrap` binary, or a sibling `cmd/` binary. It:
+
+- authenticates by being a WireGuard peer — the address check above. No mTLS, sessions or OIDC;
+- streams multi-GB image downloads straight to a file or device;
+- decrypts downloads locally, where the key is (below);
+- is scriptable from `scripts/validate/`.
+
+Incus's own web UI already covers cluster- and instance-level views. A UI of our own would earn its place later, for at-a-glance fleet status: sync warnings, tunnel handshakes, cluster membership, agent health.
+
+### Decision: one operator-held symmetric key; the store encrypted at rest (#197)
+
+The operator holds one symmetric key: a random 256-bit key generated by the CLI, not a passphrase. If a passphrase is ever wanted, derive the key with `x/crypto/argon2`. The web app only ever keeps the key in memory, and everything the web app writes or serves is encrypted with it.
+
+- **Separate verbs, so a mistake can't destroy state:**
+  - `init` sets the key when no store exists yet.
+  - `unlock` supplies the key after a restart. It must decrypt the existing store; a wrong key is an error, and nothing is written.
+  - `rotate` takes the old and new keys and re-encrypts.
+  - `reset` is for a lost key. It must be asked for explicitly, asks for confirmation, and moves the old ciphertext aside rather than deleting it.
+- **Sealed on restart.** A restarted web app serves only its unlock route, to operator peers, until it is unlocked — the same model as Vault's unseal. That is acceptable only because the cluster doesn't depend on the web app (§27).
+- **The live store is encrypted at rest.** It is small and rarely written. So the web app holds the working copy in memory (sqlite `:memory:`, or a `VACUUM INTO` round-trip) and writes the whole file back, encrypted, after each change.
+- **Format: `filippo.io/age`, not a hand-rolled one.** Multi-GB images can't be sealed as one AEAD message, because nothing could be authenticated until the end. They need a chunked streaming construction with a final-chunk marker, so truncation is detected. age's payload format is exactly that, and it has a symmetric mode. Encryption formats are where hand-rolled crypto usually goes wrong.
+- **A reset's blast radius.** Losing the key loses the stored credentials and the IPAM history. The tunnel identity survives (next decision). Management of existing nodes is lost until they're re-enrolled, but the cluster keeps running.
+- **Accepted:** the web app can read everything whenever it is unlocked. That's fine while it is the operator's own single-tenant tool. Asymmetric encryption, which would let it write backups it can't read, is deferred (below).
+
+### Decision: the web app's WireGuard identity is operator-supplied deployment config (#197)
+
+The tunnel's own key can't be inside the encrypted store. The operator unlocks over the tunnel, so the tunnel has to come up before the key arrives. The identity follows the break-glass cert's pattern (§4) instead:
+
+- The operator generates the WireGuard identity once and keeps their own backup of it.
+- The web app reads it from deployment config, alongside the operator peer list, and never generates it.
+- Snapshots don't include it, so it is the one secret on the web app's disk in plaintext. That key alone grants no Incus access, since each node's API still requires a trusted client cert.
+
+**Migrate, don't regenerate.** Today's identity lives in the store's `wireguard_identity` table, and its public half is baked into every node's seed. It must be exported to the new config file once. Regenerating it would break every node's tunnel until that node is reflashed.
+
+### Decision: encrypted downloads and snapshots (#198, #200)
+
+WireGuard protects the transfer, but the aim is that plaintext secrets never land on the operator's disk.
+
+- **Seeds and images** come back encrypted under the key; the CLI never sends the key with a download request. The CLI decrypts as a stream straight onto the install media, so no plaintext copy touches a filesystem. age's chunk authentication catches a truncated or altered download.
+- **Store snapshots** are a consistent copy (sqlite `VACUUM INTO`), encrypted the same way and downloadable from a route. One is taken after each change. The store changes rarely (on sync, IPAM assignment and credential minting), so this gives near-zero data loss without Litestream's continuous WAL shipping.
+- **Optionally pushed to S3 (#200).** An off-cluster bucket (Backblaze B2, Cloudflare R2 or similar) means that losing the cluster and the web app together is recoverable.
+- **No separate signature.** age authenticates the payload, and only the operator and the web app hold the key, so a signature would protect against nobody new. Signing comes back with asymmetric encryption, if that is ever adopted.
+- **Restore:**
+  1. start a fresh web app with the same deployment config, including the WireGuard identity;
+  2. `init` it with the same key;
+  3. load the snapshot with the CLI. The web app decrypts it in memory.
+
+### Decision: network addressing from git or from web app state, one source per network (#199)
+
+The config repo is public, and addresses in it describe the operator's LAN. Git always keeps each `kind: Network`'s *name*, which is what `Instance.network` references. The addressing — `cidr`, `gateway`, `dhcp_excluded_range`, `dns` — comes from exactly one of two sources per network.
+
+- **Exactly one source per network.** A `kind: Network` in git carries either all of the addressing fields or none of them.
+  - All of them: the network is git-addressed, for a private repo.
+  - None: the network is state-addressed, and its addressing lives in the web app's state.
+  - A partial set is a validation error.
+- **A conflict is an error, never a precedence rule.** If git and state both address the same network, the sync (or the load) is rejected, the same stance as #52's "no silent last-wins". The operator removes one side.
+- **`static_ip` follows its network's mode.** In git it is valid only for a git-addressed network. Pins for a state-addressed network live in state, so a public repo never carries an address.
+- **One resolve step.** Before validation, IPAM and seed rendering, the web app joins git's network names with the addressing from whichever source holds it. Everything downstream sees one resolved `Network` and doesn't know its mode.
+- **Where state addressing comes from.** Interim: a deployment-config file on the web app, like `CLIENT_CERT_PATH`. Target: loaded through the CLI into the encrypted store, once #197 lands.
+- **What moves with it.**
+  - The cross-field checks in `config.Validate` that need addresses move from git sync into the resolve step: static IP inside the CIDR and range, gateway collision (#53), duplicate names (#52).
+  - Changes to state-addressed networks are reported when they're loaded, since `configdiff` doesn't see them.
+  - IPAM (§12, `docs/Ipam.md`) is otherwise unchanged. It already assigns from a store, not from git directly.
+- **Optional guard against leaking addresses into a public repo.** Repo visibility can't be detected through a plain git transport. So git-addressed networks could require an explicit deployment flag (e.g. `CONFIG_REPO_PRIVATE=true`); without it, git addressing is rejected rather than silently published.
+- **Unaffected:**
+  - The agent. It discovers joiners from its host's subnet (§27) and never reads addressing. A private repo does mean agents need a read-only deploy key, since they sync git themselves.
+  - The bootstrap CLI. It reads a local file, which can keep full `kind: Network` documents.
+- **Cost.**
+  - The resolve step and the all-or-nothing rule are small.
+  - The real cost is validation coverage: the web-app validate scripts should exercise both modes.
+  - Addressing held in state is lost if both the key and the backups are lost. It is easy to re-enter, since the operator knows their own LAN.
+
+### Considered and deferred
+
+- **Proper auth and a JS client** (sized 2026-09-28).
+  - Auth alone is roughly three to four issues: TLS; OIDC login (Authorization Code + PKCE via `coreos/go-oidc`, with the server holding the login so the browser only ever gets a session cookie); session and CSRF middleware; an identity provider (Dex) in compose for validation; and device-code or mTLS access for the CLI.
+  - The JS client is the larger cost. The repo has no Node toolchain, build stage or CI job yet, and every screen adds to it.
+  - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 5).
+- **Asymmetric encryption (GPG or age X25519).** This would let the web app write backups it can't read, and snapshot signing belongs with it.
+  - GPG fits best if the operator already has a key, especially on a hardware token: one key both decrypts backups and verifies signatures. Its Go dependency is the cost. `golang.org/x/crypto/openpgp` is frozen and deprecated, and the maintained `github.com/ProtonMail/go-crypto` is heavier than this repo usually accepts (Development Conventions' "small dependency" rule).
+  - age X25519 plus stdlib `crypto/ed25519` is lighter, and age can encrypt to an SSH key the operator already has.
+- **OIDC.** Incus supports OIDC natively (`oidc.issuer`, `oidc.client.id`, `oidc.audience`, optionally OpenFGA for authorization). An identity provider could replace much of this project's cert handling: short-lived, revocable tokens instead of one-shot certs (§4, `internal/nodeprovision`) and the joiner cert; human login to Incus; and a real answer to #63. Open questions before a spike:
+  - **Where the provider runs.** Inside the cluster is circular: the cluster would depend on an identity provider it hosts, so losing the cluster loses auth. Running it alongside the web app keeps the dependency where one already exists. An external hosted provider adds an internet dependency, though node0 already needs the internet (§23). The break-glass cert stays regardless, as the recovery path when the provider is down.
+  - **Machine identities.** Incus's OIDC support is designed around user login. Whether it accepts client-credentials tokens for the agent and the web app is unverified.
+  - **Joiners.** OIDC config is cluster-wide, so it arrives with the join. A fresh unjoined node would still need its own seed-time trust, so OIDC shrinks the joiner-cert problem rather than removing it.
+  - **Candidates**, lightest first: Dex, Pocket ID, Kanidm, Authelia; Zitadel and Keycloak are heavier.
+- **An S3 secrets overlay on top of git.** Not a replacement: git gives history, review, and the commit-to-commit diff that config sync and §25's epoch fencing rely on. The gap is that the public repo can't declare anything secret: the joiner cert's private key, a future OIDC client secret, a Tailscale authkey (#76). A private S3 bucket read beside git would fill it. It's worth spiking together with #200, since both need the same bucket, credentials and encryption story.
+
 ## Sources consulted
 
 - [Incus — REST API ("PUT vs PATCH": ETag / `If-Match`)](https://linuxcontainers.org/incus/docs/main/rest-api/) (§25: the documented contract is lost-update protection for one client's GET-then-PUT, not exactly-one-winner)
 - [Incus — `ApplyServerPreseed`, `client/incus_server.go`](https://github.com/lxc/incus/blob/main/client/incus_server.go) and [IncusOS — `incus-osd/internal/applications/app_incus.go`](https://github.com/lxc/incus-os/blob/main/incus-osd/internal/applications/app_incus.go) (§26: the exact call path a seed's `cluster:` preseed goes through, and why `core.https_address` must be set via `Preseed.Config`, not left to `incus-osd`'s own post-init fallback)
+- [Incus v7.5.1 — `cluster.Join`/`Accept`](https://github.com/lxc/incus/blob/v7.5.1/internal/server/cluster/membership.go), [`clusterPutJoin`](https://github.com/lxc/incus/blob/v7.5.1/cmd/incusd/api_cluster.go) and [member-local server config](https://github.com/lxc/incus/blob/v7.5.1/internal/server/node/config.go) (§27: the join wipes the global database, rejects a version mismatch, and keeps member-local `storage.*_volume` keys)
 - [IncusOS — Installation seed reference](https://linuxcontainers.org/incus-os/docs/main/reference/seed/)
 - [IncusOS — System security](https://linuxcontainers.org/incus-os/docs/main/reference/security/)
 - [IncusOS — Operations Center application](https://linuxcontainers.org/incus-os/docs/main/reference/applications/operations-center/)

@@ -1,7 +1,7 @@
 # Out of Scope
 This page tracks work that is out-of-scope, but still worth documenting.
 
-- Running more than one Incus cluster member — no longer "deferred with no home," as of 2026-09-20 this is Roadmap **Phase 4** (`Decisions.md` §26), tracked as its own set of issues (join tokens, membership config, cluster-group placement, storage/network parity, real node-loss proof, add/remove + quorum recovery). Phase 3 only takes Incus from a bare daemon to a real *one-member* cluster (`Decisions.md` §26 Tier A), which is what the App Manager's leader-election design (`Decisions.md` § App Manager HA) actually needs. Revisit wrapping Operations Center once Phase 4 lands.
+- Running more than one Incus cluster member — no longer "deferred with no home," as of 2026-09-20 this is Roadmap **Phase 4** (`Decisions.md` §26), and since 2026-09-28 the project's main line (`Decisions.md` §27). It is tracked as its own set of issues: a manual join spike, membership config, the joiner seed and joiner cert, the agent-driven join, an agent on every member, storage/network parity, real node-loss proof, and add/remove + quorum recovery. Cluster-group placement is paused. Phase 3 only takes Incus from a bare daemon to a real *one-member* cluster (`Decisions.md` §26 Tier A), which is what the App Manager's leader-election design (`Decisions.md` § App Manager HA) actually needs. Wrapping Operations Center stays out, but how it joins members is worth reading before building the agent-driven join (`Decisions.md` §27).
 - GitOps auto-apply and rollback (today: diff-and-warn only)
 - Private repos, repo-sharing across environments
 - IPv6, DHCP/DNS write-back

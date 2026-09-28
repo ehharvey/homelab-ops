@@ -50,6 +50,15 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 > always-on app driving Incus directly, the WireGuard vs. Tailscale/NetBird
 > seed-hook comparison).
 
+> **Pivot note (2026-09-28, `docs/Decisions.md` §27):** the project's next
+> goal is a real 3-member Incus cluster (Phase 4). The agent still ships, but
+> its first real job is joining cluster members, not deploying Apps. The app
+> reconciliation items below (#98, #109, #103) are **paused**, except #98's
+> zero-match branch for the agent App alone. That slice is split out as #203
+> in Phase 4, so that every member runs an agent. The rest are still needed,
+> because the agent is what drives the join. An agent that is deployed and
+> does little else is an acceptable end state for this phase.
+
 - [x] Seed WireGuard connectivity between nodes and the web app: web app
   generates its own identity + a per-node keypair at seed-render time,
   embedded into `network.yaml` (no live enrollment step, unlike
@@ -96,41 +105,47 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     so the epoch ratchet stays a single-writer read-modify-write above this
     layer (#101). `Exec` gave way to `ReadFile`, since `Healthy` is defined as
     the freshness of a heartbeat file: DONE; see #160
-  - [ ] App renderer registry + fleet-wide reconcile algorithm; fleet
-    reconciliation only ever runs while the caller's `Elector` says it may — see
-    #98
+  - [ ] *(paused, §27)* App renderer registry + fleet-wide reconcile
+    algorithm; fleet reconciliation only ever runs while the caller's
+    `Elector` says it may. Its zero-match branch for the agent App alone is
+    split out as #203 (Phase 4) — see #98
   - [ ] Preseed the `incus-socket` profile onto every node
     unconditionally, since an agent now runs everywhere — see #99
-  - [ ] Deploy the agent's first instance — web app route +
-    `bootstrap deploy-agent` — see #100
-  - [ ] `cmd/agent` binary tying the `Elector`, the Incus-backed `Registry`, the
-    designation's git parsing and the reconcile loop together; every node runs
-    the same binary and the `Elector` decides which is active each tick — see
-    #101
-  - [ ] The leader marks itself draining on self version mismatch, once its
-    candidate is sustained-healthy, so the candidate takes over and retires it
-    during a self-upgrade — see #109
+  - [ ] Deploy the agent's first instance — the web app route, plus the
+    `bootstrap deploy-agent` CLI path, which needs no web app and is the
+    recovery path if every agent is lost — see #100
+  - [ ] `cmd/agent` binary tying the `Elector` and the designation's git
+    parsing to a loop; every node runs the same binary and the `Elector`
+    decides which is active each tick. Its first loop is cluster membership
+    (Phase 4), not App reconciliation — see #101, `docs/Decisions.md` §27
+  - [ ] *(paused, §27)* The leader marks itself draining on self version
+    mismatch, once its candidate is sustained-healthy, so the candidate takes
+    over and retires it during a self-upgrade — see #109
   - [ ] Publish the agent image to GHCR; local registry for
     dev/validation — see #102
-  - [ ] `scripts/validate/` script proving fleet-wide blue-green + the
+  - [ ] *(paused, §27)* `scripts/validate/` script proving fleet-wide blue-green + the
     designation gate (a stale-checkout primary stands down; one acting
     instance through a self-upgrade) end-to-end against #92's own done-when —
     see #103
 - [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
-  the two cannot drift from one another — see #68
+  the two cannot drift from one another. Matters more under Phase 4: Incus
+  rejects a joiner whose version differs from the cluster's. IncusOS's own
+  updates are the larger source of that drift, so the join loop retries on a
+  mismatch as well (`docs/Decisions.md` §27) — see #68
 - [ ] Unified config: consolidate config passing into one place and fail
   fast on missing required values, rather than resolving it just-in-time
   across the codebase — see #67
 
-**Done when:** a managed node has a persistent WireGuard tunnel to the web
-app, and a per-node app-manager agent fleet whose designated primary deploys
-and upgrades the fleet (blue-green, fleet-wide, including its own self-upgrade
-with no reconciliation gap) from git-declared config, with a stale-checkout
-primary fencing itself out once a higher epoch exists. (0.x provisions one
-physical node only, so this proves the designation gate and epoch fencing, not
-genuine node-death fault tolerance — that needs real multi-member Incus
-clustering (Phase 4, `docs/Decisions.md` §26), and automated election on top
-of it; see `docs/Decisions.md` §25 and § App Manager HA.)
+**Done when** (revised 2026-09-28, `docs/Decisions.md` §27): a managed node
+has a persistent WireGuard tunnel to the web app, and the web app has deployed
+the app-manager agent, published as an image, onto it. The agent runs under
+`Designated` and otherwise does little until Phase 4 gives it membership work.
+
+The original done-when, kept for when the paused items resume: a per-node
+agent fleet whose designated primary deploys and upgrades the fleet
+(blue-green, fleet-wide, including its own self-upgrade with no reconciliation
+gap) from git-declared config, with a stale-checkout primary fencing itself out
+once a higher epoch exists.
 
 ## Phase 3.5 — The validate suite made runnable
 
@@ -192,27 +207,82 @@ work is tracked separately and is not part of this section.)
 > corrected framing in `docs/Architecture.md` and `docs/Out of Scope.md`.
 > Tracked by #179, mirroring #92's role for Phase 3.
 
-- [ ] Join-token flow: a joining node's seed needs live cluster state (a
-  token minted by the already-running cluster), not just git config — see
-  #180
+> **Pivot note (2026-09-28, `docs/Decisions.md` §27):** this is now the
+> project's main line. Joining is driven by the designated primary's agent.
+> It finds the fresh node on its own subnet (trust on first use, for now),
+> mints the token over its own unix socket, fills `member_config` from live
+> cluster state, and calls `PUT /1.0/cluster` on the fresh node. Seeds don't
+> depend on live cluster state. A joining node can't run an agent itself,
+> because the join wipes its database; once the node has joined, the primary
+> puts an agent on it. The joiner trusts an operator-generated joiner cert,
+> preseeded into joining nodes' seeds only. Everything below waits on a manual
+> join spike.
+
+- [ ] Manual join spike: join a second VM to a Tier A cluster by hand
+  (token minted on member 1, hand-filled `member_config`), both at seed time
+  and after boot, and record what fails and what the new member is missing.
+  Sets the scope of the items below — see #193, `docs/Decisions.md` §27
 - [ ] Cluster membership config model: declare which `Instance` bootstraps
-  the cluster vs. joins it — see #181
-- [ ] Cluster-group placement: a `Target` field on `kind: App`, since
-  Incus's scheduler stops being a trivial decision once members > 1 — see
-  #182
-- [ ] Storage/network parity across members — see #183
+  the cluster vs. joins it, with no addresses required in git — see #181
+- [ ] Joiner seed variant (no cluster or profile preseed, `apply_defaults:
+  false` set explicitly) and the operator-generated joiner cert, preseeded
+  into joiners only — see #194
+- [ ] Agent-driven join: the primary's agent discovers joiners on its own
+  subnet with the joiner cert (trust on first use for now,
+  `docs/Decisions.md` §27), waits out version mismatches, mints tokens over
+  its unix socket, and joins missing members over the LAN — see #180
+- [ ] Every member runs an agent: #98's zero-match branch for the agent App
+  alone, each agent created on its own member — see #203
+- [ ] Storage/network parity across members — largely the `member_config`
+  and post-join volume fix-up the join step needs anyway — see #183
+- [ ] *(paused, §27)* Cluster-group placement: a `Target` field on
+  `kind: App`, since Incus's scheduler stops being a trivial decision once
+  members > 1. Nothing needs it while App reconciliation is paused — see #182
 - [ ] A 3-VM validate script proving real node-loss fault tolerance, closing
   #92's own done-when caveat that 0.x never proved surviving an actual
   physical node's loss — see #184
 - [ ] Member add/remove and quorum-loss recovery runbook — see #185
 
-**Done when:** a fleet of ≥3 real Incus cluster members survives losing any
-one member with no operator intervention beyond eventually replacing it, and
-`kind: App`'s placement (`replicas: per-node` today, plus whatever placement
-field #182 adds) lands workloads on the correct members. `docs/Decisions.md`
-§25's `leaderelection.Designated` is re-weighed against the deferred
+**Done when:** a fleet of ≥3 real Incus cluster members, joined by the agent
+rather than by hand and each running an agent, survives losing any one
+member. Incus keeps quorum and the remaining agents keep running, with no
+operator intervention beyond eventually replacing the member — plus, if it
+was the designated primary, the operator's §25 failover (fence, then raise
+the epoch) before the replacement can be joined. (Placement of `kind: App`
+workloads across members is paused with #182; see `docs/Decisions.md` §27.)
+`docs/Decisions.md` §25's `leaderelection.Designated` is re-weighed against the deferred
 ranked-over-Incus election once real membership exists to make the automated
 option's cost worth paying.
+
+## Web app hardening (alongside Phase 4)
+
+> **Added 2026-09-28 (#201, `docs/Decisions.md` §28).** Not a phase in the
+> sense the others are — like Phase 3.5, it's recorded here so the work has a
+> home. It is independent of Phase 4's critical path; #195 fixes a live leak
+> and is worth doing early. Proper auth and a JS client are deferred (§28);
+> this is the interim posture. The web app is a provisioning and observation
+> plane: nothing on a node or in the agent may call it synchronously, and
+> the cluster must keep running while it's down or locked (§27).
+
+- [ ] Serve the HTTP API only over the web app's in-process WireGuard
+  tunnel, to operator peers. Closes the leak where the seed and image routes
+  hand any caller a node's WireGuard private key (#63) — see #195
+- [ ] Operator CLI for the API, over the tunnel — see #196
+- [ ] Operator-held symmetric key: held only in memory, web app locked on
+  restart, store encrypted at rest, and a wrong key on unlock never resets
+  anything. The web app's WireGuard identity becomes operator-supplied
+  deployment config — see #197
+- [ ] Encrypted seed, image and snapshot downloads; the CLI decrypts
+  straight to the install media — see #198
+- [ ] Network addressing from git (private repo) or web app state, exactly
+  one source per network — see #199
+- [ ] *(optional)* Push encrypted store snapshots to off-cluster S3 — see
+  #200
+
+**Done when:** the web app's API is reachable only by operator peers over
+WireGuard; nothing it stores or serves exists in plaintext outside its own
+memory, apart from its WireGuard identity (operator-supplied deployment
+config, `docs/Decisions.md` §28); and its state survives the loss of its host.
 
 ## Phase 5 — Tailscale, logging + metrics
 

@@ -6,9 +6,9 @@ Synthesized from the resolved decisions in `Decisions.md`. This is the 0.x shape
 
 0.x does **not** depend on or wrap Operations Center. That was originally considered (§0 of Decisions) but dropped because:
 - Operations Center expects a trusted client cert in its own seed before it'll talk to anyone — for node #0 there's nothing yet to provide that, so it doesn't remove the bootstrap problem, it just relocates it.
-- Multi-*member* clustering (Operations Center's main value-add) isn't what 0.x's Incus clustering is *for* — 0.x's cluster exists for the App Manager's leader-election design (`docs/AppManager.md`, `Decisions.md` § App Manager HA), not to build out real multi-node fleet management. Real multi-member clustering is Roadmap Phase 4 (`Decisions.md` §26), tracked but not yet built — see "Out of scope for 0.x" for what's deferred past it.
+- Multi-*member* clustering (Operations Center's main value-add) wasn't what 0.x's Incus clustering was originally *for* — the cluster existed for the App Manager's leader-election design (`docs/AppManager.md`, `Decisions.md` § App Manager HA). That changed on 2026-09-28: a real 3-member cluster (Roadmap Phase 4) is now the project's main line, with the app-manager agent driving member joins (`Decisions.md` §27). This reason for skipping Operations Center is therefore weaker than it was, and is revisited in §27.
 
-So for 0.x, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Wrapping Operations Center is revisited once real multi-member clustering (Phase 4) is actually on the table.
+So for 0.x, this app talks to IncusOS nodes directly: it builds install seeds itself, drives `flasher-tool` itself, and issues certs trusted directly by Incus on the node — no intermediary management plane. Real multi-member clustering (Phase 4) is now on the table, and `Decisions.md` §27 revisits Operations Center: §0's bootstrap objection still stands, but how it joins members is worth reading before building the agent-driven join.
 
 ## Components
 
