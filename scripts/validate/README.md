@@ -71,9 +71,22 @@ wired up it only protects the runs someone remembers to start by hand. Wiring
 it is tracked separately, and the "runs in CI" column below states intent, not
 current fact.
 
-Tags in use: `base-image`, `flasher-tool`, `incus`, `vm`, `github`, `upstream`
-(the last meaning "a prior check already failed, so this couldn't run" — a
-cascade, not a missing prerequisite).
+Tags in use: `base-image`, `ct-image`, `flasher-tool`, `incus-instances`,
+`incus-socket`, `upstream`. Four describe a prerequisite the environment
+didn't supply — an IncusOS image, a container image, the `flasher-tool`
+binary, or a readable/writable Incus unix socket. `incus-instances` is a
+*probe* rather than a named cause: a script that needs to create instances
+asks the daemon to create one and skips with the daemon's own words if it
+can't, which covers an uninitialized daemon (no storage pool) and a
+devcontainer with no idmap without enumerating either. `upstream` means "a
+prior check already failed, so this couldn't run" — a cascade, not a missing
+prerequisite.
+
+Enumerate them from the scripts rather than trusting this list:
+
+```
+grep -rhoE 'skip_check "[^"]*" [a-z-]+' scripts/validate/*.sh | awk '{print $NF}' | sort -u
+```
 
 ## Prerequisite matrix
 
@@ -95,7 +108,7 @@ absence causes a skip rather than a failure.
 |---|---|---|
 | `none` | Go only | yes |
 | `compose` | Docker, `docker compose` | yes |
-| `incus` | an Incus remote, `jq` | no — needs the host |
+| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, `INCUSOS_BASE_IMAGE` | no — needs the host |
 | `github` | authenticated `gh` with repo admin | no — opens real PRs, would recurse |
 
