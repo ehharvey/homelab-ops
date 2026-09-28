@@ -90,8 +90,12 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     ETag-CAS lease #160's spike showed isn't a compare-and-swap; records every
     alternative weighed, and the deferred ranked-over-Incus protocol, in
     `docs/Decisions.md` §25: DONE; see #108
-  - [ ] `internal/incuslocal` — the unix-socket Incus client the reconciler and
-    the `Registry` share — see #160
+  - [x] `internal/incuslocal` — the unix-socket Incus client the reconciler and
+    the `Registry` share. No conditional write: #160's own spike measured that
+    Incus's `If-Match` is a lost-update guard rather than a compare-and-swap,
+    so the epoch ratchet stays a single-writer read-modify-write above this
+    layer (#101). `Exec` gave way to `ReadFile`, since `Healthy` is defined as
+    the freshness of a heartbeat file: DONE; see #160
   - [ ] App renderer registry + fleet-wide reconcile algorithm; fleet
     reconciliation only ever runs while the caller's `Elector` says it may — see
     #98

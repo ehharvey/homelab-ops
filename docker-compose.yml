@@ -19,6 +19,43 @@ services:
   config-repo:
     build: ./dev/git-fixture
 
+  # Dev-only, and off by default: `profiles` keeps it out of a bare
+  # `docker compose up` and out of the validate suite, whose compose() helper
+  # (scripts/validate/lib-compose.sh) passes no --profile. Start it explicitly:
+  #
+  #   mkdir -p /tmp/incus-bridge
+  #   INCUS_BRIDGE_HOST_ADDR="$(getent hosts host.docker.internal | awk '{print $1}'):8443" \
+  #     docker compose --profile incus-bridge up -d incus-bridge
+  #
+  # Then point unix-socket code at it, e.g.
+  #   VALIDATE_INCUS_SOCKET=/tmp/incus-bridge/incus.sock \
+  #     ./scripts/validate/incuslocal-round-trips-instances-over-unix-socket.sh
+  #
+  # The host address is passed explicitly rather than using
+  # `host.docker.internal:host-gateway`: this devcontainer runs docker-in-docker,
+  # so inside a nested container host-gateway resolves to the devcontainer
+  # itself, not the machine running Incus (verified — unreachable that way,
+  # reachable via the address the devcontainer resolves).
+  incus-bridge:
+    profiles: ["incus-bridge"]
+    build: ./dev/incus-bridge
+    # The socket grants whatever the mounted client certificate is trusted for,
+    # so it is owned by the devcontainer's own uid and mode 600 rather than
+    # world-accessible.
+    user: "1000:1000"
+    environment:
+      # Not `${...:?}`: compose interpolates every service before filtering by
+      # profile, so a required-variable error here would break a plain
+      # `docker compose up` — and the validate suite's compose group — for
+      # anyone who never starts this bridge. The entrypoint enforces it
+      # instead, at the only moment it matters.
+      - INCUS_BRIDGE_HOST_ADDR=${INCUS_BRIDGE_HOST_ADDR:-}
+      - INCUS_BRIDGE_SERVER_NAME=${INCUS_BRIDGE_SERVER_NAME:-pc0}
+      - INCUS_BRIDGE_SERVER_CERT=${INCUS_BRIDGE_SERVER_CERT:-/certs/servercerts/homelab-host.crt}
+    volumes:
+      - ${INCUS_BRIDGE_CONFIG_DIR:-/home/vscode/.config/incus}:/certs:ro
+      - ${INCUS_BRIDGE_SOCKET_DIR:-/tmp/incus-bridge}:/socket
+
   loki:
     image: grafana/loki:3.7.3
     ports:

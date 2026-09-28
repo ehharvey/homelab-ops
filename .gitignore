@@ -9,6 +9,11 @@ __pycache__/
 
 # Go build artifacts
 bin/
+# `go build ./cmd/<name>` with no -o drops the binary in the repo root rather
+# than bin/, which is easy to do by hand with the test-only validate harnesses
+# (the validate scripts themselves build into a mktemp dir).
+/validate-tunnel-harness
+/validate-incuslocal-harness
 
 # Bootstrap CLI generated artifacts (certs, seeds, images) — never commit private keys
 bootstrap-output/
