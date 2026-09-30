@@ -1,0 +1,11 @@
+# The app-manager agent, one per node (docs/AppManager.md). `per-node`
+# synthesizes one instance per declared Instance above, so adding a node to
+# instances.yaml is all it takes to give it an agent.
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  server: https://ghcr.io
+  protocol: oci
+  alias: ehharvey/homelab-ops/agent:latest

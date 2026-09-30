@@ -71,6 +71,27 @@ func TestRenderSeedCommandWritesFourFiles(t *testing.T) {
 	}
 }
 
+// The single-node example is documented as the file to hand render-seed, so it
+// must actually render — internal/config's example test only proves it parses
+// and validates, not that it meets render-seed's own exactly-one rules.
+func TestRenderSeedCommandRendersSingleNodeExample(t *testing.T) {
+	dir := t.TempDir()
+	certPath := writeFixtureCert(t, dir)
+	outDir := filepath.Join(dir, "out")
+
+	rootCmd.SetArgs([]string{"render-seed", "--file", "../../../examples/single-node/fleet.yaml", "--cert", certPath, "--output-dir", outDir})
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\noutput: %s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "incus.yaml")); err != nil {
+		t.Errorf("expected incus.yaml to exist: %v", err)
+	}
+}
+
 func TestRenderSeedCommandMissingCert(t *testing.T) {
 	dir := t.TempDir()
 	fleetPath := filepath.Join(dir, "fleet.yaml")

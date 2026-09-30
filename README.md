@@ -16,7 +16,8 @@ browsability; never edit the wiki directly.
 2. `make build && make test && make lint` — should pass clean on a fresh
    checkout.
 3. Run the bootstrap pipeline for node #0 (`fleet.yaml`: one `kind: Network`
-   + one `kind: Instance` doc — see [`docs/Architecture.md`](docs/Architecture.md) § Data model):
+   + one `kind: Instance` doc — see [`docs/Config Schema.md`](docs/Config%20Schema.md), or start from
+   [`examples/single-node/fleet.yaml`](examples/single-node/fleet.yaml)):
 
        ./bin/bootstrap gen-cert --output-dir ./bootstrap-output/cert
        ./bin/bootstrap render-seed --file fleet.yaml --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed
