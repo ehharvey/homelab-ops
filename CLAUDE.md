@@ -154,3 +154,19 @@ the main context:
 
 Don't delegate design Q&A, rebases, or issue filing: they're a few calls
 each, so a subagent's startup costs more than it saves.
+
+## Skills (`.claude/skills/`, #222)
+
+The recurring loops, so a session runs them rather than re-deriving them:
+
+- **`/next`**: what to work on. One bounded report (`next.sh`) covers Ready
+  issues and their blockers, dependency inconsistencies, the current phase's
+  unchecked Roadmap items, open PRs and in-flight branches.
+- **`/file-task`**: file an issue in `roadmap_task.yml`'s shape, with labels.
+  Dependencies are native blocked-by links (`--blocked-by` / `--blocking`),
+  which are all `/next` reads.
+- **`/ship-issue`**: the pre-ship checklist, ending at `make ship`. It never
+  runs `make lgtm`.
+
+They point at this file and `docs/Development Conventions.md` for the rules
+rather than restating them. Change the rules there.
