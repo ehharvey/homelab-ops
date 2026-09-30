@@ -89,3 +89,23 @@ scripts what they need rather than looking it up:
     ./scripts/validate/run.sh --describe
 
 Full detail in `scripts/validate/README.md`.
+
+## Subagents (`.claude/agents/`, #220)
+
+Delegate work that reads a lot and concludes a little, so the bulk never enters
+the main context:
+
+- **`decisions-scout`**: before planning or implementing an issue, get the
+  binding decisions, the issue's current scope, and the doc constraints as a
+  ~2k-token brief, instead of reading `Decisions.md` or long issue bodies yourself.
+- **`validate-runner`**: any validate script or `make validate*` run. It
+  returns PASS/FAIL/SKIP per check and only the failing log lines.
+- **`issue-worker`**: one issue end to end, in its own worktree, for parallel
+  work. The handoff carries the *distilled* spec (a `decisions-scout` brief
+  plus the exact `§N`/doc sections to read), not "read `docs/` in full". Every
+  file you tell it to read, it pays for again.
+- The built-in **`Explore`**: Incus/IncusOS source questions in the Go module
+  cache (`$(go env GOMODCACHE)/github.com/lxc/incus/v7@…`).
+
+Don't delegate design Q&A, rebases, or issue filing: they're a few calls
+each, so a subagent's startup costs more than it saves.
