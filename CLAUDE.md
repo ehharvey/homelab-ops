@@ -1,15 +1,49 @@
 # CLAUDE.md
 
-Guidance for Claude Code working in this repo. Full context lives in
-`docs/` — read before changing anything non-trivial:
+Guidance for Claude Code working in this repo. Context lives in `docs/`, but
+read it **selectively**: it totals ~90k tokens, and everything you read is
+carried, and paid for, on every later turn of the session.
 
-- `docs/Architecture.md` — what this app is and how the pieces fit
+- `docs/Architecture.md` — what this app is and how the pieces fit; read it
+  for orientation
 - `docs/Config Schema.md` — the fleet config repo's format, field by field
   (`internal/config` is the source of truth; `examples/` must keep passing)
-- `docs/Roadmap.md` — current phase/status; check off items you complete
-- `docs/Development Conventions.md` — branching, PR format, Go layout,
-  vendoring rules — read this *before* writing code, not after
-- `docs/Decisions.md` — resolved design decisions with rationale
+- `docs/Roadmap.md` — current phase/status; check off items you complete.
+  Read the current phase's section (`grep -n '^## Phase'`), not the whole file
+- `docs/Development Conventions.md` — the rationale behind the Conventions
+  summary below. That summary covers routine work. Before writing code that
+  touches CI, lint config, vendoring, Go layout, or the ship flow, read the
+  relevant section (`grep -n '^## '`)
+- `docs/Decisions.md` — resolved design decisions (~45k tokens; **never read
+  it whole**). `grep -n '^## ' docs/Decisions.md` is the index. Read the
+  sections that the issue or the files you touch cite
+  (`grep -rn '§[0-9]\+' <paths>`), one range at a time:
+  `sed -n '/^## 25\./,/^## 26\./p' docs/Decisions.md`
+
+## Keeping context lean and current
+
+Across 12 sessions reviewed in #221, docs were ~40% of all tool output, and
+long multi-issue sessions were ~77% of the cost.
+
+- **Bound every output**: `gh … --json … --jq`, `grep`/`tail` on logs,
+  `sed -n` ranges on large files. When output is saved to a tool-results file
+  for being too large, grep or `sed -n` it; never read it whole, because that
+  just brings the same bulk back a turn later.
+- **Newest wins.** Issue bodies and decisions often stack dated notes or
+  addenda. The newest overrides older text where they conflict. Say which
+  parts you're treating as superseded.
+- **Verify tradeoff claims before presenting them.** For dependency weight,
+  use `go mod graph | grep <module>` (is it already in the graph?) and
+  `go mod why -m <module>` (is it built today?). For Incus behaviour, check the
+  module-cache source or run a real probe. Otherwise, label the claim unverified.
+- **One issue per session.** After a PR ships, don't roll into the next issue
+  in the same context. Post anything not yet captured (findings, open
+  questions) as an issue comment, then suggest a fresh session. Operator
+  note: resuming a large session after more than an hour idle, or switching
+  models mid-session, rewrites its whole context into the cache.
+- **Mechanics.** In a worktree-isolated session, run git as plain standalone
+  commands; git inside Python heredocs or long `&&` chains gets refused. Wait
+  on CI with `gh pr checks <n> --watch` in the background, not `sleep` loops.
 
 ## Commands
 
