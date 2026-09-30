@@ -1784,6 +1784,134 @@ The result is what the agent has to automate, and it sets the scope of #180, #18
 
 It's worth an hour's read of how Operations Center joins members before building #180, if only to borrow its answers to the questions above.
 
+### Addendum: the manual join spike (#193, 2026-09-29)
+
+The spike above, run by hand on `homelab-host`. Every node booted IncusOS **202609271243** (the stable channel's current release, straight from the CDN) with Incus **7.5.1** (562 API extensions). The versions matched at every join. IncusOS checked for updates during the run (`Update check completed`, no `os_version_next`) and found nothing newer, so the version-skew path wasn't exercised.
+
+Four nodes were booted, all on `home-lan`:
+
+- **member1** from today's seed (§26 Tier A). `GET /1.0/cluster/members` listed it alone, as `database-leader`.
+- **joiner-a**, the §27 joiner seed ("Variant A" below), joined over the API.
+- **joiner-b2**, with `apply_defaults: true` but no `cluster` block, joined over the API.
+- **joiner-seed**, joined at seed time from a `cluster` preseed carrying a `cluster_token`.
+
+**All three joiners joined.** Each appeared in member1's `GET /1.0/cluster/members` as `Online`, `database-standby`.
+
+#### The predictions, checked
+
+| §27 prediction | Result | Evidence |
+|---|---|---|
+| The join wipes the joiner's global database | **Confirmed** | joiner-a's two preseeded client certs were gone afterwards. Its trust store became the cluster's: the member server certs plus member1's break-glass entry. Its `default` profile became the cluster's. |
+| `clusterPutJoin` rejects an already-clustered server | **Confirmed** | `PUT /1.0/cluster` with a join body against member1, itself booted from today's seed: `400 This server is already clustered`. A node booted from today's seed can't join over the API. |
+| A seed-time join leaves the joiner without volumes and `storage.*_volume` keys | **Confirmed** | joiner-seed (`apply_defaults: true`) had no custom volumes and no `storage.*_volume` keys. IncusOS still reported the app `initialized: true`, so `applyDefaults` skipped quietly rather than failing. |
+| An API join after `applyDefaults` keeps the `storage.*_volume` keys but loses the volume records | **Confirmed, and worse than predicted** | See joiner-b2 below. The join fails outright if `member_config` is supplied. Without it the join succeeds, and the keys are left pointing at volumes the cluster doesn't know, whose ZFS datasets are still on disk. |
+| `member_config` is needed for the `local` pool's `source` | **Confirmed, for an empty joiner** | member1's `GET /1.0/cluster` listed `local`'s `source` and `zfs.pool_name`, both empty. Supplying `source=local/incus` alone was enough for joiner-a and joiner-seed. |
+| `member_config` is needed for a physical network's `parent` | **Wrong for our seeds** | No physical network exists. IncusOS creates one only for a bridge interface with the `instances` role, and our `network.yaml` sets `management` only. `incusbr0` has no member-specific keys. |
+| Members must match versions; the join has to tolerate a mismatch | **Not exercised** | Every node ran the same release. Still true from source (`membershipCheckClusterStateForAccept`), but unproven. |
+| The joiner cert limits itself: trusted before the join, untrusted after | **Confirmed** | Before: `auth: trusted` on joiner-a. After: `auth: untrusted` on both joiner-a and member1. |
+| An instance behind member1's `incusbr0` NAT can reach a joiner's `:8443` | **Confirmed** | An Alpine container launched on member1's own Incus (`10.21.89.249`) fetched `https://192.168.1.211:8443/1.0` with the joiner cert and got `auth: trusted`. |
+
+#### Findings §27 didn't predict
+
+- **A token alone doesn't join.** `PUT /1.0/cluster` also needs the member's address and its cluster certificate. Tried against joiner-a, one field removed at a time:
+  - without `cluster_certificate`: `400 No target cluster member certificate provided`;
+  - without `server_address`: `400 No server address provided for this member`;
+  - without `cluster_address`: not tried. From source, `clusterPut` takes that as a *bootstrap* request, and the joiner would become a new one-member cluster of its own.
+
+  The minimal body that worked:
+
+  ```json
+  {
+    "server_name": "joiner-a",
+    "enabled": true,
+    "server_address": "192.168.1.211:8443",
+    "cluster_address": "192.168.1.210:8443",
+    "cluster_certificate": "<PEM of member1's cluster cert>",
+    "cluster_token": "<base64 token>",
+    "member_config": [
+      {"entity": "storage-pool", "name": "local", "key": "source", "value": "local/incus"}
+    ]
+  }
+  ```
+
+  The agent has what it needs. `cluster_address` is in the token's `addresses`. The certificate is `environment.certificate` from `GET /1.0` over its own socket, and its SHA-256 matches the token's `fingerprint`, which is how to check it.
+
+- **The token isn't returned as a string.** `POST /1.0/cluster/members` returns an operation. The token is `base64(JSON{server_name, fingerprint, addresses, secret, expires_at})`, assembled from the operation's metadata (`serverName`, `fingerprint`, `addresses`, `secret`, `expiresAt`), exactly as the `incus` CLI does.
+  - The token expires after `cluster.join_token_expiry`, which defaults to **3 hours**.
+  - It is single-use, and a *failed* join still spends it.
+  - A failed join also leaves the joiner's server cert in the cluster's trust store.
+
+- **An unjoined node reports its OS hostname as its server name.** Unclustered, `GET /1.0` reports `os.Hostname()`.
+  - With today's `network.yaml` (`hostname: ""`), IncusOS sets that to the machine UUID. joiner-a reported `5ae89e64-7325-4ef7-91cb-3eb434705b04`.
+  - Setting `dns.hostname: joiner-b2` in `network.yaml` made joiner-b2 report `joiner-b2`.
+  - An untrusted client gets no `environment` at all, so only a trusted cert can read the name.
+  - §27's "match the joiner by the name it reports" therefore needs the renderer to set `dns.hostname`. Today's seed doesn't.
+
+- **A joiner that ran `applyDefaults` fails the API join if given `member_config`.** joiner-b2 already had `local`, the three volumes and `incusbr0`.
+  - `clusterInitMember` tries to *update* the existing `local` pool with the member-specific key and is refused: `Failed to update storage pool "local": Config key "source" is cluster member specific`. That spent the token.
+  - Retried with a fresh token and **no** `member_config`, it joined.
+  - `incusbr0`'s addresses were overwritten with the cluster's.
+  - The `storage.*_volume` keys survived (`local/backups` and so on), but the cluster had no volume records for joiner-b2.
+  - Recreating the volumes failed: `zfs create ... local/incus/custom/default_backups: dataset already exists`.
+  - What repaired it was Incus's recovery API on the joiner itself: `POST /internal/recover/import` with `{"pools":[{"name":"local","driver":"zfs","config":{"source":"local/incus"}}]}`. It re-imported all three volumes, now owned by `joiner-b2`.
+  - This works, but it goes through an internal endpoint. It's a reason to keep `apply_defaults: false` on joiners, not a route to build on.
+
+- **Wait for IncusOS to finish initializing before joining.** The seed's `certificates` are applied before `applyDefaults` runs, so a joiner answers `auth: trusted` to the joiner cert while it is still initializing. joiner-b2's first `GET /1.0` had no `storage.*_volume` keys; they appeared seconds later. `GET /os/1.0/applications/incus` → `state.initialized: true` is the signal, and the joiner cert can read it.
+
+- **Every member's `incusbr0` gets the same subnet.** `ipv4.address` isn't member-specific. Each member runs its own NAT'd bridge with the cluster-wide subnet (`10.21.89.1/24` here). That's normal for Incus clusters and harmless, since the bridges never meet.
+
+- **Removing a fixed-up member takes more than one call.**
+  - `DELETE /1.0/cluster/members/joiner-a` refused while it held custom volumes: `Node still has the following custom volumes: backups, images, logs`.
+  - After unsetting the three keys, deleting `logs` failed with `dataset is busy`, because it is mounted as Incus's log directory until the daemon restarts.
+  - `?force=1` removed the member, and it also cleared the member's volume records and its server cert from the cluster. Worth recording in the runbook (#185).
+
+- **IncusOS tags `local/incus` with `incusos:use=incus`** when `applyDefaults` creates it. A joined member's dataset, created by the join instead, lacks the tag. From IncusOS source it is only reported in `/os/1.0/system/storage` state, so the gap is cosmetic.
+
+- **An IncusOS VM takes a fully allocated 50 GiB.** The installer refuses a smaller disk and wipes the whole target. On `homelab-host`'s btrfs pool that allocates all 50 GiB, and a first attempt at this spike filled the pool. Any multi-VM validate script (#184) needs about 55 GiB per node.
+
+#### Which route, and what a joiner needs
+
+**Both routes join, and both leave the same gap: no volumes and no `storage.*_volume` keys.** The seed-time route bakes a 3-hour, single-use token, member1's address and member1's cluster certificate into the image, which is exactly the live-state dependency §27 set out to avoid. **§27's decision stands: join over the API, from an agent on an existing member.**
+
+**The joiner seed that worked** (Variant A, as booted on joiner-a), with one change the spike showed is needed: `dns.hostname`.
+
+```yaml
+# network.yaml: as today, plus
+dns:
+  hostname: <instance name>   # without it, the node reports its machine UUID
+# incus.yaml
+apply_defaults: false          # explicit: no incus.yaml at all means apply_defaults: true
+preseed:
+  config:
+    core.https_address: "<static_ip>:8443"
+  certificates:
+    - {name: <name>, type: client, certificate: <break-glass cert>}
+    - {name: <name>-joiner, type: client, certificate: <joiner cert>}
+# no cluster block, no profiles, no pools, no networks
+```
+
+A joiner booted this way comes up with an empty Incus: no pools, no networks, and a `default` profile with no devices. That's what the join wants.
+
+**The join, as the agent will drive it:**
+
+1. Probe the subnet with the joiner cert. Match `environment.server_name` against the declared name, and wait for `/os/1.0/applications/incus` → `initialized: true`.
+2. Mint a token on the agent's own member (`POST /1.0/cluster/members {"server_name": <name>}`) and assemble it from the operation metadata.
+3. Read `GET /1.0/cluster` → `member_config` and fill in `local`'s `source=local/incus`. Also read `GET /1.0` → `environment.certificate`, and check it against the token's fingerprint.
+4. Send `PUT /1.0/cluster` on the joiner with the body above, then wait on the operation it returns. The joiner cert stays trusted long enough for the wait to succeed.
+
+**Post-join fix-up.** Four calls against any member, with any cluster-trusted cert. The same calls fixed up both joiner-a (API route) and joiner-seed (seed route). On joiner-a, a container launched with `--target joiner-a` afterwards got an address from joiner-a's own `incusbr0`:
+
+```
+POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"backups","type":"custom","content_type":"filesystem"}
+POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"images", ...}
+POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"logs", ...}
+PATCH /1.0?target=<member>  {"config":{"storage.backups_volume":"local/backups","storage.images_volume":"local/images","storage.logs_volume":"local/logs"}}
+```
+
+Nothing else was missing. The profile, pools, networks and trust all came from the cluster. The joiner's break-glass entry was lost, but the break-glass cert kept working only because member1 trusts the same cert; a cluster trusts whatever member1 was seeded with.
+
+**No characterization script was kept.** The behaviours worth guarding are a real join and its fix-up. A script for them needs two IncusOS VMs (about 110 GiB) and about 20 minutes. It belongs with #180's agent-driven join, which exercises exactly this path, rather than as a standalone guard on hand-written calls the agent will replace.
+
 ## 28. The web app's interim security posture: WireGuard-only API, one operator-held key (2026-09-28)
 
 Raised alongside §27 but independent of it: none of this blocks Phase 4. It is scheduled in `docs/Roadmap.md` § Web app hardening (#195–#200). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.

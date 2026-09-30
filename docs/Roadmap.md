@@ -223,10 +223,11 @@ work is tracked separately and is not part of this section.)
 > preseeded into joining nodes' seeds only. Everything below waits on a manual
 > join spike.
 
-- [ ] Manual join spike: join a second VM to a Tier A cluster by hand
+- [x] Manual join spike: join a second VM to a Tier A cluster by hand
   (token minted on member 1, hand-filled `member_config`), both at seed time
   and after boot, and record what fails and what the new member is missing.
-  Sets the scope of the items below — see #193, `docs/Decisions.md` §27
+  Sets the scope of the items below — see `docs/Decisions.md` §27's
+  addendum: DONE; see #193
 - [ ] Cluster membership config model: declare which `Instance` bootstraps
   the cluster vs. joins it, with no addresses required in git — see #181
 - [ ] Joiner seed variant (no cluster or profile preseed, `apply_defaults:
