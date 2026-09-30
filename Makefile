@@ -3,11 +3,13 @@
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
 WEB_BIN := bin/web
+AGENT_BIN := bin/agent
 LINT_IMAGE := golangci/golangci-lint:v2.12.2
 
 build:
 	$(GO) build -o $(BOOTSTRAP_BIN) ./cmd/bootstrap
 	$(GO) build -o $(WEB_BIN) ./cmd/web
+	$(GO) build -o $(AGENT_BIN) ./cmd/agent
 
 test:
 	$(GO) test ./... -race -cover

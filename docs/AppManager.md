@@ -99,18 +99,22 @@ Leader election is a **pluggable interface** (`internal/leaderelection.Elector`:
 
 - **The designation** lives in git config: a `primary` node, and nothing else. It names a *node*, not an instance, so the agent's own blue-green self-upgrade needs no designation change.
 - **Every agent publishes two things on its own instance:** the git commit its designation came from, and whether it is acting. These are `user.*` keys only it writes, so there's no compare-and-swap anywhere.
+  - As built (#101, `internal/incusregistry`), they're `user.homelab-ops.agent.{node,generation,commit,acting,draining,drain-reason}`, plus a `heartbeat` timestamp and a human-readable `status` (why it is or isn't acting) that `incus list` shows and nothing decides on.
+  - A peer is an instance that carries the App tag `user.homelab-ops.app` with the same value as the agent's own instance (so agents of another App on the same Incus, such as a validate script's, never elect together with real ones), carries `user.homelab-ops.agent.node` (which only an agent's own publication writes), and that Incus reports as exactly `Running`. An agent whose own instance fails that test is invisible to its peers, so it refuses to lead.
+  - "In its own history" means reachable from the commit of its last successful sync. The agent keeps a persistent full clone for that lookup (`internal/configsync.Clone`).
 - **An agent acts iff all of these hold:**
   - it runs on the primary node;
-  - every running peer's commit is in its own git history. Otherwise it's behind: it stands down and re-syncs;
+  - every running, non-draining peer's commit is in its own git history. Otherwise it's behind: it stands down and re-syncs. A peer drained for sync failure can't republish, so its commit is stale evidence that would stall everyone after a force-push;
   - no other running agent is acting;
   - it's the one instance on its node that should act: not draining, with no older non-draining instance beside it.
 
   It publishes `acting: true`, then re-reads its peers before its first action. It publishes `acting: false` only after it has fully stopped.
 - **Self-upgrade hand-off.** The old leader creates its candidate as for any App. Once it sees the candidate sustained-healthy, it marks itself `draining` (#109), stops, and clears `acting`. The candidate then leads, runs `Promote`, and deletes the old instance; the old one never deletes itself.
-- **An agent also self-drains if its own git sync fails persistently** (`Source()` errors after N consecutive failures, #101) — durable and `incus list`-visible, unlike silently returning not-leader each tick. A fleet-wide git outage then means zero leaders, not two, which this design treats as acceptable. Un-draining once sync recovers is only safe if no higher-generation peer on the same node has since gone non-draining (meaning a newer generation already took over while this one was down) — see `docs/Decisions.md` §25's addendum for why that check belongs to the agent's drain/un-drain logic, not to `MayAct` itself.
+- **An agent also self-drains if its own git sync fails persistently** (`Source()` errors after N consecutive failures, #101) — durable and `incus list`-visible, unlike silently returning not-leader each tick. A fleet-wide git outage then means zero leaders, not two, which this design treats as acceptable. Recovery means a sync that actually succeeds, not merely a failure count back under the threshold: a restarted agent's count starts at zero. Un-draining once sync recovers is only safe if no higher-generation peer on the same node has since gone non-draining (meaning a newer generation already took over while this one was down) — see `docs/Decisions.md` §25's addendum for why that check belongs to the agent's drain/un-drain logic, not to `MayAct` itself.
 - **Failover is the operator's, and it's one commit: change `primary`.**
   - The new primary waits until the old one has seen that commit and cleared `acting`, so the two never overlap.
   - A dead or partitioned old primary drops out of the running-peers list, because Incus reports instances on an offline member as Stopped or Error.
+  - A partitioned old primary also stops by itself: its member, without quorum, can't serve its peer read. That fences its work only because every leader action is an Incus call, so **leader work must stay inside Incus** until it has a fence of its own (`docs/Decisions.md` §25's guarantee).
   - A hung one, still Running with `acting` set, blocks the takeover until a person stops it. The web app's missing-primary-heartbeat alert is what prompts them. There's deliberately no timeout: the code holds no timers.
   - A resurrected old primary on a stale checkout sees a peer on a commit it lacks, and stands down.
 

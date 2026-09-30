@@ -47,7 +47,7 @@ long multi-issue sessions were ~77% of the cost.
 
 ## Commands
 
-    make build   # builds both binaries: bin/bootstrap (CLI) and bin/web (web app)
+    make build   # builds bin/bootstrap (CLI), bin/web (web app) and bin/agent (app-manager agent)
     make test    # go test ./... -race -cover
     make lint    # golangci-lint via Docker — slow; run before declaring done
     make fmt     # gofmt + goimports

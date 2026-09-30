@@ -36,7 +36,7 @@ func TestExamplesParseAndValidate(t *testing.T) {
 	for _, name := range dirs {
 		t.Run(name, func(t *testing.T) {
 			cfg := parseRepoRoot(t, filepath.Join(examplesDir, name))
-			if len(cfg.Networks)+len(cfg.Instances)+len(cfg.Apps) == 0 {
+			if len(cfg.Networks)+len(cfg.Instances)+len(cfg.Apps)+len(cfg.Designations) == 0 {
 				t.Fatalf("no documents parsed; an example must declare something")
 			}
 			if issues := Validate(cfg); !issues.Empty() {
@@ -73,9 +73,7 @@ func parseRepoRoot(t *testing.T, dir string) Config {
 		if err != nil {
 			t.Fatalf("parse %s: %v", n, err)
 		}
-		cfg.Networks = append(cfg.Networks, parsed.Networks...)
-		cfg.Instances = append(cfg.Instances, parsed.Instances...)
-		cfg.Apps = append(cfg.Apps, parsed.Apps...)
+		cfg.Append(parsed)
 	}
 	return cfg
 }

@@ -1,0 +1,10 @@
+# Which node's agent leads (docs/Decisions.md §25). Exactly zero or one of
+# these per repo: with none, no agent acts. `primary` names an Instance, a node,
+# not an agent instance, so an agent's own blue-green upgrade needs no change
+# here.
+#
+# Failing over is one commit changing `primary`. The new primary waits until
+# the old one has seen that commit and stopped acting, so the two never
+# overlap. If the old primary's agent is hung rather than dead, stop it first.
+kind: Designation
+primary: node0

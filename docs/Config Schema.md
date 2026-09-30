@@ -14,11 +14,11 @@ this schema.
 Later sections:
 
 - **What each reader does with the repo:** the web app, `bootstrap
-  render-seed`, and the agent (planned).
+  render-seed`, and the agent.
 - **Known gaps:** things the checks don't catch today.
-- **Proposed additions:** a sketch of the schema changes in flight (#101,
-  #181, #199). None of those is implemented, and the strict parser rejects
-  them today.
+- **Proposed additions:** a sketch of the schema changes in flight (#181,
+  #199). None of those is implemented, and the strict parser rejects them
+  today.
 
 ## The repo
 
@@ -52,8 +52,8 @@ in mind that a public repo publishes everything in it. §28 of
 
 Every document must set `kind:`. Anything else is a parse error: a missing
 `kind`, an unrecognised one, or an unknown field (a typo'd `statc_ip` fails
-loudly rather than being dropped). Three kinds exist: `Network`, `Instance`
-and `App`.
+loudly rather than being dropped). Four kinds exist: `Network`, `Instance`,
+`App` and `Designation`.
 
 Addresses (`cidr`, `gateway`, `static_ip`, `dns`, `dhcp_excluded_range`) are
 checked for syntax at parse time. The semantic checks below run afterwards, as
@@ -147,13 +147,45 @@ There's deliberately no placement, strategy or version field; see
 `docs/AppManager.md` § `kind: App` schema. App reconciliation is paused under
 §27 (#98) apart from the agent itself (#203).
 
+### `kind: Designation`
+
+Which node's agent leads: `leaderelection.Designated`, `docs/Decisions.md`
+§25 (#101).
+
+```yaml
+kind: Designation
+primary: node0   # an Instance name: a node, not an agent instance
+```
+
+| Field | Type | Required | Rules and meaning |
+|---|---|---|---|
+| `primary` | string | yes | Must name a declared Instance, exactly as written. |
+
+- **At most one per repo.** A second is a validation issue
+  (`designations[1]`). Zero is valid and means no agent acts: the safe
+  default, matching `MayAct` treating an unknown designation as "not leader".
+- **There's no `epoch`.** A stale checkout is fenced by git itself: each
+  agent publishes the commit it's on, and an agent behind a peer stands down.
+  A new primary also waits for the old one to publish that it has stopped
+  acting. So a failover is one commit changing `primary` (§25's #212
+  addendum). An `epoch:` left in a repo is rejected as an unknown field
+  rather than silently ignored.
+- **It names a node, not an agent instance,** so the agent's own blue-green
+  self-upgrade needs no change here.
+- **Why a kind of its own** rather than `primary: true` on an `Instance` or a
+  field on the agent `App`: leadership is fleet-wide, not a property of a
+  node or of the agent's image; a separate document shows up on its own in a
+  change report; and it can be validated, which a string in `params` can't.
+- The web app parses and validates it, but doesn't store it or report
+  changes to it yet.
+
 ## What each reader does with the repo
 
 | Reader | Reads | Differences |
 |---|---|---|
 | **Web app** | The branch above, on `POST /sync` or every `CONFIG_SYNC_INTERVAL` | Runs `Validate`, then IPAM. An omitted `static_ip` gets an address from the network's `dhcp_excluded_range`, stable across syncs. It errors if the range is unset or exhausted. The web app stores the result, reports what changed against the previous sync, and renders each node's seed and image from it. |
 | **`bootstrap render-seed`** | One local file (`--file`), no git | Needs **exactly one** Network and one Instance; Apps are ignored. There's no IPAM, so an omitted `static_ip` means DHCP, and the node comes up unclustered. Use [`examples/single-node/`](https://github.com/ehharvey/homelab-ops/tree/main/examples/single-node). |
-| **Agent** (planned, #101) | The same repo, cloned by the agent itself (§27) | Runs with the web app down. It reads Apps and the designation (Proposed, below), never addressing. |
+| **Agent** (`cmd/agent`, #101) | The same repo, from its own `CONFIG_REPO_URL`/`CONFIG_REPO_REF` | Runs with the web app down. It keeps a persistent full clone (`AGENT_REPO_DIR`) and fetches into it, rather than a fresh shallow clone, because leader election asks whether a peer's commit is in its history. It runs `Validate` too, and a commit that fails keeps the previous one current. Today it reads only the Designation; it never reads addressing. |
 
 ## Known gaps
 
@@ -180,44 +212,6 @@ the schema above so they can be judged together. **Nothing here is
 implemented.** The strict parser rejects every field and kind in this section.
 Each owning issue makes the final call; where there's a recommendation, it's
 only that.
-
-### The leader designation (#101)
-
-The agents need to know which node's agent leads: `leaderelection.Designation`
-in §25.
-
-```yaml
-kind: Designation
-primary: node0   # an Instance name: a node, not an agent instance
-```
-
-That's the whole document. A stale checkout is fenced by git itself: each
-agent publishes the commit it's on, and an agent behind a peer stands down.
-A new primary also waits for the old one to publish that it has stopped
-acting. So a failover is one commit changing `primary`. This replaced an
-earlier `epoch` field; see §25's #212 addendum.
-
-**Recommendation: a new singleton `kind: Designation`.**
-
-- **Leadership is fleet-wide.** It isn't a property of the agent App's image
-  or cardinality.
-- **A separate document shows up on its own.** The web app's change report
-  lists a failover as a change to leadership, not as an edit to a node or
-  an App.
-- **It can be validated.** On the agent App it would be either a generic App
-  field that means something to one renderer only, or a string in `params`,
-  which nothing checks.
-
-`primary: true` on an `Instance`, with at most one allowed, was considered.
-It needs no new kind, but it reads as an edit to a node rather than a
-change of leadership.
-
-Rules:
-
-- At most one per repo. Zero means no agent acts. That's a safe default, and
-  it matches `MayAct` treating an unknown designation as "not leader".
-- `primary` must name a declared Instance, so #210's name validation comes
-  first.
 
 ### Cluster membership (#181)
 

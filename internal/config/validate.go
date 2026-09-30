@@ -44,7 +44,8 @@ func (is Issues) Error() string {
 // Instance needs a unique hostname-label name and a declared network. For an
 // App it covers the required fields Parse can't enforce (yaml.v3 has no notion
 // of a required key, so an omitted `replicas:` reaches here as a zero value)
-// and at most one per-node App per renderer type.
+// and at most one per-node App per renderer type. For a Designation, it
+// checks there's at most one and that it names a declared Instance.
 //
 // It returns all issues found rather than stopping at the first, so an
 // operator fixing a bad commit sees every problem at once.
@@ -184,6 +185,8 @@ func Validate(c Config) Issues {
 		}
 	}
 
+	validateDesignations(c, add)
+
 	return issues
 }
 
@@ -210,6 +213,32 @@ func isHostnameLabel(s string) bool {
 		}
 	}
 	return !allDigits
+}
+
+// validateDesignations checks the leader designation (#101): at most one per
+// repo, and its primary must name a declared Instance. Zero is valid and means
+// no agent leads — the safe default, matching MayAct's "unknown ⇒ not leader".
+//
+// Instance names are matched exactly as written. Whether those names are
+// themselves well-formed is the Instance checks' concern, not this one's.
+func validateDesignations(c Config, add func(path, msg string)) {
+	instances := make(map[string]bool, len(c.Instances))
+	for _, inst := range c.Instances {
+		instances[inst.Name] = true
+	}
+	for i, d := range c.Designations {
+		path := fmt.Sprintf("designations[%d]", i)
+		if i > 0 {
+			add(path, "at most one Designation per repo; already defined by designations[0]")
+			continue
+		}
+		switch {
+		case strings.TrimSpace(d.Primary) == "":
+			add(path+".primary", "must name an Instance")
+		case !instances[d.Primary]:
+			add(path+".primary", fmt.Sprintf("references unknown instance %q", d.Primary))
+		}
+	}
 }
 
 // networkAndBroadcast returns p's network (lowest) and broadcast (highest)

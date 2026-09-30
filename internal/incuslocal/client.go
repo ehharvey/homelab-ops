@@ -30,8 +30,9 @@
 // compare-and-swap: with 16 concurrent writers on one ETag, ~15% of rounds
 // admitted two winners, because the check and the write are not atomic. So
 // nothing here should be built on it. Leadership instead comes from an
-// operator's git-declared designation with epoch fencing
-// (internal/leaderelection.Designated, #108), which contends for nothing.
+// operator's git-declared designation, fenced by git commits with an acting
+// handoff (internal/leaderelection.Designated, #108, #212), which contends for
+// nothing.
 //
 // SetUserKeys is consequently unconditional, and safe only because of a
 // property its callers hold rather than anything this package enforces: an

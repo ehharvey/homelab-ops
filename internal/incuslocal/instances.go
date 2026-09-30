@@ -176,13 +176,13 @@ func (c *Client) DeleteInstance(ctx context.Context, name string) error {
 //     the check and the write are not atomic, and under contention two
 //     writers both succeed (~15% of rounds with 16 writers). It would buy
 //     the appearance of safety, not safety.
-//   - Read-modify-write logic therefore belongs above this package, where
-//     the single-writer argument is visible. leaderelection.Registry.Record's
-//     epoch ratchet ("raise to at least epoch, never lower") is exactly such
-//     a read-then-max-then-write, and it lives in #101 for that reason. If
-//     it were expressed here it would read as an RMW wanting a
-//     compare-and-swap, and the justification for having none would sit
-//     nowhere near it.
+//   - Read-modify-write logic, if a caller ever needs one, belongs above
+//     this package, where the single-writer argument is visible. If it were
+//     expressed here it would read as an RMW wanting a compare-and-swap, and
+//     the justification for having none would sit nowhere near it. (The
+//     epoch ratchet that was the motivating case went away with #212; the
+//     Incus-backed leaderelection.Registry, internal/incusregistry, now only
+//     ever writes whole values.)
 //
 // Using this method against an instance other than the caller's own breaks
 // the single-writer premise, and concurrent writers will lose updates.
