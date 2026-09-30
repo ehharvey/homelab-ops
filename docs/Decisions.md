@@ -1513,6 +1513,8 @@ Requirement: **at most one agent performs leader-only writes at a time.** Idle p
 
 Leader election is an interface, `internal/leaderelection.Elector`, answering `MayAct(ctx) (Decision, error)`. Callers ask before every leader-only action and treat an error as "not leader". 0.x ships one implementation, `Designated`; a second (ranked) can replace it with no change to the reconcile loop.
 
+> **Superseded in part (2026-09-30, #212):** the `Epoch` and the operator's "fence, then raise the epoch" step are replaced by git commits and an acting handoff. See the addendum at the end of this section.
+
 **Designated.** Git config names a `Primary` node and a monotonic `Epoch`. An agent may act iff it runs on the designated primary *node*, no agent has recorded an epoch higher than the designation's, and it is the one instance on that node that should act: not draining, with no older non-draining instance beside it. The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself. Every agent, primary or not, records the epoch it sees on its own instance (a `user.*` key it alone writes — no CAS, no contention) *before* reading its peers'; the record is a ratchet that never lowers. A resurrected old primary on a stale git checkout therefore stands down the moment any peer has seen the newer designation.
 
 The operator's half of the protocol is what makes it a single-writer guarantee: **fence the old primary (stop or delete its agent instance) before raising the epoch.** The code holds no timers and detects no failures; it is a pure function of the designation and the recorded epochs. The web app already polls, so it alerts on a missing primary heartbeat; a person acts on it. Failover time is however long that takes, which is within 0.x's minutes-scale bar, and in 0.x — one physical node — there is no second node to fail over to, so nothing is lost.
@@ -1564,6 +1566,105 @@ So the check belongs on the *write* side, as a one-time gate before clearing `Dr
 This means `Peer.Draining` now has two triggers with different lifecycles behind one bool: self-upgrade draining (§ Leader election hand-off) is permanent, cleared by nothing but the instance's own deletion; sync-failure draining is conditionally recoverable, per the rule above. `MayAct`'s read-side logic doesn't need to know which — it only ever asks "is this peer currently draining" — but #101's agent loop does, since only it decides whether and when to clear the flag. Worth tracking explicitly in #101's implementation (e.g., recording *why* an instance drained is a fine reason to keep, even if `Registry`/`Peer` itself stays reason-agnostic).
 
 **Separately, purely diagnostic — record last-synced git state, but don't feed it to `MayAct`.** Recording each agent's last-successfully-synced git SHA (or just a sync timestamp) is worth doing so the web app's alerting can surface "Incus-alive but git-stuck" *before* a failover is needed — the operator's fencing decision benefits from that visibility. It's kept a separate key the agent writes for observability, not a field the `Elector`/`Registry` interfaces expose or `MayAct` reads: using git-history recency as a leadership input was considered and rejected — an arbitrary commit (a docs edit, a dependabot bump) would make an uninvolved peer look "more current" with no bearing on who should lead, and comparing SHAs for freshness needs ancestry or timestamp machinery a plain `int64` epoch (an operator-controlled total order that only moves on a real failover decision) avoids by construction. `Epoch` stays the only input to the leadership decision; SHA/timestamp is for humans, not the algorithm.
+
+### Addendum (2026-09-30, #212): git commits and an acting handoff replace the epoch
+
+**This supersedes the epoch.** It replaces:
+
+- the `Epoch` half of the Decision above;
+- the operator's "fence, then raise the epoch" step;
+- the #187 addendum's rejection of git history as a leadership input.
+
+The rest of §25 stands: the `Elector` interface, `Designated` naming a *node*, the same-node generation rule, the #187 sync-failure threshold and self-draining, and the deferred ranked election.
+
+#### Why revisit
+
+- **The epoch is a second source of truth.** Git already puts every change in order. The epoch is a hand-maintained counter that has to move in step with `primary`, and the code only protects the operator who remembers to move it.
+- **A change of `primary` at the same epoch isn't fenced, as the code shipped.** `MayAct` stands an agent down only when a peer has recorded a *strictly higher* epoch. So with `node0 / 1` changed to `node1 / 1`, both nodes act until node0 next syncs. That could be one poll interval, or much longer if node0 keeps seeing a stale view.
+
+#### Decision: commits fence
+
+- **Each agent publishes the commit its designation came from.** That's its last successful sync's `HEAD`, written as a `user.*` key on its own instance: single-writer, as before.
+- **An agent may act only if every running peer's published commit is in its own history.** A peer on a commit it doesn't have is ahead of it. The agent then stands down and triggers an immediate re-sync, instead of waiting for its next poll.
+- **A peer that is behind never blocks anyone.** The rule is one-sided: only evidence that *I* am behind stops me.
+- **Agents keep the full repo history** in a persistent clone, not a fresh depth-1 clone per sync (a config repo is tiny). That makes "in my history" a local lookup. It's also why the published commit alone is enough, rather than the last *N* commits: with only *N*, an agent more than *N* commits behind finds no evidence it's stale, and carries on.
+- **No ratchet.** An agent publishes whatever commit it is on, and that may go *backwards*, e.g. after a force-push rollback. The read-modify-write that #160 pushed up to #101's layer disappears with it.
+
+This is the same fence the epoch gave: a resurrected old primary on a stale checkout sees a peer on a commit it lacks, and stands down. The difference is that the fence now comes from git itself, and moves on every commit rather than only when the operator remembers to move it.
+
+**Reversing #187.** Its addendum rejected git recency as a leadership input for two reasons. Both are answered here:
+
+1. **"An arbitrary commit would make an uninvolved peer look more current, with no bearing on who should lead."** Being ahead never *makes* an agent leader: leadership is still exactly `primary`. It only makes agents that are behind pause until they catch up. The residual cost is real, and accepted below: every push briefly pauses the leader.
+2. **"Comparing SHAs needs ancestry machinery an `int64` avoids."** With a persistent full clone, the ancestry check is "is this commit in my repo", and go-git answers that locally. The cost moved from a counter the operator maintains to a clone the agent maintains, which is the better side for it to be on.
+
+#### Decision: the acting handoff
+
+Commits tell an agent it's stale. They don't stop the new primary from starting before the old one has finished its in-flight work. So each agent also publishes whether it is acting, and a new primary waits.
+
+**Before acting,** an agent:
+
+1. publishes `acting: true`;
+2. *re-reads* its peers;
+3. acts only if every check below still passes. Otherwise it clears the flag and does nothing this tick.
+
+Publishing and then re-reading means that of two agents claiming at the same moment, at least one sees the other. That's the Dekker ordering §25 already relies on. Both backing off is safe. The next tick settles it, because the one that's behind stays out.
+
+**When it stops,** because a check fails or it is draining, it finishes or abandons its in-flight work and *only then* publishes `acting: false`.
+
+**A newly designated primary takes over only when no other running agent shows `acting: true`.** Failing over from node0 to node1:
+
+1. node1 syncs the change, publishes it, and waits, because node0 shows `acting: true`.
+2. On node0's next tick, it sees node1's commit, which it doesn't have. It stops, publishes `acting: false`, and re-syncs.
+3. node1 takes over.
+
+There's no overlap and no timer. The handoff takes as long as node0's next tick. A same-node self-upgrade gets the same guarantee: the candidate also waits for the old generation's `acting: false`, which the old one publishes once it drains (#109).
+
+**On startup,** an agent clears its own `acting` before anything else. A flag left by its previous run is its own, and it isn't acting.
+
+#### The full rule
+
+An agent may act iff, all at once:
+
+1. its designation, from its own last successful sync (within #187's failure threshold), names its node as primary;
+2. every running peer's published commit is in its own history;
+3. no other running peer shows `acting: true`;
+4. it isn't draining, and no older non-draining instance runs on its node.
+
+It re-checks all four after publishing `acting: true`, before its first action.
+
+#### Failure cases, and what they cost
+
+- **The old primary's node is dead or partitioned.** Its `acting: true` is left behind, so the peer list must exclude instances that aren't running, as §25 already required.
+  - Incus reports instances on an offline member as Stopped or Error, never Running, so they drop out without special handling. The peer list must therefore count an instance as running only when Incus reports it `Running`, not merely "not stopped". #184's node-loss test should assert this on a real multi-member cluster, since the handoff depends on it.
+  - A member without quorum can't act regardless. Every action goes through the cluster's Incus API, which refuses without quorum.
+- **The old primary is hung, with its instance Running and `acting: true`, but it isn't ticking.** Takeover blocks. That's safe but not live.
+  - The missing-primary-heartbeat alert fires, and the operator stops the hung agent instance.
+  - Deliberately, there's **no timeout** on `acting`. A process that passed its checks, froze, and then woke mid-action would overlap its successor if the flag could expire. Without one, it can't: the successor is still waiting for the flag that process never cleared. Lease designs can't make this promise. The cost is that a hung primary needs a person to stop it, which §25's no-timers stance already accepted.
+- **Every push pauses the leader.** A follower that syncs first publishes a commit the leader lacks, so the leader stands down until it has fetched. That's about one fetch, given the immediate re-sync, and it happens even for commits unrelated to leadership, because a stale agent can't know what a commit it lacks contains. Minutes-scale RTO absorbs it.
+- **A force-push stalls leadership.** Agents on the old history and the new each see the other's commit as unknown, and all stand down until they converge. That's zero leaders, never two. Force-pushing the config repo's branch should be rare.
+
+**The guarantee** is that at most one agent acts at any moment. It holds provided that:
+
+- `acting` is written in the order above;
+- the peer list reliably excludes instances that aren't running;
+- one agent's write is visible to another's next read. That was already §25's assumption, unverified across members.
+
+**The operator's failover** becomes: if the old primary's agent is hung, stop it; then commit the new `primary`. There's no epoch to raise, and no fencing step for a dead or cleanly stopped primary.
+
+#### Consequences
+
+- **The designation is `primary` only** (`docs/Config Schema.md`).
+- **`internal/leaderelection` changes (#101 builds it):**
+  - `Designation` loses `Epoch`.
+  - `Peer.Epoch` becomes the published commit, and `Peer` gains `Acting`.
+  - `Registry.Record` publishes the commit and the acting state, with no ratchet.
+  - `Designated` gains a "have I got this commit?" lookup, backed by the agent's clone.
+- **The agent's git sync** becomes a persistent clone that it fetches into.
+- **#187's diagnostic SHA key becomes the published commit itself,** now an input rather than just a diagnostic. The web app can show each agent's lag ("node2 is 3 commits behind").
+- **To verify:**
+  - that the peer list excludes an offline member's instances, which Incus reports as Stopped or Error (asserted in #184);
+  - cross-member read-after-write visibility (as before);
+  - how go-git handles a force-pushed branch in a persistent clone.
 
 ## 26. Incus clustering: 0.x claimed a one-member cluster it never built; splitting the fix into Tier A and Tier B (#177)
 

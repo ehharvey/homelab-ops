@@ -81,8 +81,9 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   booted node (`node-boots-and-trusts-bootstrap-cert.sh`, 12/0/0); growing
   past one member is Phase 4: DONE; see #178, `docs/Decisions.md` §26
 - [ ] Per-node app-manager agent with an operator-designated leader: one agent
-  instance per node; a single primary named in git (with a monotonic epoch that
-  fences a stale checkout) is the only one that reconciles a new `kind: App`
+  instance per node; a single primary named in git (fenced by git commits and
+  an acting handoff, so a stale checkout stands down and a new primary waits
+  for the old one, `docs/Decisions.md` §25's #212 addendum) is the only one that reconciles a new `kind: App`
   object across the whole fleet via a small renderer registry, proven by
   managing its own fleet (blue-green self-upgrade, driven fleet-wide by the
   primary) — see #92, `docs/Decisions.md` §25. Leader election is a pluggable
@@ -98,12 +99,13 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     one-acting-instance-per-node through a self-upgrade). Replaces the Incus
     ETag-CAS lease #160's spike showed isn't a compare-and-swap; records every
     alternative weighed, and the deferred ranked-over-Incus protocol, in
-    `docs/Decisions.md` §25: DONE; see #108
+    `docs/Decisions.md` §25: DONE; see #108. Its epoch is replaced by commit
+    fencing and an acting handoff (#212), which #101 builds.
   - [x] `internal/incuslocal` — the unix-socket Incus client the reconciler and
     the `Registry` share. No conditional write: #160's own spike measured that
     Incus's `If-Match` is a lost-update guard rather than a compare-and-swap,
     so the epoch ratchet stays a single-writer read-modify-write above this
-    layer (#101). `Exec` gave way to `ReadFile`, since `Healthy` is defined as
+    layer (#101; since #212 there's no ratchet at all). `Exec` gave way to `ReadFile`, since `Healthy` is defined as
     the freshness of a heartbeat file: DONE; see #160
   - [ ] *(paused, §27)* App renderer registry + fleet-wide reconcile
     algorithm; fleet reconciliation only ever runs while the caller's
@@ -150,7 +152,8 @@ The original done-when, kept for when the paused items resume: a per-node
 agent fleet whose designated primary deploys and upgrades the fleet
 (blue-green, fleet-wide, including its own self-upgrade with no reconciliation
 gap) from git-declared config, with a stale-checkout primary fencing itself out
-once a higher epoch exists.
+once a peer is on a newer commit (§25's #212 addendum; this originally said
+"a higher epoch").
 
 ## Phase 3.5 — The validate suite made runnable
 
@@ -253,8 +256,8 @@ work is tracked separately and is not part of this section.)
 rather than by hand and each running an agent, survives losing any one
 member. Incus keeps quorum and the remaining agents keep running, with no
 operator intervention beyond eventually replacing the member — plus, if it
-was the designated primary, the operator's §25 failover (fence, then raise
-the epoch) before the replacement can be joined. (Placement of `kind: App`
+was the designated primary, the operator's §25 failover (commit a new
+`primary`, #212) before the replacement can be joined. (Placement of `kind: App`
 workloads across members is paused with #182; see `docs/Decisions.md` §27.)
 `docs/Decisions.md` §25's `leaderelection.Designated` is re-weighed against the deferred
 ranked-over-Incus election once real membership exists to make the automated
