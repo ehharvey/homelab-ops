@@ -1636,7 +1636,8 @@ It re-checks all four after publishing `acting: true`, before its first action.
 
 - **The old primary's node is dead or partitioned.** Its `acting: true` is left behind, so the peer list must exclude instances that aren't running, as §25 already required.
   - Incus reports instances on an offline member as Stopped or Error, never Running, so they drop out without special handling. The peer list must therefore count an instance as running only when Incus reports it `Running`, not merely "not stopped". #184's node-loss test should assert this on a real multi-member cluster, since the handoff depends on it.
-  - A member without quorum can't act regardless. Every action goes through the cluster's Incus API, which refuses without quorum.
+  - The partitioned old primary stops by itself, and doesn't keep a stale peer list. Its agent reads its peers from its own member's Incus on every tick, and a member without quorum can't serve that read. The read errors, an error means "not leader", and the agent stops at its next tick. (Unverified: #184 should assert that a minority member refuses reads, not just writes.)
+  - That stops the *agent*, not its work. Work is fenced only if it can't complete without quorum, which is why the guarantee below makes "every leader action is an Incus call" a condition.
 - **The old primary is hung, with its instance Running and `acting: true`, but it isn't ticking.** Takeover blocks. That's safe but not live.
   - The missing-primary-heartbeat alert fires, and the operator stops the hung agent instance.
   - Deliberately, there's **no timeout** on `acting`. A process that passed its checks, froze, and then woke mid-action would overlap its successor if the flag could expire. Without one, it can't: the successor is still waiting for the flag that process never cleared. Lease designs can't make this promise. The cost is that a hung primary needs a person to stop it, which §25's no-timers stance already accepted.
@@ -1647,7 +1648,8 @@ It re-checks all four after publishing `acting: true`, before its first action.
 
 - `acting` is written in the order above;
 - the peer list reliably excludes instances that aren't running;
-- one agent's write is visible to another's next read. That was already §25's assumption, unverified across members.
+- one agent's write is visible to another's next read. That was already §25's assumption, unverified across members;
+- every leader-only action is an Incus API call through the agent's own member. Across a partition, nothing in `MayAct` fences the isolated side; Incus quorum does, by refusing its calls. Work outside Incus (a git push, DNS, an external API) has no such fence. It needs its own before an agent may do it, or it waits for the ranked election. One gap remains: an Incus operation already running on the isolated daemon when the partition starts may not be stopped by it.
 
 **The operator's failover** becomes: if the old primary's agent is hung, stop it; then commit the new `primary`. There's no epoch to raise, and no fencing step for a dead or cleanly stopped primary.
 
@@ -1663,8 +1665,33 @@ It re-checks all four after publishing `acting: true`, before its first action.
 - **#187's diagnostic SHA key becomes the published commit itself,** now an input rather than just a diagnostic. The web app can show each agent's lag ("node2 is 3 commits behind").
 - **To verify:**
   - that the peer list excludes an offline member's instances, which Incus reports as Stopped or Error (asserted in #184);
+  - that a member without quorum refuses `GET /1.0/instances`, so a partitioned agent stops at its next tick (a live partition, in #184, not only node loss);
   - cross-member read-after-write visibility (as before);
   - how go-git handles a force-pushed branch in a persistent clone.
+
+### Addendum (2026-09-30, #101): what building it settled
+
+- **go-git and a force-push: verified, and the failure is silent.** Without a `+` (force) refspec, go-git v5.19's fetch *succeeds* and leaves the tracking ref on the abandoned commit, so an agent would sit on a stale checkout indefinitely with no error. `configsync.Clone` fetches `+refs/heads/<ref>:refs/remotes/origin/<ref>`; `TestCloneFollowsAForcePush` pins it.
+- **"In my history" means reachable from the commit of my last successful sync.** It doesn't mean "the object is in my clone". A clone keeps abandoned commits after a force-push, so an object-presence check would let the agent that fetched the rewrite trust a peer still on the old history. Ancestry gives exactly the addendum's force-push prediction instead: both sides see the other as unknown, and both stand down until they converge.
+  - **A rollback is the one case commits don't fence.** Suppose a push resets the branch to an ancestor. An agent still on the newer, removed commit sees the rolled-back commit as in its history, so it keeps acting on its stale designation until its next poll. The acting handoff still prevents overlap, because the new primary waits for its flag. Only liveness suffers.
+- **A commit that fetches but fails to parse or validate is a failed sync.** It counts toward #187's threshold. The previous commit stays current, and that's the commit the agent publishes. An agent whose binary accepts the newer commit therefore looks *ahead* to one that doesn't, and the latter stands down. That's the conservative reading: an agent that can't use HEAD is behind.
+- **Two small checks beyond the four-part rule**, both making a claim that nobody could see impossible:
+  - an agent whose own instance isn't in the running-peer list refuses to lead;
+  - after publishing `acting: true`, the re-read must show its own flag set. That holds on every tick an agent is already acting too, not only on a fresh claim: each tick re-publishes the flag before reading, so that read is also one taken after publishing.
+- **Refinements from #219's review**, each narrowing the rule above rather than changing its shape:
+  - **Peers are the agent's own App's instances.** A peer must carry the same `user.homelab-ops.app` value as the agent's own instance. Without that, every agent on one Incus elected together, so a validate script's throwaway agents fenced real ones with commits from a history they don't share, and held them off with their acting flag. The App is read from the agent's own listed instance, not configured.
+  - **Rule 2 skips draining peers.** A peer drained for sync failure can't republish (its `Source` errors before `Record`), so after a force-push its abandoned commit would hold every agent Behind until it reached git again. A draining peer that is still acting still fences, through rule 3. The cost: if the only peers ahead of a stale primary are drained, it isn't fenced by commit; the acting handoff still keeps it from overlapping anyone.
+  - **Un-draining needs a successful sync.** "Not failing" isn't recovery, since a restarted agent's failure count starts at zero; otherwise a drained agent that restarts with git still unreachable un-drains on its first tick.
+  - **A claim whose re-read fails is withdrawn by `MayAct` itself**, as when the re-check fails, rather than left to the caller's `Stop`.
+- **Shape of the code.** `Designation` keeps a `Commit` alongside `Primary`, since only the sync knows which commit a designation came from.
+  - `MayAct` performs the claim itself, so a `Leader` answer always means `acting` is published and re-checked.
+  - `Stop` is separate, because only the caller knows when its work has stopped.
+  - `MayUndrain` is the #187 un-drain gate, as a pure function.
+  - The tick loop, with the drain state machine and acting bookkeeping, is `internal/agent`, so #109's self-upgrade handoff can reuse it; `cmd/agent` only wires it to the environment.
+- **Proven against real Incus** by `scripts/validate/agents-act-one-at-a-time-through-failover.sh`. Three agent processes, each claiming a throwaway container's identity, show:
+  - exactly one acts;
+  - a `primary` change hands over in about one tick, with no snapshot or log interval showing two acting;
+  - a stale-checkout agent that believes it's primary stands down. A control then stops the peers that fence it, and the same agent acts.
 
 ## 26. Incus clustering: 0.x claimed a one-member cluster it never built; splitting the fix into Tier A and Tier B (#177)
 
