@@ -109,8 +109,13 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     algorithm; fleet reconciliation only ever runs while the caller's
     `Elector` says it may. Its zero-match branch for the agent App alone is
     split out as #203 (Phase 4) — see #98
-  - [ ] Preseed the `incus-socket` profile onto every node
-    unconditionally, since an agent now runs everywhere — see #99
+  - [x] Preseed the `incus-socket` profile onto every node
+    unconditionally, since an agent now runs everywhere. The socket lands at
+    `/dev/incus-host.sock` rather than the issue's `/mnt/incus/unix.socket`,
+    because Incus's proxy never creates the socket's parent directory, and an
+    image without it would fail to start. Proven on a real booted node: a
+    container there reaches the node's own Incus through the profile: DONE;
+    see #99
   - [ ] Deploy the agent's first instance — the web app route, plus the
     `bootstrap deploy-agent` CLI path, which needs no web app and is the
     recovery path if every agent is lost — see #100

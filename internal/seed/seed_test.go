@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -275,6 +276,78 @@ func TestRenderDHCPSkipsClustering(t *testing.T) {
 	}
 }
 
+// Every node runs an agent, so every rendered seed carries the profile it
+// reaches its host's Incus through — clustered or not, tunnelled or not.
+func TestRenderIncusPreseedAlwaysIncludesIncusSocketProfile(t *testing.T) {
+	_, appPub, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair: %v", err)
+	}
+	nodePriv, _, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair: %v", err)
+	}
+
+	dhcp := sampleInstance()
+	dhcp.StaticIP = netip.Addr{}
+	tunnelled := sampleInstance()
+	tunnelled.TunnelIP = netip.MustParseAddr("10.100.0.5")
+
+	cases := []struct {
+		name string
+		inst config.Instance
+		wg   *WireGuard
+	}{
+		{"static ip, clustered", sampleInstance(), nil},
+		{"dhcp, unclustered", dhcp, nil},
+		{"with wireguard", tunnelled, &WireGuard{
+			AppPublicKey:     appPub,
+			AppEndpoint:      "203.0.113.1:51820",
+			NodePrivateKey:   nodePriv,
+			BootstrapCertPEM: sampleClientCertPEM(t),
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := Render(sampleNetwork(), tc.inst, sampleClientCertPEM(t), tc.wg, Options{})
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if b.Incus.Preseed == nil {
+				t.Fatalf("Incus.Preseed = nil, want non-nil")
+			}
+
+			profiles := b.Incus.Preseed.Profiles
+			if len(profiles) != 1 {
+				t.Fatalf("len(Preseed.Profiles) = %d, want 1", len(profiles))
+			}
+			p := profiles[0]
+			if p.Name != IncusSocketProfile {
+				t.Errorf("Profiles[0].Name = %q, want %q", p.Name, IncusSocketProfile)
+			}
+			if p.Project != "default" {
+				t.Errorf("Profiles[0].Project = %q, want %q", p.Project, "default")
+			}
+
+			// Exactly these keys and no others: a stray nat=true would be
+			// rejected outright for a unix socket, and bind=host would put
+			// the socket on the host instead of in the instance.
+			want := map[string]map[string]string{
+				IncusSocketProfile: {
+					"type":    "proxy",
+					"bind":    "instance",
+					"listen":  "unix:/dev/incus-host.sock",
+					"connect": "unix:/var/lib/incus/unix.socket",
+				},
+			}
+			if !reflect.DeepEqual(map[string]map[string]string(p.Devices), want) {
+				t.Errorf("Profiles[0].Devices = %v, want %v", p.Devices, want)
+			}
+		})
+	}
+}
+
 func TestRenderWithWireGuard(t *testing.T) {
 	inst := sampleInstance()
 	inst.TunnelIP = netip.MustParseAddr("10.100.0.5")
@@ -426,6 +499,8 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 	for _, want := range []string{
 		"apply_defaults:", "preseed:", "certificates:", "type: client",
 		"core.https_address: 192.168.1.201:8443", "cluster:", "server_name: node0", "enabled: true",
+		"profiles:", "name: incus-socket", "project: default", "type: proxy", "bind: instance",
+		"listen: unix:/dev/incus-host.sock", "connect: unix:/var/lib/incus/unix.socket",
 	} {
 		if !strings.Contains(string(incusYAML), want) {
 			t.Errorf("incus.yaml missing %q, got:\n%s", want, incusYAML)

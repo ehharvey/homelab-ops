@@ -9,6 +9,9 @@
 #   3. The bootstrap cert authenticates against the installed node's Incus
 #      API — this single check proves both "install succeeded" and "the
 #      cert is trusted" at once.
+#   4. (#99) The node carries the preseeded incus-socket profile, and a
+#      container on the node given that profile reaches the node's own Incus
+#      through it — the route the app-manager agent depends on.
 #
 # Intended to run INSIDE the devcontainer, against the existing
 # "homelab-host" remote / "default" project / "home-lan" network set up
@@ -44,7 +47,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib-incus.sh
 . "$ROOT_DIR/scripts/validate/lib-incus.sh"
 
-VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, and comes up as a real one-member Incus cluster (#5, #178)"
+VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, comes up as a real one-member Incus cluster, and lets an instance reach its Incus through the preseeded incus-socket profile (#5, #178, #99)"
 VALIDATE_GROUP="incus-vm"
 VALIDATE_NEEDS="incus go jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~9m"
@@ -68,6 +71,8 @@ MAC="aa:bb:cc:dd:ee:ff"
 VM_NAME="validate-nodeboot-$$"
 WRITER_NAME="validate-nodeboot-writer-$$"
 PROBE_NAME="validate-nodeboot-probe-$$"
+# Lives on node0's own Incus, not on $REMOTE, so it goes with node0's disk.
+SOCKCHECK_NAME="validate-nodeboot-sockcheck"
 SEED_VOL="validate-nodeboot-seeded-img-$$"
 
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
@@ -178,7 +183,9 @@ if ! have_env_file INCUSOS_BASE_IMAGE; then
     "build-image exits 0" \
     "seed .img streamed onto $REMOTE as a block volume" \
     "VM installs IncusOS from the seeded image" \
-    "node trusts the bootstrap cert and is reachable over Incus API"; do
+    "node trusts the bootstrap cert and is reachable over Incus API" \
+    "node has the incus-socket profile preseeded" \
+    "a container on the node reaches the node's own Incus through incus-socket"; do
     skip_check "$_desc" base-image "$_why"
   done
 else
@@ -286,10 +293,42 @@ else
     members=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
       curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0/cluster/members" 2>/dev/null)
     check_json "node is the cluster's only member" "$members" '(.metadata | length) == 1'
+
+    # #99: every node is preseeded with the incus-socket profile, the
+    # agent's only route to its own host's Incus.
+    profile=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
+      curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0/profiles/incus-socket" 2>/dev/null)
+    check_json "node has the incus-socket profile preseeded" "$profile" \
+      '.metadata.devices["incus-socket"] | .type == "proxy" and .bind == "instance" and .listen == "unix:/dev/incus-host.sock" and .connect == "unix:/var/lib/incus/unix.socket"'
+
+    # The profile existing proves the seed, not the route: its connect path
+    # is an assumption about where IncusOS keeps Incus's socket. So launch a
+    # container on node0 with the profile attached from the start, as the
+    # agent will be, and ask node0's Incus who it is from inside. Its image
+    # is a moving tag, which §21's pinning would otherwise forbid; nothing
+    # here depends on its contents beyond sh and apk.
+    sock_response=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- sh -c "
+      set -e
+      apk add --no-cache incus-client >/dev/null
+      mkdir -p /root/.config/incus
+      cp /root/client.crt /root/.config/incus/client.crt
+      cp /root/client.key /root/.config/incus/client.key
+      incus remote add node0 https://$STATIC_IP:8443 --accept-certificate >/dev/null
+      incus launch images:alpine/edge node0:$SOCKCHECK_NAME --profile default --profile incus-socket >/dev/null
+      for _ in \$(seq 1 15); do
+        incus exec node0:$SOCKCHECK_NAME -- apk add --no-cache curl >/dev/null 2>&1 && break
+        sleep 2
+      done
+      incus exec node0:$SOCKCHECK_NAME -- curl -s --unix-socket /dev/incus-host.sock http://incus/1.0
+    " 2>&1)
+    check_json "a container on the node reaches the node's own Incus through incus-socket" "$sock_response" \
+      '.metadata.auth == "trusted" and .metadata.environment.server_name == "node0"'
   else
     record_fail "node trusts the bootstrap cert and is reachable over Incus API (node never became reachable)"
     record_fail "node reports itself as a clustered member (node never became reachable)"
     record_fail "node is the cluster's only member (node never became reachable)"
+    record_fail "node has the incus-socket profile preseeded (node never became reachable)"
+    record_fail "a container on the node reaches the node's own Incus through incus-socket (node never became reachable)"
   fi
 fi
 

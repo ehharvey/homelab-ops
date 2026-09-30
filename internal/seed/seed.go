@@ -218,12 +218,70 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 // (https://<ip>:8443).
 const incusHTTPSPort = "8443"
 
+// IncusSocketProfile names the profile preseeded onto every node so that an
+// instance can reach its own host's Incus API — the app-manager agent's only
+// route to Incus (docs/Decisions.md §27). Every node gets it unconditionally,
+// because every node runs an agent.
+const IncusSocketProfile = "incus-socket"
+
+// IncusSocketPath is where IncusSocketProfile's proxy device exposes the
+// host's Incus socket inside an instance.
+//
+// It sits directly in /dev because the proxy listens with a plain bind() and
+// never creates the socket's parent directory: under a directory the image
+// lacks, such as /mnt/incus, the device fails to start, and the instance
+// with it. Incus mounts a fresh /dev into every container before its devices
+// start, so this works for any image, OCI ones included, and leaves no stale
+// socket in the rootfs across restarts (measured on Incus 7, #99). The name
+// keeps clear of Incus's own guest API at /dev/incus/sock.
+const IncusSocketPath = "/dev/incus-host.sock"
+
+// hostIncusSocket is Incus's own unix socket on an IncusOS host, the default
+// path incus-osd itself connects to.
+const hostIncusSocket = "/var/lib/incus/unix.socket"
+
+// incusSocketProfile builds IncusSocketProfile. Its proxy device is
+// implemented host-side by Incus's own forkproxy, so it needs no privileged
+// instance. Constraints on anything that uses it:
+//
+//   - Anything that can open the socket is a local root client of the host's
+//     Incus, with full, unauthenticated admin rights. Attach this profile to
+//     the agent and nothing else.
+//   - The socket comes up root-owned, mode 0644 (Incus's defaults, measured
+//     on Incus 7), so only uid 0 inside the instance can connect.
+//   - Containers only. Incus refuses a non-NAT proxy on a VM, and its NAT
+//     mode carries only TCP and UDP (internal/server/device/proxy.go).
+//
+// A joining member's copy is discarded with its global database
+// (docs/Decisions.md §27); profiles are cluster-wide, so the bootstrap
+// member's copy is the one that reaches every member.
+func incusSocketProfile() lxcapi.InitProfileProjectPost {
+	return lxcapi.InitProfileProjectPost{
+		ProfilesPost: lxcapi.ProfilesPost{
+			Name: IncusSocketProfile,
+			ProfilePut: lxcapi.ProfilePut{
+				Description: "This host's Incus API socket, at " + IncusSocketPath + " inside the instance",
+				Devices: lxcapi.DevicesMap{
+					IncusSocketProfile: {
+						"type":    "proxy",
+						"bind":    "instance",
+						"listen":  "unix:" + IncusSocketPath,
+						"connect": "unix:" + hostIncusSocket,
+					},
+				},
+			},
+		},
+		Project: lxcapi.ProjectDefaultName,
+	}
+}
+
 // renderIncusPreseed builds the Incus seed file that preconfigures Incus to
 // trust certName's client certificate before first boot, plus a second
 // bootstrapCertPEM-derived trusted cert when non-nil — the one-time
 // credential nodeprovision.CreateInstance authenticates with over the
 // WireGuard tunnel, distinct from the standing break-glass cert (see
-// WireGuard's doc comment and docs/Decisions.md §4) — and bootstraps Incus
+// WireGuard's doc comment and docs/Decisions.md §4) — preseeds the
+// IncusSocketProfile every node's agent needs, and bootstraps Incus
 // as a one-member cluster named certName, rather than a bare daemon. 0.x
 // provisions one physical node only, so this is bootstrap, never join: no
 // ClusterAddress/ClusterCertificate/join token, which are join-only fields
@@ -261,7 +319,10 @@ func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte,
 		certs = append(certs, bootstrapEntry)
 	}
 
-	local := lxcapi.InitLocalPreseed{Certificates: certs}
+	local := lxcapi.InitLocalPreseed{
+		Certificates: certs,
+		Profiles:     []lxcapi.InitProfileProjectPost{incusSocketProfile()},
+	}
 	var cluster *lxcapi.InitClusterPreseed
 	if httpsAddress != "" {
 		local.Config = lxcapi.ConfigMap{"core.https_address": httpsAddress}
