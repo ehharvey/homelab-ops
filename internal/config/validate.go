@@ -40,7 +40,8 @@ func (is Issues) Error() string {
 // address fields is already guaranteed by net/netip's TextUnmarshaler at parse
 // time; Validate covers the relationships between fields: name non-empty, CIDR
 // present, gateway/DNS/static-IP/DHCP-range membership in the CIDR, and a
-// static IP falling inside its network's DHCP-excluded (static) range. For an
+// static IP falling inside its network's DHCP-excluded (static) range. Every
+// Instance needs a unique hostname-label name and a declared network. For an
 // App it covers the required fields Parse can't enforce (yaml.v3 has no notion
 // of a required key, so an omitted `replicas:` reaches here as a zero value)
 // and at most one per-node App per renderer type.
@@ -90,15 +91,36 @@ func Validate(c Config) Issues {
 		}
 	}
 
+	instFirstIndex := make(map[string]int, len(c.Instances))
 	for i, inst := range c.Instances {
 		path := fmt.Sprintf("instances[%d]", i)
-		if !inst.StaticIP.IsValid() {
-			continue // DHCP — nothing address-wise to validate here.
+
+		// The name is the node's identity everywhere downstream: its Incus
+		// cluster member name, its hostname, its store key, the agent's
+		// AGENT_NODE_NAME, and a designation's primary. So it must be a name
+		// every one of those accepts, not just non-empty.
+		switch {
+		case inst.Name == "":
+			add(path+".name", "must not be empty")
+		case !isHostnameLabel(inst.Name):
+			add(path+".name", fmt.Sprintf("%q must be a lowercase hostname label: 1-63 of a-z, 0-9 and \"-\", not starting or ending with \"-\", and not all digits", inst.Name))
+		default:
+			if j, ok := instFirstIndex[inst.Name]; ok {
+				add(path+".name", fmt.Sprintf("%q is already defined by instances[%d]", inst.Name, j))
+			} else {
+				instFirstIndex[inst.Name] = i
+			}
 		}
+
+		// Checked for every instance, DHCP or not: an unknown network would
+		// otherwise surface only later, as an IPAM or render error.
 		n, ok := byName[inst.Network]
 		if !ok {
 			add(path+".network", fmt.Sprintf("references unknown network %q", inst.Network))
 			continue
+		}
+		if !inst.StaticIP.IsValid() {
+			continue // DHCP — nothing address-wise to validate here.
 		}
 		if !n.CIDR.IsValid() {
 			continue // already reported against the network above
@@ -163,6 +185,31 @@ func Validate(c Config) Issues {
 	}
 
 	return issues
+}
+
+// isHostnameLabel reports whether s is a lowercase RFC 1123 hostname label:
+// 1-63 characters of a-z, 0-9 and '-', neither starting nor ending with '-',
+// and not all digits. Lowercase-only because hostnames are case-insensitive:
+// "Node0" and "node0" would pass a uniqueness check yet name one host. It is
+// stricter than Incus's own member-name check (validate.IsAPIName) and matches
+// its IsHostname, so a name that passes is valid everywhere an Instance name
+// goes.
+func isHostnameLabel(s string) bool {
+	if len(s) < 1 || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	allDigits := true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'z', c == '-':
+			allDigits = false
+		default:
+			return false
+		}
+	}
+	return !allDigits
 }
 
 // networkAndBroadcast returns p's network (lowest) and broadcast (highest)

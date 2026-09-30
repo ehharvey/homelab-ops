@@ -100,9 +100,9 @@ applications: [incus]
 
 | Field | Type | Required | Rules and meaning |
 |---|---|---|---|
-| `name` | string | yes, in effect | The node's identity everywhere downstream: its Incus cluster member name, its cert names, its web-app store key, and the agent's `AGENT_NODE_NAME`. Not validated yet (see Known gaps). |
+| `name` | string | yes | Unique among Instances, and a lowercase hostname label: 1–63 of `a-z`, `0-9` and `-`, not starting or ending with `-`, not all digits. Lowercase only, because `Node0` and `node0` would be "unique" and yet name the same host. It's the node's identity everywhere downstream: its Incus cluster member name, its cert names, its web-app store key, and the agent's `AGENT_NODE_NAME`. #193 also makes it the node's hostname. The rule is stricter than Incus's own member-name check, so a name that passes is valid everywhere. |
 | `mac` | string | yes, in effect | The NIC IncusOS configures as `eth0`. Not validated; a wrong MAC leaves the node's network unconfigured at boot. Quoting is optional. |
-| `network` | string | yes | A Network's `name`. The instance must sit on that network. |
+| `network` | string | yes | A declared Network's `name`, checked for every instance, DHCP or not. The instance must sit on that network. |
 | `static_ip` | address | no | Must be inside the network's `cidr` and its `dhcp_excluded_range` (if set). It can't be the gateway, network or broadcast address. **Omitted means something different per reader**: the web app assigns one, while `render-seed` renders DHCP (see What each reader does). The address matters beyond networking, because it's what makes a node an Incus cluster member (§26). A DHCP node comes up unclustered. |
 | `disk` | string | yes | Only `single` is implemented (checked at render). |
 | `nic` | string | yes | Only `single` is implemented (checked at render). |
@@ -159,15 +159,13 @@ There's deliberately no placement, strategy or version field; see
 
 Things the checks don't catch today, recorded so nobody assumes they do:
 
-- **`Instance.name` is not validated.** An empty name and a duplicate name both
-  pass `Validate`. The web app then fails on the duplicate with a store error
-  rather than a validation issue. Since the name becomes the Incus member name
-  and, per #193, the node's hostname, it should be required, unique and a
-  valid hostname label.
-- **A DHCP instance's `network` isn't checked by `Validate`.** With no
-  `static_ip`, `Validate` skips the instance. In the web app, IPAM rejects the
-  unknown name instead, as an IPAM error rather than a validation issue. In
-  `render-seed`, it surfaces at rendering.
+- **Names derived from an `Instance.name` can exceed Incus's 63-character
+  cap.** A per-node App's instances are named `<app>-<instance>`, and the
+  agent's also get a `-g<N>` generation suffix. So a name can pass the rule
+  above and still produce an invalid derived one. Capping `Instance.name`
+  alone can't fix it, because the length also depends on the App's name and
+  on an unbounded generation. The check belongs where the derived name is
+  built (#203, and #98 when it resumes).
 - **A missing `gateway` passes `Validate`.** It's caught at render instead,
   which is later than an operator would expect.
 - **`mac` is free text.**
