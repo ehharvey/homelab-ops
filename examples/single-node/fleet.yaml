@@ -1,0 +1,26 @@
+# One node, for the bootstrap CLI: exactly one Network and one Instance.
+#
+#   ./bin/bootstrap render-seed --file examples/single-node/fleet.yaml \
+#     --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed
+#
+# The CLI has no IPAM, so static_ip is what makes this node a one-member Incus
+# cluster: without it the node takes DHCP and comes up unclustered. Field
+# reference: docs/Config Schema.md.
+kind: Network
+name: home-lan
+cidr: 192.168.1.0/24
+gateway: 192.168.1.1                              # required once an instance has a static_ip
+dhcp_excluded_range: 192.168.1.200-192.168.1.250  # the static range; static_ip must sit inside it
+dns: [192.168.1.1]
+---
+kind: Instance
+name: node0
+mac: 02:00:00:00:00:01   # the NIC IncusOS configures as eth0
+network: home-lan
+static_ip: 192.168.1.201
+disk: single
+nic: single
+security:
+  tpm: true
+  secure_boot: true
+applications: [incus]

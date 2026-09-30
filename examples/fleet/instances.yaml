@@ -1,0 +1,36 @@
+# Three IncusOS nodes on one LAN. node0 pins its address; node1 and node2 omit
+# static_ip, so the web app's IPAM assigns each one from home-lan's
+# dhcp_excluded_range and keeps it stable across syncs (docs/Ipam.md).
+kind: Instance
+name: node0
+mac: 02:00:00:00:00:01
+network: home-lan
+static_ip: 192.168.1.201
+disk: single
+nic: single
+security:
+  tpm: true
+  secure_boot: true
+applications: [incus]
+---
+kind: Instance
+name: node1
+mac: 02:00:00:00:00:02
+network: home-lan
+disk: single
+nic: single
+security:
+  tpm: true
+  secure_boot: true
+applications: [incus]
+---
+kind: Instance
+name: node2
+mac: 02:00:00:00:00:03
+network: home-lan
+disk: single
+nic: single
+security:
+  tpm: false         # e.g. an older mini PC; IncusOS installs without one
+  secure_boot: true
+applications: [incus]
