@@ -185,38 +185,41 @@ only that.
 
 ### The leader designation (#101)
 
-The agents need a designated primary node and a monotonic epoch (§25,
-`leaderelection.Designation`).
+The agents need to know which node's agent leads: `leaderelection.Designation`
+in §25.
 
 ```yaml
 kind: Designation
 primary: node0   # an Instance name: a node, not an agent instance
-epoch: 1         # raise it to fail over, and only after fencing the old primary
 ```
+
+That's the whole document. A stale checkout is fenced by git itself: each
+agent publishes the commit it's on, and an agent behind a peer stands down.
+A new primary also waits for the old one to publish that it has stopped
+acting. So a failover is one commit changing `primary`. This replaced an
+earlier `epoch` field; see §25's #212 addendum.
 
 **Recommendation: a new singleton `kind: Designation`.**
 
 - **Leadership is fleet-wide.** It isn't a property of the agent App's image
   or cardinality.
 - **A separate document shows up on its own.** The web app's change report
-  would list an epoch bump as its own line, which matters because raising the
-  epoch is the operator's failover step.
-- **It can be validated.** Putting these on the agent App would mean either
-  generic App fields that mean something to one renderer only, or strings in
-  `params`, where a typo'd epoch passes silently.
+  lists a failover as a change to leadership, not as an edit to a node or
+  an App.
+- **It can be validated.** On the agent App it would be either a generic App
+  field that means something to one renderer only, or a string in `params`,
+  which nothing checks.
+
+`primary: true` on an `Instance`, with at most one allowed, was considered.
+It needs no new kind, but it reads as an edit to a node rather than a
+change of leadership.
 
 Rules:
 
 - At most one per repo. Zero means no agent acts. That's a safe default, and
   it matches `MayAct` treating an unknown designation as "not leader".
-- `primary` must name a declared Instance.
-- `epoch` must be a positive integer.
-
-`Validate` can't catch an epoch that goes *down*, because it never sees the
-previous commit. Two things do:
-
-- the agents' own ratchet (§25), which makes a stale designation inert;
-- the web app, which could warn when it sees one go down.
+- `primary` must name a declared Instance, so #210's name validation comes
+  first.
 
 ### Cluster membership (#181)
 
