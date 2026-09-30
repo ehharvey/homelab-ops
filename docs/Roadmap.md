@@ -121,10 +121,15 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   - [ ] Deploy the agent's first instance — the web app route, plus the
     `bootstrap deploy-agent` CLI path, which needs no web app and is the
     recovery path if every agent is lost — see #100
-  - [ ] `cmd/agent` binary tying the `Elector` and the designation's git
+  - [x] `cmd/agent` binary tying the `Elector` and the designation's git
     parsing to a loop; every node runs the same binary and the `Elector`
     decides which is active each tick. Its first loop is cluster membership
-    (Phase 4), not App reconciliation — see #101, `docs/Decisions.md` §27
+    (Phase 4), not App reconciliation — see `docs/Decisions.md` §27. Built
+    minimal: `kind: Designation`, commit fencing and the acting handoff
+    (§25's #212 addendum), a persistent full clone, `user.*` keys on each
+    agent's own instance, #187's sync-failure threshold and self-drain, and a
+    heartbeat. When it leads, it only logs. Proven with three real agents
+    against real Incus: DONE; see #101
   - [ ] *(paused, §27)* The leader marks itself draining on self version
     mismatch, once its candidate is sustained-healthy, so the candidate takes
     over and retires it during a self-upgrade — see #109

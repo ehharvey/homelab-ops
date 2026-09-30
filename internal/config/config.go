@@ -187,12 +187,48 @@ type App struct {
 	Params   map[string]string `yaml:"params,omitempty"` // opaque, renderer-specific passthrough
 }
 
-// Config holds every Network, Instance, and App document parsed from a fleet
-// definition file.
+// Designation is a parsed `kind: Designation` document: which node's agent
+// leads (internal/leaderelection.Designated, docs/Decisions.md §25). Primary
+// names an Instance — a node, not an agent instance — so an agent's own
+// blue-green self-upgrade needs no designation change. There is deliberately
+// no epoch: since #212 a stale checkout is fenced by git commits, not by a
+// counter the operator maintains.
+//
+// Parse collects every Designation it finds, like every other kind; "at most
+// one per repo" is Validate's rule, not the parser's.
+type Designation struct {
+	Primary string `yaml:"primary"`
+}
+
+// Config holds every Network, Instance, App and Designation document parsed
+// from a fleet definition file.
 type Config struct {
-	Networks  []Network
-	Instances []Instance
-	Apps      []App
+	Networks     []Network
+	Instances    []Instance
+	Apps         []App
+	Designations []Designation
+}
+
+// Append adds every document in o to c, preserving order. It's how a config
+// repo's files, parsed one at a time, merge into one fleet — in one place, so
+// a new kind can't be parsed and then silently dropped by a merge that
+// forgot it.
+func (c *Config) Append(o Config) {
+	c.Networks = append(c.Networks, o.Networks...)
+	c.Instances = append(c.Instances, o.Instances...)
+	c.Apps = append(c.Apps, o.Apps...)
+	c.Designations = append(c.Designations, o.Designations...)
+}
+
+// Primary returns the designated primary node, or "" when the repo declares
+// no Designation (so no agent leads). It reads the first Designation; Validate
+// rejects a repo with more than one, so callers should only ask a validated
+// Config.
+func (c Config) Primary() string {
+	if len(c.Designations) == 0 {
+		return ""
+	}
+	return c.Designations[0].Primary
 }
 
 type discriminator struct {
@@ -200,9 +236,9 @@ type discriminator struct {
 }
 
 // Parse reads a multi-document, k8s-style YAML fleet definition and returns
-// the parsed Networks, Instances, and Apps. Each document must set
-// `kind: Network`, `kind: Instance`, or `kind: App`; any other or missing kind
-// is an error.
+// the parsed Networks, Instances, Apps and Designations. Each document must
+// set `kind: Network`, `kind: Instance`, `kind: App` or `kind: Designation`;
+// any other or missing kind is an error.
 func Parse(r io.Reader) (Config, error) {
 	var cfg Config
 
@@ -251,6 +287,15 @@ func Parse(r io.Reader) (Config, error) {
 				return Config{}, fmt.Errorf("decode document %d as App: %w", i, err)
 			}
 			cfg.Apps = append(cfg.Apps, doc.App)
+		case "Designation":
+			var doc struct {
+				Kind        string `yaml:"kind"`
+				Designation `yaml:",inline"`
+			}
+			if err := strictDecode(&node, &doc); err != nil {
+				return Config{}, fmt.Errorf("decode document %d as Designation: %w", i, err)
+			}
+			cfg.Designations = append(cfg.Designations, doc.Designation)
 		case "":
 			return Config{}, fmt.Errorf("document %d: missing required field %q", i, "kind")
 		default:

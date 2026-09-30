@@ -6,7 +6,7 @@ reference is [`docs/Config Schema.md`](../docs/Config%20Schema.md).
 | Example | For | Shows |
 |---|---|---|
 | [`single-node/`](single-node/) | `bootstrap render-seed --file examples/single-node/fleet.yaml` | The CLI's input: exactly one Network and one Instance, with a static IP so the node comes up as a one-member cluster. |
-| [`fleet/`](fleet/) | A config repo the web app syncs (`CONFIG_REPO_URL`) | Three nodes across three files: one pinned `static_ip` and two assigned by IPAM, plus the per-node agent App. |
+| [`fleet/`](fleet/) | A config repo the web app and the agents sync (`CONFIG_REPO_URL`) | Three nodes across four files: one pinned `static_ip` and two assigned by IPAM, plus the per-node agent App and the Designation naming which node's agent leads. |
 
 Each directory is laid out like a repo root: only root-level `*.yaml` and
 `*.yml` files count, merged in file-name order.
