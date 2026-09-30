@@ -76,7 +76,7 @@ image:
   alias: ehharvey/homelab-ops/agent:latest
 ```
 
-This is illustrative, not a finalized schema — exact field names are an implementation step, not an open question that needs more discussion first.
+This is a sketch. The field-by-field reference, with the repo layout and what each reader checks, is `docs/Config Schema.md`, and working repos live in `examples/`.
 
 `kind: App` is the app-manager agent's unit of work (see `docs/AppManager.md` for the schema, the renderer registry and the blue-green reconcile algorithm; `docs/AppClasses.md` for the classes of App a renderer implements). Note the collision to keep straight: `Instance.applications` is the IncusOS *seed* applications list (`applications.yaml`, `[incus]`), which has nothing to do with `kind: App`.
 

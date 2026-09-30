@@ -4,6 +4,8 @@ Guidance for Claude Code working in this repo. Full context lives in
 `docs/` — read before changing anything non-trivial:
 
 - `docs/Architecture.md` — what this app is and how the pieces fit
+- `docs/Config Schema.md` — the fleet config repo's format, field by field
+  (`internal/config` is the source of truth; `examples/` must keep passing)
 - `docs/Roadmap.md` — current phase/status; check off items you complete
 - `docs/Development Conventions.md` — branching, PR format, Go layout,
   vendoring rules — read this *before* writing code, not after

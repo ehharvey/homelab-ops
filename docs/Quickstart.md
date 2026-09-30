@@ -19,8 +19,8 @@ for the full `make` target list.
 ## 3. Run the bootstrap pipeline
 
 You need a `fleet.yaml` with exactly one `kind: Network` and one
-`kind: Instance` document — see [Architecture](Architecture) § Data model for the
-shape.
+`kind: Instance` document. [`examples/single-node/fleet.yaml`](https://github.com/ehharvey/homelab-ops/blob/main/examples/single-node/fleet.yaml)
+is one ready to use; [Config Schema](Config%20Schema) is the field reference.
 
     ./bin/bootstrap gen-cert --output-dir ./bootstrap-output/cert
 

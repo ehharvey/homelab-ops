@@ -1,0 +1,10 @@
+# A fleet config repo, as the web app and the agents sync it: every *.yaml or
+# *.yml file at the repo root is read, in file-name order, and merged into one
+# fleet. How the documents are split across files is up to you; this example
+# splits them by kind. Field reference: docs/Config Schema.md.
+kind: Network
+name: home-lan
+cidr: 192.168.1.0/24
+gateway: 192.168.1.1
+dhcp_excluded_range: 192.168.1.200-192.168.1.250  # IPAM assigns omitted static_ips from here
+dns: [192.168.1.1, 1.1.1.1]
