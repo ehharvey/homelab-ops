@@ -134,6 +134,97 @@ func TestValidateInstanceIssues(t *testing.T) {
 	}
 }
 
+func TestValidateInstanceNameIssues(t *testing.T) {
+	tests := []struct {
+		name     string
+		instName string
+		wantMsg  string
+	}{
+		{"empty", "", "must not be empty"},
+		{"uppercase", "Node0", "lowercase hostname label"},
+		{"leading hyphen", "-node0", "lowercase hostname label"},
+		{"trailing hyphen", "node0-", "lowercase hostname label"},
+		{"all digits", "42", "lowercase hostname label"},
+		{"underscore", "node_0", "lowercase hostname label"},
+		{"dot", "node0.lan", "lowercase hostname label"},
+		{"whitespace", " node0", "lowercase hostname label"},
+		{"64 characters", strings.Repeat("a", 64), "lowercase hostname label"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				Networks:  []Network{validNetwork()},
+				Instances: []Instance{{Name: tc.instName, Network: "home-lan"}},
+			}
+			issues := Validate(cfg)
+			if !issueContains(issues, "instances[0].name", tc.wantMsg) {
+				t.Fatalf("Validate() = %v, want an issue at instances[0].name containing %q", issues, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsHostnameLabelInstanceNames(t *testing.T) {
+	for _, name := range []string{"n", "node0", "node-0", "0node", "a1-b2-c3", strings.Repeat("a", 63)} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{
+				Networks:  []Network{validNetwork()},
+				Instances: []Instance{{Name: name, Network: "home-lan"}},
+			}
+			if issues := Validate(cfg); !issues.Empty() {
+				t.Fatalf("Validate() = %v, want no issues", issues)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsDuplicateInstanceName(t *testing.T) {
+	cfg := Config{
+		Networks: []Network{validNetwork()},
+		Instances: []Instance{
+			{Name: "node0", Network: "home-lan"},
+			{Name: "node0", Network: "home-lan"},
+		},
+	}
+	issues := Validate(cfg)
+	if !issueContains(issues, "instances[1].name", "already defined by instances[0]") {
+		t.Fatalf("Validate() = %v, want a duplicate-name issue at instances[1].name", issues)
+	}
+}
+
+func TestValidateDoesNotDoubleReportDuplicateEmptyInstanceNames(t *testing.T) {
+	// Two empty names are each already "must not be empty"; they shouldn't
+	// also collide with each other as duplicates.
+	cfg := Config{
+		Networks:  []Network{validNetwork()},
+		Instances: []Instance{{Name: "", Network: "home-lan"}, {Name: "", Network: "home-lan"}},
+	}
+	for _, i := range Validate(cfg) {
+		if strings.Contains(i.Message, "already defined by") {
+			t.Fatalf("Validate() reported %v, want no duplicate-name issue for empty names", i)
+		}
+	}
+}
+
+func TestValidateChecksEveryInstanceNetwork(t *testing.T) {
+	// A DHCP instance used to skip validation entirely, so an unknown network
+	// only surfaced at IPAM or render time.
+	dhcp := Validate(Config{Networks: []Network{validNetwork()}, Instances: []Instance{{Name: "n", Network: "nope"}}})
+	if !issueContains(dhcp, "instances[0].network", `unknown network "nope"`) {
+		t.Fatalf("Validate() = %v, want an unknown-network issue for a DHCP instance", dhcp)
+	}
+
+	// A static instance on an unknown network is reported once, not again by
+	// the address checks that follow.
+	static := Validate(Config{
+		Networks:  []Network{validNetwork()},
+		Instances: []Instance{{Name: "n", Network: "nope", StaticIP: netip.MustParseAddr("192.168.1.201")}},
+	})
+	if len(static) != 1 || static[0].Path != "instances[0].network" {
+		t.Fatalf("Validate() = %v, want exactly one issue, at instances[0].network", static)
+	}
+}
+
 func TestValidateRejectsStaticIPCollisions(t *testing.T) {
 	net := validNetwork() // 192.168.1.0/24, gateway 192.168.1.1
 	tests := []struct {
