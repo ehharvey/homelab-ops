@@ -3,7 +3,7 @@ module github.com/ehharvey/homelab-ops
 go 1.26.7
 
 require (
-	github.com/go-git/go-billy/v5 v5.9.1
+	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/lxc/incus/v7 v7.5.1
 	github.com/spf13/cobra v1.10.2
