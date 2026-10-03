@@ -25,7 +25,7 @@ Once node #0 is up and reachable, this tool's job is done; steady-state provisio
 
 ### 2. Web app (Go)
 
-No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; deployment targets are a Docker image and a plain binary. Migrating it to run inside the IncusOS-managed fleet itself is a later, explicit migration step, not a 0.x concern.
+No k8s dependency (per §9, decided in #18): dev runs it via Docker Compose; deployment targets are a Docker image and a plain binary. In production it runs on its own appliance machine, outside the cluster: an internet-reachable VM or a spare machine on the nodes' LAN (`Decisions.md` §29). The first form is a dedicated Docker box; an IncusOS turnkey host comes later. Both run the same published image from the same deployment config directory, and each deployment setting (API listener, where install media is built, how node0 is provisioned, and the rest) is an operator choice with a safe default. Moving it into the IncusOS-managed fleet itself is a later migration, the same path as moving between appliance hosts (§29).
 
 Modules:
 
