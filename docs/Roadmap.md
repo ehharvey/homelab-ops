@@ -83,7 +83,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 - [ ] Per-node app-manager agent with an operator-designated leader: one agent
   instance per node; a single primary named in git (fenced by git commits and
   an acting handoff, so a stale checkout stands down and a new primary waits
-  for the old one, `docs/Decisions.md` §25's #212 addendum) is the only one that reconciles a new `kind: App`
+  for the old one, `docs/Decisions.md` §25) is the only one that reconciles a new `kind: App`
   object across the whole fleet via a small renderer registry, proven by
   managing its own fleet (blue-green self-upgrade, driven fleet-wide by the
   primary) — see #92, `docs/Decisions.md` §25. Leader election is a pluggable
@@ -126,7 +126,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     decides which is active each tick. Its first loop is cluster membership
     (Phase 4), not App reconciliation — see `docs/Decisions.md` §27. Built
     minimal: `kind: Designation`, commit fencing and the acting handoff
-    (§25's #212 addendum), a persistent full clone, `user.*` keys on each
+    (§25), a persistent full clone, `user.*` keys on each
     agent's own instance, #187's sync-failure threshold and self-drain, and a
     heartbeat. When it leads, it only logs. Proven with three real agents
     against real Incus: DONE; see #101
@@ -157,7 +157,7 @@ The original done-when, kept for when the paused items resume: a per-node
 agent fleet whose designated primary deploys and upgrades the fleet
 (blue-green, fleet-wide, including its own self-upgrade with no reconciliation
 gap) from git-declared config, with a stale-checkout primary fencing itself out
-once a peer is on a newer commit (§25's #212 addendum; this originally said
+once a peer is on a newer commit (§25; this originally said
 "a higher epoch").
 
 ## Phase 3.5 — The validate suite made runnable
@@ -234,8 +234,8 @@ work is tracked separately and is not part of this section.)
 - [x] Manual join spike: join a second VM to a Tier A cluster by hand
   (token minted on member 1, hand-filled `member_config`), both at seed time
   and after boot, and record what fails and what the new member is missing.
-  Sets the scope of the items below — see `docs/Decisions.md` §27's
-  addendum: DONE; see #193
+  Sets the scope of the items below — see `docs/Decisions.md` §27
+  (its "Evidence" subsection): DONE; see #193
 - [ ] Cluster membership config model: declare which `Instance` bootstraps
   the cluster vs. joins it, with no addresses required in git — see #181
 - [ ] Joiner seed variant (no cluster or profile preseed, `apply_defaults:

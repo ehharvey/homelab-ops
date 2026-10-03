@@ -7,7 +7,7 @@
 // implementation is Designated: an operator names the primary node in git,
 // agents fence a stale checkout with the git commit each one publishes, and a
 // new primary waits for the old one to publish that it has stopped acting
-// (docs/Decisions.md §25 and its #212 addendum). A later implementation can
+// (docs/Decisions.md §25). A later implementation can
 // elect automatically (the "ranked over Incus" protocol specified in §25)
 // without touching the reconcile loop.
 //
@@ -36,7 +36,7 @@ type Decision struct {
 	Commit string
 	// Behind reports that a running peer has published a commit this agent
 	// doesn't have: its checkout is stale. The caller should re-sync now
-	// rather than wait for its next poll (docs/Decisions.md §25, #212).
+	// rather than wait for its next poll (docs/Decisions.md §25).
 	Behind bool
 	// Reason is a short human-readable explanation, for logs and the web
 	// app's status display. Set whether or not Leader is true.

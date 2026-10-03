@@ -32,10 +32,10 @@ type Snapshot struct {
 // bare clone on disk that each Sync fetches into, rather than Syncer's fresh
 // in-memory depth-1 clone.
 //
-// It keeps history because leader election needs it (docs/Decisions.md §25,
-// #212 addendum): an agent may act only if every peer's published commit is in
-// its own history, which HasCommit answers locally. A config repo is small,
-// so the whole history costs little.
+// It keeps history because leader election needs it (docs/Decisions.md §25):
+// an agent may act only if every peer's published commit is in its own
+// history, which HasCommit answers locally. A config repo is small, so the
+// whole history costs little.
 //
 // It keeps the last good Snapshot, and Current serves it until Sync has failed
 // FailureThreshold times in a row (#187). After that Current errors, which
