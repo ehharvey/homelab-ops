@@ -62,7 +62,7 @@ compose_down() {
 # compose scripts contend over.
 _compose_ports_free() {
 	local p
-	for p in 8080 3000 3100 9090; do
+	for p in 8080 5000 3000 3100 9090; do
 		ss -Hltn "sport = :$p" 2>/dev/null | grep -q . && return 1
 	done
 	ss -Hluln "sport = :51820" 2>/dev/null | grep -q . && return 1

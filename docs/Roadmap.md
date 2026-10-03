@@ -133,8 +133,8 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   - [ ] *(paused, §27)* The leader marks itself draining on self version
     mismatch, once its candidate is sustained-healthy, so the candidate takes
     over and retires it during a self-upgrade — see #109
-  - [ ] Publish the agent image to GHCR; local registry for
-    dev/validation — see #102
+  - [x] Publish the agent image to GHCR; local registry for
+    dev/validation: DONE; see #102
   - [ ] *(paused, §27)* `scripts/validate/` script proving fleet-wide blue-green + the
     designation gate (a stale-checkout primary stands down; one acting
     instance through a self-upgrade) end-to-end against #92's own done-when —

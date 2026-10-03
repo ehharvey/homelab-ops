@@ -45,3 +45,46 @@ jobs:
       - run: docker build -t homelab-ops-web .
       - name: flasher-tool runs in the built image
         run: docker run --rm --entrypoint /flasher-tool homelab-ops-web --help
+
+  # Builds the agent image (#102) on every PR and push, and publishes it to
+  # GHCR from main only: tagged with the commit SHA, plus latest, which the
+  # agent App's image.alias tracks (examples/fleet/apps.yaml). The push step
+  # is gated with `if:` rather than splitting the job, so the job reports a
+  # status on PRs too. The concurrency group keeps two quick merges to main
+  # from racing: without it the older commit's run can push latest last.
+  # cancel-in-progress stays false so a push already under way finishes; a
+  # newer run queueing cancels any older one still pending.
+  agent-image:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: agent-image-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/ehharvey/homelab-ops/agent
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -f Dockerfile.agent -t homelab-ops-agent .
+      # The agent has no --help, so prove the binary executes in the
+      # distroless final stage by running it with no environment: it must get
+      # as far as rejecting its settings, rather than failing to exec.
+      - name: agent runs in the built image
+        run: |
+          if out=$(docker run --rm homelab-ops-agent 2>&1); then
+            echo "expected the agent to reject an empty environment; it exited 0"
+            exit 1
+          fi
+          echo "$out"
+          grep -q 'AGENT_NODE_NAME is required' <<<"$out"
+      - name: push to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for tag in "$GITHUB_SHA" latest; do
+            docker tag homelab-ops-agent "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
