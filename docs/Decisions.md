@@ -128,7 +128,9 @@ an open question. Implementation is deferred pending upstream clarity —
 tracked as issue #76 with the `later` label rather than built against a
 seed file incus-osd won't yet read.
 
-## 9. Where does the web app itself run? (flagged as open per your earlier answer)
+## 9. Where does the web app itself run?
+
+**Current rule: on its own appliance machine, outside the cluster: a Docker box first, an IncusOS turnkey host later. See §29.** The options and first answer below are kept as the record. (Originally flagged as open.)
 
 - Inside the homelab it manages (a container/VM on one Incus host) — needs a bootstrap path for node #1 before the app exists to generate its installer.
 - Or a separate always-on box outside the cluster — avoids the chicken-and-egg problem, adds "one more thing to maintain" outside the managed fleet.
@@ -136,6 +138,10 @@ seed file incus-osd won't yet read.
 
 ### Answers
 ~~Dev environment on local K8s cluster~~ — superseded by #18: no k8s dependency. Dev uses Docker Compose; deployment targets are a Docker image and a plain binary. Later, a migration path to running inside the IncusOS-managed fleet itself is wanted (see `Architecture.md` § Web app).
+
+### History
+
+- **2026-10-03 (#247).** Answered by §29: the web app runs on an appliance machine (an internet VM or a LAN machine), from one published image. Moving into the fleet is §29's migration path (#245, #246).
 
 ## 10. Single disk / single NIC default, configurable (note 9)
 
@@ -1929,7 +1935,7 @@ Also found:
 - **2026-09-29 (#193):** the spike confirmed the source reading, except that no physical network needs `member_config`. It added what a join body needs beyond the token, how the token is assembled, the wait for `initialized`, `dns.hostname` on joiners, and the four-call fix-up.
 - **2026-10-03 (#223):** the spike addendum folded into the body above; its evidence kept as its own subsection.
 
-## 28. The web app's interim security posture: WireGuard-only API, one operator-held key (2026-09-28)
+## 28. The web app's interim security posture: WireGuard API by default, one operator-held key (2026-09-28)
 
 Raised alongside §27 but independent of it: none of this blocks Phase 4. It is scheduled in `docs/Roadmap.md` § Web app hardening (#195–#200). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
 
@@ -1941,9 +1947,9 @@ Raised alongside §27 but independent of it: none of this blocks Phase 4. It is 
 
 So anyone who can reach the web app can fetch a node's key and pose as that node on the tunnel. The store also holds every instance's credentials and its IPAM history in plaintext, with no backup (§12 already noted it "needs a backup/migration story it doesn't have today").
 
-### Decision: serve the API only over WireGuard, to operator peers (#195)
+### Decision: serve the API over WireGuard to operator peers by default; a host listener only by explicit opt-in (#195)
 
-The HTTP API moves off the host port and onto the web app's existing in-process tunnel.
+By default, the HTTP API moves off the host port and onto the web app's existing in-process tunnel. Which listeners serve it is an operator setting (§29), and tunnel-only is the default. (First decided as tunnel-only with no alternative; see History.)
 
 - **How.** `internal/wireguard` already runs a userspace netstack, whose `netstack.Net` provides `ListenTCP`. The same `http.Handler` is served on `WebAppAddr` (`10.100.0.1`) inside the tunnel, so it still needs no TUN device and no `NET_ADMIN`. Only the WireGuard UDP port stays exposed on the host.
 - **The operator becomes a peer.** The operator generates their own WireGuard keypair. Its public half reaches the web app through deployment config, like the break-glass cert (§4); the private half never leaves the operator. Several devices means a list of keys. When sync reconciles tunnel peers, it must keep the operator peers, not just instances.
@@ -1954,11 +1960,12 @@ The HTTP API moves off the host port and onto the web app's existing in-process 
   - Browsers treat plain HTTP over the tunnel as insecure, so anything that needs a secure context waits for TLS.
 
   Full auth comes back when the web app must be reachable off the tunnel or by more than one person.
+- **The host listener: an explicit opt-in.** An operator setting also serves the API as plain HTTP on an address the operator chooses, such as localhost or one LAN interface. It is off unless set, and has no default bind address. When it's on, startup logs a warning naming the exposure: over it, the seed and image routes hand out node WireGuard private keys to anyone who can reach that address. The source filter above applies only to the tunnel listener. TLS on the host is the expected third mode, not built yet.
 - **Dev and validate.** `docker compose` and the `scripts/validate/` web-app family call `:8080` directly today. They will either:
   - join as a peer (`cmd/validate-tunnel-harness` already dials through the tunnel in-process), or
-  - keep a plain-HTTP listener behind an explicit dev-only flag, bound to localhost.
+  - opt in to the host listener, bound to localhost.
 
-  `/healthz` stays on a local port for container health checks.
+  At least one validate script exercises the tunnel-only default. `/healthz` stays on a local port for container health checks.
 
 ### Decision: a CLI first, no web UI yet (#196)
 
@@ -2050,6 +2057,67 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
   - **Candidates**, lightest first: Dex, Pocket ID, Kanidm, Authelia; Zitadel and Keycloak are heavier.
 - **An S3 secrets overlay on top of git.** Not a replacement: git gives history, review, and the commit-to-commit diff that config sync and §25's epoch fencing rely on. The gap is that the public repo can't declare anything secret: the joiner cert's private key, a future OIDC client secret, a Tailscale authkey (#76). A private S3 bucket read beside git would fill it. It's worth spiking together with #200, since both need the same bucket, credentials and encryption story.
 
+### History
+
+- **2026-10-03 (#247, #195).** The tunnel-only API became the default rather than the only mode. An explicit, opt-in host listener on an operator-chosen address replaced the earlier dev-only localhost flag, and TLS was named as a later third mode. Why: the web app now runs on appliance machines in several topologies (§29), and every deployment setting is an operator choice with a safe default.
+
+## 29. The web app runs on an appliance machine; every deployment setting is an operator choice (2026-10-03)
+
+Resolves §9's open question for 0.x. The web app runs on its own machine, outside the cluster it manages, which fits §27: the cluster must keep running while the web app is down or locked. That machine is either:
+
+- **an internet-reachable VM.** Nodes behind home NAT dial out to it over the tunnel, which is the topology #91 built for and `node-tunnel-survives-nat-and-provisions.sh` proves; or
+- **a spare machine on the same LAN as the nodes,** such as a laptop.
+
+The operator reaches it in both cases.
+
+### Decision: one image, two host forms
+
+Both forms run the same published OCI image (#240) with the same deployment config directory (#241), so moving between them is a migration, not a rebuild.
+
+- **A dedicated Docker box first (#243).** A production compose file, plus a runbook per topology. It works the same on a VM and a laptop, and it is the deployment target §9 already chose. The host OS is the operator's to patch.
+- **An IncusOS turnkey host later (#246).** The bootstrap CLI renders a seed for a standalone IncusOS machine, which isn't a cluster member. `bootstrap deploy-web` then runs the web app on it as an Incus OCI container, reusing #100's `deploy-agent` mechanism. Pointing the same command at a cluster member is how the web app later moves into the fleet (§9).
+  - Unverified, to settle in #246: whether a typical spare laptop meets IncusOS's hardware needs (TPM 2.0 and Secure Boot unless degraded, §6; Wi-Fi support), and whether a given cloud provider will boot IncusOS.
+- **Rejected for now: a custom mkosi-built appliance image.** It is the same tool family as §15's helper OS, none of which exists yet, and it is the most work for the least reuse.
+
+### Decision: every deployment setting is an operator choice, with a safe default
+
+No single fixed posture fits a public VM, a LAN laptop and a later move into the fleet. So each setting is deployment config with a secure default, documented in #241's contract:
+
+| Setting | Default | Alternatives |
+| --- | --- | --- |
+| Host form | Docker box (#243) | IncusOS turnkey host (#246); plain binary + systemd (§9's other target, not yet planned) |
+| API listener | Tunnel only, operator peers (§28, #195) | Opt-in plain-HTTP host listener on a chosen address; TLS later |
+| Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set (today's image route) | Client-side image build from a downloaded seed; a `SEED_DATA` stick beside a stock IncusOS image (#242) |
+| node0 provisioning | By the web app over the tunnel (#244) | Bootstrap CLI, offline, no tunnel (today's Flow A) |
+| WireGuard endpoint | A DNS name | An IP address |
+| Snapshots | Local | Local plus off-cluster S3 (#200) |
+
+- **Install media.** On an internet VM, server-side builds mean a multi-GB transfer across the internet per node, plus VM disk for each copy. The seed is a few KB.
+  - IncusOS reads a user-provided FAT or ISO volume labelled `SEED_DATA` beside an unmodified install image (upstream `doc/reference/seed.md`). The stick must be removed after install.
+  - Both client-side options need a base image on the operator's machine, which #206 currently blocks `flasher-tool` from downloading.
+- **node0.** Both paths call the same `seed.Render`. A web-app-rendered seed already sets the node up as a one-member cluster (§26 Tier A) and adds the tunnel, so making the web app the default is mostly a change of order: the appliance first, then node0. The bootstrap CLI stays for offline bring-up, and for the IncusOS turnkey host itself.
+- **The endpoint.** `WIREGUARD_ENDPOINT` is baked into every node's seed, so an IP address pins the web app to one host. IncusOS accepts a hostname (`networkd_validate.go` checks it with `net.SplitHostPort`) and renders it into systemd-networkd's `Endpoint=`. Unverified: whether a running node re-resolves the name after the address changes. #245 probes it.
+
+### Decision: migration first; HA later, as a warm standby
+
+- **Migration is §28's restore path (#245):**
+  1. the same deployment config, including the operator-supplied WireGuard identity (#197);
+  2. `init` with the same key;
+  3. load the latest snapshot (#198);
+  4. repoint the endpoint's DNS name.
+
+  No node is reflashed. This covers laptop to VM, Docker box to IncusOS, and the later move into the fleet.
+- **HA, when wanted, is a warm standby with manual failover, not active/active.**
+  - Two live instances sharing one WireGuard identity would fight over node endpoints, because WireGuard roams each peer to whichever address it last heard from.
+  - The store is single-writer SQLite.
+  - So a standby restores the latest snapshot and takes over when DNS or a floating IP flips. That is the same shape as §25's designated primary, and §27 already accepts web app downtime.
+  - Decide this after #245 works; it isn't scheduled.
+
+### Considered and deferred
+
+- **TLS as a third API listener mode.** It comes with, or before, any web UI (§28's deferred auth).
+- **The bootstrap CLI rendering tunnel config for node0.** Once #197 makes the web app's identity operator-supplied, the CLI knows its public key offline. The node's own keypair would still have to be imported into the web app's store. Not needed while the web app provisions node0 by default.
+
 ## Sources consulted
 
 - [Incus — REST API ("PUT vs PATCH": ETag / `If-Match`)](https://linuxcontainers.org/incus/docs/main/rest-api/) (§25: the documented contract is lost-update protection for one client's GET-then-PUT, not exactly-one-winner)
@@ -2069,3 +2137,4 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 - [Kubernetes — version skew policy](https://kubernetes.io/releases/version-skew-policy/) (§19 / `docs/AppClasses.md`: why "the image string differs" is too coarse a signal for classes 3/5)
 - [`systemd.netdev(5)` — `[WireGuard] RouteTable=`](https://manpages.ubuntu.com/manpages/noble/man5/systemd.netdev.5.html) (§24: "Defaults to false" — with it off, `AllowedIPs` install no routes, which is the whole of #157)
 - [`systemd.network(5)` — `[Address] AddPrefixRoute=`](https://manpages.ubuntu.com/manpages/noble/man5/systemd.network.5.html) (§24: "Defaults to true" — why the address's prefix length is the available lever)
+- [IncusOS — seed reference (`doc/reference/seed.md`)](https://github.com/lxc/incus-os/blob/main/doc/reference/seed.md) and [`incus-osd/internal/network/networkd_validate.go`](https://github.com/lxc/incus-os/blob/main/incus-osd/internal/network/networkd_validate.go) (§29: a user-provided `SEED_DATA` volume beside a stock install image; the WireGuard peer `Endpoint` accepts a hostname)
