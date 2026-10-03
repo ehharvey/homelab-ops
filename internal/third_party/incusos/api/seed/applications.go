@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ 02986e9c17817007984e53ecd4c8aeed1aba55b2
+// Vendored from github.com/lxc/incus-os @ c2fb8b60249de8a069ab728d63035b9e570ad924
 // (incus-osd/api/seed/applications.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Unmodified.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
