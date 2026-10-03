@@ -29,9 +29,11 @@ long multi-issue sessions were ~77% of the cost.
   `sed -n` ranges on large files. When output is saved to a tool-results file
   for being too large, grep or `sed -n` it; never read it whole, because that
   just brings the same bulk back a turn later.
-- **Newest wins.** Issue bodies and decisions often stack dated notes or
-  addenda. The newest overrides older text where they conflict. Say which
-  parts you're treating as superseded.
+- **Supersede in place; newest wins.** A decision's body and an issue's body
+  state the current rule; history goes in a `### History` subsection or in
+  issue comments (`docs/Development Conventions.md`, #223). Where older text
+  still stacks dated notes or addenda, the newest overrides older text where
+  they conflict. Say which parts you're treating as superseded.
 - **Verify tradeoff claims before presenting them.** For dependency weight,
   use `go mod graph | grep <module>` (is it already in the graph?) and
   `go mod why -m <module>` (is it built today?). For Incus behaviour, check the

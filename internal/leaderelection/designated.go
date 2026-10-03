@@ -71,14 +71,14 @@ type Registry interface {
 	// running must not appear: a dead old primary's leftover Acting flag
 	// would otherwise block every successor, and a dead older generation
 	// would block its candidate. "Running" must mean positively reported as
-	// running, not merely "not stopped" — docs/Decisions.md §25's #212
-	// addendum depends on an offline cluster member's instances dropping out.
+	// running, not merely "not stopped" — docs/Decisions.md §25
+	// depends on an offline cluster member's instances dropping out.
 	Peers(ctx context.Context) (map[string]Peer, error)
 }
 
 // Designated is the Elector for operator-designated leadership.
 //
-// An agent may act iff, all at once (docs/Decisions.md §25, #212 addendum):
+// An agent may act iff, all at once (docs/Decisions.md §25):
 //  1. its designation, from its own last successful sync, names its node as
 //     primary;
 //  2. every running, non-draining peer's published commit is in its own
