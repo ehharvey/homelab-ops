@@ -30,8 +30,10 @@ An issue number, a list of paths about to be edited, a question, or any mix.
    - its title or body names a path or package being touched
      (`grep -n '<package>' docs/Decisions.md`).
 
-   Inside a section, a later `### Addendum` or `### Follow-up` overrides the body
-   where they conflict. Report the rule as it stands now.
+   A section's body is its current rule, and its closing `### History` is the
+   record of what changed, not the rule (supersede in place, #223). A section
+   not yet converted may still end in a `### Addendum` or `### Follow-up`; that
+   overrides the body where they conflict. Report the rule as it stands now.
    If `docs/Decisions.md` is an index of `docs/Decision NNN.md` files (#211), use
    the index's *Applies to* column instead, and read the matching files.
 3. **Other docs**, only by section: `docs/Architecture.md`, `docs/AppManager.md`,

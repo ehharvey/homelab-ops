@@ -18,8 +18,9 @@ You implement exactly one GitHub issue in this repo (Go, module
 2. Start from the spec in your prompt. When it cites decisions (`§N`) or doc
    sections, read those sections only, never all of `docs/Decisions.md`. Use
    `sed -n '/^## 25\./,/^## 26\./p' docs/Decisions.md`. Read the issue with
-   `gh issue view <n> --json body --jq .body`. In both, **the newest dated note
-   or addendum wins** where it conflicts with older text.
+   `gh issue view <n> --json body --jq .body`. A decision's body and an issue's
+   body are the current spec (supersede in place, #223). Where an older one
+   still stacks dated notes or addenda, **the newest wins** over older text.
 3. If the spec and the sources disagree on something that changes what you'd
    build, stop and report the conflict. Don't pick a side yourself.
 

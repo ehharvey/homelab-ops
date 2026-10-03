@@ -10,6 +10,25 @@ A GitHub Action (`.github/workflows/sync-wiki.yml`) pushes `docs/*.md` to the wi
 
 Code-level docs (READMEs, package comments) stay in the main repo as usual — that part hasn't changed.
 
+### Supersede in place (#223)
+
+A decision or an issue body always reads as the **current** rule. Changes don't stack.
+
+Stacked changes were the most likely source of a wrong implementation. `Decisions.md` §25 had three addenda, each overriding parts of the body or of the addendum before it. #101's body was a stack of dated scope notes, newest on top, and its handoff prompt had to list by hand which parts to ignore. Every reader, human or Claude, had to reconcile the layers, and paid in tokens to read the dead ones.
+
+**When a decision changes:**
+
+- **Rewrite the rule in place.** Edit the body so it states what holds now. Don't append an addendum that overrides it.
+- **Fold findings in where they apply.** What building something settled (a verified behaviour, a narrowed rule) goes into the part of the body it refines.
+- **Mark what was replaced as superseded, with a link.** A short pointer where the old rule stood is enough, e.g. "(first chosen with an epoch fence; see History)". Another decision that a change supersedes says so the same way, as §25 does for §17's lease.
+- **Keep the history in a closing `### History` subsection.** One dated entry per change, with its issue or PR: what changed and, for a reversal, why. It's a record, not a rule, so a reader after the current rule can stop before it.
+- **Evidence can stay as its own subsection** (a spike's measurements, say) when the body cites it. Label it as evidence, not as an addendum.
+- **Cite the section, not the addendum** (`§25`, not "§25's #212 addendum"), so citations survive the next change.
+
+**When an issue's scope changes:** edit the body so it states the current spec, and post the change as a comment: a dated note saying what changed and why. The body is what an implementer (or a handoff prompt) reads; the comments are the history.
+
+Sections written before this convention may still end in addenda. The newest one wins where they conflict; fold them in place the next time the section changes.
+
 ## Branching & issues
 
 - One branch per issue, named `eharvey/#<issue-number>` (e.g. `eharvey/#1`, `eharvey/#6`).

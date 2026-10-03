@@ -167,8 +167,7 @@ primary: node0   # an Instance name: a node, not an agent instance
 - **There's no `epoch`.** A stale checkout is fenced by git itself: each
   agent publishes the commit it's on, and an agent behind a peer stands down.
   A new primary also waits for the old one to publish that it has stopped
-  acting. So a failover is one commit changing `primary` (§25's #212
-  addendum). An `epoch:` left in a repo is rejected as an unknown field
+  acting. So a failover is one commit changing `primary` (§25). An `epoch:` left in a repo is rejected as an unknown field
   rather than silently ignored.
 - **It names a node, not an agent instance,** so the agent's own blue-green
   self-upgrade needs no change here.

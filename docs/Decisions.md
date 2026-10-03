@@ -1472,7 +1472,7 @@ path has exposed the next latent defect underneath. Worth expecting a third:
 until an assertion has actually passed, nothing downstream of it has been
 exercised, and "the suite is green" says only that no one has looked yet.
 
-## 25. Leader election: designated primary now, pluggable, ranked-over-Incus later (#108, #160)
+## 25. Leader election: a designated primary fenced by git commits, pluggable, ranked-over-Incus later (#108, #160, #212)
 
 §17 chose an Incus ETag-conditional-write lease. #160's spike found the primitive doesn't do what that design needs, and this section replaces it. §17's lease bullets are superseded; the rest of §17 (one leader, leader-only fleet reconciliation, self-recognition, blue-green) stands.
 
@@ -1507,19 +1507,100 @@ Requirement: **at most one agent performs leader-only writes at a time.** Idle p
 7. **Temporal.** *Deferred.* It removes the leader entirely — a fixed workflow ID allows one reconcile per App, workers compete for tasks, a Schedule with overlap policy `SKIP` replaces the tick — moving the single point of coordination to the Temporal server. Hosting it needs a database (a stateful App the manager can't safely upgrade with itself) or a cloud VM. `Renderer.Promote` is the seam: the first class-3 renderer can start a workflow there without Temporal becoming a tier-0 dependency of everything. If Temporal is adopted, this section's election machinery is moot.
 8. **Web app as arbiter** (grants leases from a cloud VM). *Rejected by the operator.* It would make the web app a hard availability dependency for management.
 9. **Ranked election over Incus heartbeats.** *Specified below; deferred.*
-10. **Operator-designated primary with epoch fencing.** ***Chosen for 0.x.***
+10. **Operator-designated primary, fenced by git commits, with an acting handoff.** ***Chosen for 0.x.*** (It was first chosen with an operator-raised epoch as the fence; see History.)
 
 ### Decision
 
 Leader election is an interface, `internal/leaderelection.Elector`, answering `MayAct(ctx) (Decision, error)`. Callers ask before every leader-only action and treat an error as "not leader". 0.x ships one implementation, `Designated`; a second (ranked) can replace it with no change to the reconcile loop.
 
-> **Superseded in part (2026-09-30, #212):** the `Epoch` and the operator's "fence, then raise the epoch" step are replaced by git commits and an acting handoff. See the addendum at the end of this section.
+**Designated.** Git config names a `primary` node, and nothing else (`docs/Config Schema.md`). The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself.
 
-**Designated.** Git config names a `Primary` node and a monotonic `Epoch`. An agent may act iff it runs on the designated primary *node*, no agent has recorded an epoch higher than the designation's, and it is the one instance on that node that should act: not draining, with no older non-draining instance beside it. The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself. Every agent, primary or not, records the epoch it sees on its own instance (a `user.*` key it alone writes — no CAS, no contention) *before* reading its peers'; the record is a ratchet that never lowers. A resurrected old primary on a stale git checkout therefore stands down the moment any peer has seen the newer designation.
+Each agent publishes two `user.*` keys on its own instance, each written by that agent alone (no CAS, no contention):
 
-The operator's half of the protocol is what makes it a single-writer guarantee: **fence the old primary (stop or delete its agent instance) before raising the epoch.** The code holds no timers and detects no failures; it is a pure function of the designation and the recorded epochs. The web app already polls, so it alerts on a missing primary heartbeat; a person acts on it. Failover time is however long that takes, which is within 0.x's minutes-scale bar, and in 0.x — one physical node — there is no second node to fail over to, so nothing is lost.
+- **its commit:** the `HEAD` of its last successful sync, which its designation came from;
+- **`acting`:** whether it is acting.
 
-Consequence for the rest of §17: with one designated primary, the lease renewal and "stop renewing on self version mismatch" (#109) reduce to the primary being told, by a designation change, to step down.
+Its **peers** are the running instances of its own App: they carry the same `user.homelab-ops.app` value as its own instance, which it reads from its own listing rather than from config. Without that, every agent on one Incus would elect together, and a validate script's throwaway agents would fence real ones with commits from a history they don't share.
+
+#### Commits fence
+
+**An agent may act only if every running, non-draining peer's published commit is in its own history.** A peer on a commit it doesn't have is ahead of it. The agent then stands down and re-syncs at once, instead of waiting for its next poll.
+
+- **One-sided.** A peer that is behind never blocks anyone; only evidence that *I* am behind stops me. Being ahead never makes an agent leader either: leadership is still exactly `primary`. It only makes agents that are behind pause until they catch up.
+- **"In my history" means reachable from the commit of my last successful sync,** not "the object is in my clone". A clone keeps abandoned commits after a force-push, so an object-presence check would let the agent that fetched the rewrite trust a peer still on the old history.
+- **Agents keep the full repo history** in a persistent clone, and fetch into it, rather than a fresh depth-1 clone per sync (a config repo is tiny). That makes the ancestry check a local go-git lookup. It's also why the published commit alone is enough, rather than the last *N* commits: with only *N*, an agent more than *N* commits behind finds no evidence it's stale, and carries on.
+- **The fetch must force-update** (`+refs/heads/<ref>:refs/remotes/origin/<ref>`). Without the `+`, go-git v5.19's fetch *succeeds* after a force-push and leaves the tracking ref on the abandoned commit, so an agent would sit on a stale checkout indefinitely with no error. `TestCloneFollowsAForcePush` pins it.
+- **No ratchet.** An agent publishes whatever commit it is on, and that may go *backwards*, e.g. after a force-push rollback.
+- **Draining peers are skipped.** A peer drained for sync failure can't republish, so after a force-push its abandoned commit would otherwise hold every agent behind until it reached git again. A draining peer that is still acting still fences, through the acting handoff. The cost: if the only peers ahead of a stale primary are drained, it isn't fenced by commit; the handoff still keeps it from overlapping anyone.
+
+A resurrected old primary on a stale checkout therefore sees a peer on a commit it lacks, and stands down. The fence comes from git itself, and moves on every commit.
+
+#### The acting handoff
+
+Commits tell an agent it's stale. They don't stop a new primary from starting before the old one has finished its in-flight work. So a new primary waits for the old one's flag.
+
+**Before acting,** an agent:
+
+1. publishes `acting: true`;
+2. *re-reads* its peers;
+3. acts only if every check below still passes, and the re-read shows its own flag set. Otherwise it clears the flag and does nothing this tick. A claim whose re-read *fails* is withdrawn the same way.
+
+An agent already acting does the same on every tick: it re-publishes the flag before reading, so every read it acts on was taken after publishing. Publishing and then re-reading means that of two agents claiming at the same moment, at least one sees the other (Dekker ordering). Both backing off is safe. The next tick settles it, because the one that's behind stays out.
+
+**When it stops,** because a check fails or it is draining, it finishes or abandons its in-flight work and *only then* publishes `acting: false`.
+
+**On startup,** an agent clears its own `acting` before anything else. A flag left by its previous run is its own, and it isn't acting.
+
+Failing over from node0 to node1:
+
+1. node1 syncs the change, publishes it, and waits, because node0 shows `acting: true`.
+2. On node0's next tick, it sees node1's commit, which it doesn't have. It stops, publishes `acting: false`, and re-syncs.
+3. node1 takes over.
+
+There's no overlap and no timer. The handoff takes as long as node0's next tick. A same-node self-upgrade gets the same guarantee: the candidate waits for the old generation's `acting: false`, which the old one publishes once it drains (#109).
+
+#### The full rule
+
+An agent may act iff, all at once:
+
+1. its designation, from its own last successful sync (within the sync-failure threshold, below), names its node as primary;
+2. every running, non-draining peer's published commit is in its own history;
+3. no other running peer shows `acting: true`;
+4. it isn't draining, and no older non-draining instance runs on its node.
+
+It re-checks all four after publishing `acting: true`, before its first action. Two further checks each make a claim that nobody else could see impossible: an agent whose own instance isn't in its running-peer list refuses to lead, and the re-read must show its own flag set.
+
+#### Sync failures and self-draining
+
+**`Source()` errors after N consecutive failed syncs** (`AGENT_SYNC_FAILURE_THRESHOLD`, default 10 at the default 30s tick), rather than silently serving the last-cached designation forever. `MayAct` treats a `Source()` error as "not leader", so an agent cut off from git stops acting. It doesn't need git to know it should stop, only to have tried and failed enough times. N is set so total tolerance is minutes, this project's RTO bar, and an ordinary transient fetch failure doesn't trip it.
+
+**A commit that fetches but fails to parse or validate is a failed sync.** It counts toward the threshold, the previous commit stays current, and that's the commit the agent publishes. An agent whose binary accepts the newer commit therefore looks *ahead* to one that doesn't, and the latter stands down: an agent that can't use `HEAD` is behind.
+
+**On crossing the threshold, the agent self-drains:** it sets `draining` on its own instance, a single-writer write that needs only Incus. `MayAct` would already return not-leader; draining adds a durable, `incus list`-visible distinction between "alive but has given up", "dead" (heartbeat stopped too) and "still trying". It also unblocks a newer generation already waiting on this node, as any drain does. A fleet-wide git outage therefore produces zero leaders, never two.
+
+**Un-draining is gated, on the write side.** Before an instance clears its own `draining`, it must have completed a successful sync ("not failing" isn't recovery, since a restarted agent's failure count starts at zero), and no higher-generation peer on its node may be non-draining (`MayUndrain`, a pure function). If one is, a newer generation took over while this one was drained, and this one stays drained permanently, like any post-handoff old generation; deleting it is the new leader's job. `MayAct` deliberately doesn't enforce this. Its peer scan is asymmetric: a candidate defers to an older non-draining instance, but an older instance never checks for a newer one, which is what lets the old instance keep acting (health-checking, validating its candidate) through an ordinary self-upgrade window. A symmetric check would stop it the moment a candidate existed.
+
+So `draining` has two triggers behind one bool: a self-upgrade drain is permanent, and a sync-failure drain is conditionally recoverable. `MayAct` only asks "is this peer draining"; the agent loop tracks why.
+
+#### Failure cases, and what they cost
+
+- **The old primary's node is dead or partitioned.** Its `acting: true` is left behind, so the peer list counts an instance only when Incus reports it `Running`, not merely "not stopped".
+  - Incus reports instances on an offline member as Stopped or Error, so they drop out without special handling.
+  - The partitioned old primary stops by itself. Its agent reads its peers from its own member's Incus on every tick, and a member without quorum can't serve that read. The read errors, an error means "not leader", and the agent stops at its next tick. (Unverified; see To verify.)
+  - That stops the *agent*, not its work. Work is fenced only if it can't complete without quorum, which is why the guarantee below makes "every leader action is an Incus call" a condition.
+- **The old primary is hung,** with its instance Running and `acting: true`, but not ticking. Takeover blocks: safe, not live. The missing-primary-heartbeat alert fires, and the operator stops the hung agent instance. There is deliberately **no timeout** on `acting`: a process that passed its checks, froze, and woke mid-action would overlap its successor if the flag could expire. Lease designs can't make this promise.
+- **Every push pauses the leader.** A follower that syncs first publishes a commit the leader lacks, so the leader stands down until it has fetched: about one fetch, given the immediate re-sync. It happens even for commits unrelated to leadership, because a stale agent can't know what a commit it lacks contains. Minutes-scale RTO absorbs it.
+- **A force-push stalls leadership.** Agents on the old history and the new each see the other's commit as unknown, and all stand down until they converge: zero leaders, never two. Force-pushing the config repo's branch should be rare.
+- **A rollback is the one case commits don't fence.** If a push resets the branch to an ancestor, an agent still on the newer, removed commit sees the rolled-back commit as in its history, so it keeps acting on its stale designation until its next poll. The acting handoff still prevents overlap, because the new primary waits for its flag. Only liveness suffers.
+
+**The guarantee** is that at most one agent acts at any moment. It holds provided that:
+
+- `acting` is written in the order above;
+- the peer list reliably excludes instances that aren't running;
+- one agent's write is visible to another's next read (unverified across members);
+- every leader-only action is an Incus API call through the agent's own member. Across a partition, nothing in `MayAct` fences the isolated side; Incus quorum does, by refusing its calls. Work outside Incus (a git push, DNS, an external API) has no such fence. It needs its own before an agent may do it, or it waits for the ranked election. One gap remains: an Incus operation already running on the isolated daemon when the partition starts may not be stopped by it.
+
+**The operator's failover:** if the old primary's agent is hung, stop it; then commit the new `primary`. A dead or cleanly stopped primary needs no fencing step. The code holds no timers and detects no failures. The web app already polls, so it alerts on a missing primary heartbeat, and a person acts on it. That's within 0.x's minutes-scale bar.
 
 ### Deferred: ranked election over Incus (the automated implementation)
 
@@ -1542,156 +1623,28 @@ Recorded so it can be built later without re-deriving it. Everything registers a
 
 ### Consequences
 
-- `internal/leaderelection` (#108) ships the interface and `Designated`. Where the designation is parsed from git, and the Incus-backed `PeerEpochs` (a `user.*` key on the agent's own instance), belong to #101's wiring.
-- The `homelab-ops-meta` coordination project, the lease instance, and lease renewal at 1/3 TTL (§17, `docs/AppManager.md`) are dropped. Nothing needs the project; #99/#101 need not create it.
-- The spike script stays as characterization: it guards against re-adopting If-Match as a CAS, and an upgrade that makes it atomic would be news worth noticing (a change in its informational output is not a failure).
+- **The code (#108, #101):**
+  - `internal/leaderelection` holds the `Elector` interface and `Designated`. `Designation` is `Primary` plus the `Commit` it came from, since only the sync knows that. `Peer` carries `Commit`, `Acting` and `Draining`; `Registry.Record` publishes a commit and the acting state.
+  - `MayAct` performs the claim itself, so a `Leader` answer always means `acting` is published and re-checked. `Stop` is separate, because only the caller knows when its work has stopped. `MayUndrain` is the un-drain gate.
+  - `internal/configsync.Clone` is the persistent clone, and backs `Designated.HasCommit`.
+  - `internal/agent` is the tick loop, with the drain state machine and acting bookkeeping, so #109's self-upgrade handoff can reuse it; `cmd/agent` only wires it to the environment.
+- **Proven against real Incus** by `scripts/validate/agents-act-one-at-a-time-through-failover.sh`. Three agent processes, each claiming a throwaway container's identity, show that exactly one acts; that a `primary` change hands over in about one tick, with no snapshot or log interval showing two acting; and that a stale-checkout agent that believes it's primary stands down, and acts once a control stops the peers that fence it.
+- **The published commit is also the diagnostic.** The web app can show each agent's lag ("node2 is 3 commits behind") and surface "Incus-alive but git-stuck" before a failover is needed.
+- The `homelab-ops-meta` coordination project, the lease instance, and lease renewal at 1/3 TTL (§17, `docs/AppManager.md`) are dropped. With one designated primary, §17's lease renewal and "stop renewing on self version mismatch" (#109) reduce to the primary being told, by a designation change, to step down.
+- The ETag spike script stays as characterization: it guards against re-adopting If-Match as a CAS, and an upgrade that makes it atomic would be news worth noticing (a change in its informational output is not a failure).
 - Two-instance colocation on one member no longer "proves the lease"; 0.x validates the designation gate and fencing instead (#103 is reworded accordingly).
+- **To verify,** on a real multi-member cluster (#184):
+  - that the peer list excludes an offline member's instances, which Incus reports as Stopped or Error;
+  - that a member without quorum refuses `GET /1.0/instances`, so a partitioned agent stops at its next tick (a live partition, not only node loss);
+  - cross-member read-after-write visibility.
 
-### Addendum (2026-09-20, #187): `Source()` failure semantics and self-draining
+### History
 
-Raised while reviewing #101's design: `Designated.MayAct` calls `d.Source()` every tick to get the current `Designation` from the agent's git sync. What `Source()` does when git is unreachable was left unspecified — and it matters for exactly the case this package exists to handle safely: an agent that can still write/read Incus (so `Record`/`Peers` work) but cannot reach git.
-
-**Decision: `Source()` errors after N consecutive failed sync attempts, rather than silently serving the last-cached `Designation` forever.** `MayAct` already treats a `Source()` error as "unknown ⇒ not leader" (its documented contract), so this alone makes a sync-cut-off agent stop acting — it doesn't need git reachability to know it should stop, only to have *tried and failed enough times*. N is a tuning knob for #101 (an `AGENT_SYNC_FAILURE_THRESHOLD`-shaped env var, consistent with its other `AGENT_*` knobs), chosen so total tolerance is on the order of minutes — this project's existing RTO bar — not so low that an ordinary transient fetch failure trips it.
-
-**Decision: on crossing that threshold, the agent self-drains** — explicitly sets `Draining: true` on its own instance (a plain single-writer `user.*` write, needs only Incus, not git) — rather than silently returning not-leader each tick with no durable trace. This is a caller-side action around `MayAct`, not a change to the package: `Source()` erroring already makes `MayAct` return not-leader on its own; self-draining adds nothing to that decision. What it buys:
-- A durable, `incus list`-visible distinction between "alive but has given up" and "dead" (heartbeat also stopped) or "still trying" (still ticking, not yet at N) — exactly the signal the diagnostic sync-freshness key (below) is for, and what lets an operator trust that fencing, not waiting, is what's needed.
-- If a newer generation already exists for this node from before the outage (an in-flight self-upgrade), this unblocks it the same way any other `Draining: true` does — a side benefit, not the reason for the design.
-
-**Accepted consequence: a fleet-wide git outage produces zero leaders, not two.** If the primary's only instance is what drains, nothing reconciles until git recovers — consistent with this design's standing trade (idle periods are fine; the property that must never fail is single-writer, not liveness).
-
-**The subtlety this creates: un-draining is not always safe, and `MayAct` is deliberately not changed to enforce it.** Once git recovers, the agent presumably wants to clear its own `Draining` flag and resume. But `MayAct`'s peer scan is intentionally *asymmetric* — a candidate (higher generation) defers to an older non-draining instance, but an older instance never checks whether a *newer* non-draining instance already exists, because that asymmetry is what lets the old instance keep acting (health-checking, validating) throughout an ordinary self-upgrade window, from the moment a brand-new, undrained-by-default candidate is created. Adding the symmetric check to `MayAct` to close this would break that window outright — a fresh candidate is non-draining from creation, so an old instance would stop acting the instant a candidate existed, never getting to validate it.
-
-So the check belongs on the *write* side, as a one-time gate before clearing `Draining`, not in `MayAct`: **before an instance un-drains itself, it must confirm no higher-generation peer on its own node is currently non-draining.** If one exists, a newer generation already took over while this instance was drained (only possible because *this* instance had already drained — `MayAct`'s asymmetric rule is what let the newer one start acting) — this instance has been superseded and must stay drained permanently, exactly like a normal post-handoff old generation; its eventual deletion is the new leader's job via ordinary reconciliation, not something it does to itself (`never delete itself` still holds). If no such peer exists, clearing `Draining` and resuming normal `MayAct` evaluation is safe.
-
-This means `Peer.Draining` now has two triggers with different lifecycles behind one bool: self-upgrade draining (§ Leader election hand-off) is permanent, cleared by nothing but the instance's own deletion; sync-failure draining is conditionally recoverable, per the rule above. `MayAct`'s read-side logic doesn't need to know which — it only ever asks "is this peer currently draining" — but #101's agent loop does, since only it decides whether and when to clear the flag. Worth tracking explicitly in #101's implementation (e.g., recording *why* an instance drained is a fine reason to keep, even if `Registry`/`Peer` itself stays reason-agnostic).
-
-**Separately, purely diagnostic — record last-synced git state, but don't feed it to `MayAct`.** Recording each agent's last-successfully-synced git SHA (or just a sync timestamp) is worth doing so the web app's alerting can surface "Incus-alive but git-stuck" *before* a failover is needed — the operator's fencing decision benefits from that visibility. It's kept a separate key the agent writes for observability, not a field the `Elector`/`Registry` interfaces expose or `MayAct` reads: using git-history recency as a leadership input was considered and rejected — an arbitrary commit (a docs edit, a dependabot bump) would make an uninvolved peer look "more current" with no bearing on who should lead, and comparing SHAs for freshness needs ancestry or timestamp machinery a plain `int64` epoch (an operator-controlled total order that only moves on a real failover decision) avoids by construction. `Epoch` stays the only input to the leadership decision; SHA/timestamp is for humans, not the algorithm.
-
-### Addendum (2026-09-30, #212): git commits and an acting handoff replace the epoch
-
-**This supersedes the epoch.** It replaces:
-
-- the `Epoch` half of the Decision above;
-- the operator's "fence, then raise the epoch" step;
-- the #187 addendum's rejection of git history as a leadership input.
-
-The rest of §25 stands: the `Elector` interface, `Designated` naming a *node*, the same-node generation rule, the #187 sync-failure threshold and self-draining, and the deferred ranked election.
-
-#### Why revisit
-
-- **The epoch is a second source of truth.** Git already puts every change in order. The epoch is a hand-maintained counter that has to move in step with `primary`, and the code only protects the operator who remembers to move it.
-- **A change of `primary` at the same epoch isn't fenced, as the code shipped.** `MayAct` stands an agent down only when a peer has recorded a *strictly higher* epoch. So with `node0 / 1` changed to `node1 / 1`, both nodes act until node0 next syncs. That could be one poll interval, or much longer if node0 keeps seeing a stale view.
-
-#### Decision: commits fence
-
-- **Each agent publishes the commit its designation came from.** That's its last successful sync's `HEAD`, written as a `user.*` key on its own instance: single-writer, as before.
-- **An agent may act only if every running peer's published commit is in its own history.** A peer on a commit it doesn't have is ahead of it. The agent then stands down and triggers an immediate re-sync, instead of waiting for its next poll.
-- **A peer that is behind never blocks anyone.** The rule is one-sided: only evidence that *I* am behind stops me.
-- **Agents keep the full repo history** in a persistent clone, not a fresh depth-1 clone per sync (a config repo is tiny). That makes "in my history" a local lookup. It's also why the published commit alone is enough, rather than the last *N* commits: with only *N*, an agent more than *N* commits behind finds no evidence it's stale, and carries on.
-- **No ratchet.** An agent publishes whatever commit it is on, and that may go *backwards*, e.g. after a force-push rollback. The read-modify-write that #160 pushed up to #101's layer disappears with it.
-
-This is the same fence the epoch gave: a resurrected old primary on a stale checkout sees a peer on a commit it lacks, and stands down. The difference is that the fence now comes from git itself, and moves on every commit rather than only when the operator remembers to move it.
-
-**Reversing #187.** Its addendum rejected git recency as a leadership input for two reasons. Both are answered here:
-
-1. **"An arbitrary commit would make an uninvolved peer look more current, with no bearing on who should lead."** Being ahead never *makes* an agent leader: leadership is still exactly `primary`. It only makes agents that are behind pause until they catch up. The residual cost is real, and accepted below: every push briefly pauses the leader.
-2. **"Comparing SHAs needs ancestry machinery an `int64` avoids."** With a persistent full clone, the ancestry check is "is this commit in my repo", and go-git answers that locally. The cost moved from a counter the operator maintains to a clone the agent maintains, which is the better side for it to be on.
-
-#### Decision: the acting handoff
-
-Commits tell an agent it's stale. They don't stop the new primary from starting before the old one has finished its in-flight work. So each agent also publishes whether it is acting, and a new primary waits.
-
-**Before acting,** an agent:
-
-1. publishes `acting: true`;
-2. *re-reads* its peers;
-3. acts only if every check below still passes. Otherwise it clears the flag and does nothing this tick.
-
-Publishing and then re-reading means that of two agents claiming at the same moment, at least one sees the other. That's the Dekker ordering §25 already relies on. Both backing off is safe. The next tick settles it, because the one that's behind stays out.
-
-**When it stops,** because a check fails or it is draining, it finishes or abandons its in-flight work and *only then* publishes `acting: false`.
-
-**A newly designated primary takes over only when no other running agent shows `acting: true`.** Failing over from node0 to node1:
-
-1. node1 syncs the change, publishes it, and waits, because node0 shows `acting: true`.
-2. On node0's next tick, it sees node1's commit, which it doesn't have. It stops, publishes `acting: false`, and re-syncs.
-3. node1 takes over.
-
-There's no overlap and no timer. The handoff takes as long as node0's next tick. A same-node self-upgrade gets the same guarantee: the candidate also waits for the old generation's `acting: false`, which the old one publishes once it drains (#109).
-
-**On startup,** an agent clears its own `acting` before anything else. A flag left by its previous run is its own, and it isn't acting.
-
-#### The full rule
-
-An agent may act iff, all at once:
-
-1. its designation, from its own last successful sync (within #187's failure threshold), names its node as primary;
-2. every running peer's published commit is in its own history;
-3. no other running peer shows `acting: true`;
-4. it isn't draining, and no older non-draining instance runs on its node.
-
-It re-checks all four after publishing `acting: true`, before its first action.
-
-#### Failure cases, and what they cost
-
-- **The old primary's node is dead or partitioned.** Its `acting: true` is left behind, so the peer list must exclude instances that aren't running, as §25 already required.
-  - Incus reports instances on an offline member as Stopped or Error, never Running, so they drop out without special handling. The peer list must therefore count an instance as running only when Incus reports it `Running`, not merely "not stopped". #184's node-loss test should assert this on a real multi-member cluster, since the handoff depends on it.
-  - The partitioned old primary stops by itself, and doesn't keep a stale peer list. Its agent reads its peers from its own member's Incus on every tick, and a member without quorum can't serve that read. The read errors, an error means "not leader", and the agent stops at its next tick. (Unverified: #184 should assert that a minority member refuses reads, not just writes.)
-  - That stops the *agent*, not its work. Work is fenced only if it can't complete without quorum, which is why the guarantee below makes "every leader action is an Incus call" a condition.
-- **The old primary is hung, with its instance Running and `acting: true`, but it isn't ticking.** Takeover blocks. That's safe but not live.
-  - The missing-primary-heartbeat alert fires, and the operator stops the hung agent instance.
-  - Deliberately, there's **no timeout** on `acting`. A process that passed its checks, froze, and then woke mid-action would overlap its successor if the flag could expire. Without one, it can't: the successor is still waiting for the flag that process never cleared. Lease designs can't make this promise. The cost is that a hung primary needs a person to stop it, which §25's no-timers stance already accepted.
-- **Every push pauses the leader.** A follower that syncs first publishes a commit the leader lacks, so the leader stands down until it has fetched. That's about one fetch, given the immediate re-sync, and it happens even for commits unrelated to leadership, because a stale agent can't know what a commit it lacks contains. Minutes-scale RTO absorbs it.
-- **A force-push stalls leadership.** Agents on the old history and the new each see the other's commit as unknown, and all stand down until they converge. That's zero leaders, never two. Force-pushing the config repo's branch should be rare.
-
-**The guarantee** is that at most one agent acts at any moment. It holds provided that:
-
-- `acting` is written in the order above;
-- the peer list reliably excludes instances that aren't running;
-- one agent's write is visible to another's next read. That was already §25's assumption, unverified across members;
-- every leader-only action is an Incus API call through the agent's own member. Across a partition, nothing in `MayAct` fences the isolated side; Incus quorum does, by refusing its calls. Work outside Incus (a git push, DNS, an external API) has no such fence. It needs its own before an agent may do it, or it waits for the ranked election. One gap remains: an Incus operation already running on the isolated daemon when the partition starts may not be stopped by it.
-
-**The operator's failover** becomes: if the old primary's agent is hung, stop it; then commit the new `primary`. There's no epoch to raise, and no fencing step for a dead or cleanly stopped primary.
-
-#### Consequences
-
-- **The designation is `primary` only** (`docs/Config Schema.md`).
-- **`internal/leaderelection` changes (#101 builds it):**
-  - `Designation` loses `Epoch`.
-  - `Peer.Epoch` becomes the published commit, and `Peer` gains `Acting`.
-  - `Registry.Record` publishes the commit and the acting state, with no ratchet.
-  - `Designated` gains a "have I got this commit?" lookup, backed by the agent's clone.
-- **The agent's git sync** becomes a persistent clone that it fetches into.
-- **#187's diagnostic SHA key becomes the published commit itself,** now an input rather than just a diagnostic. The web app can show each agent's lag ("node2 is 3 commits behind").
-- **To verify:**
-  - that the peer list excludes an offline member's instances, which Incus reports as Stopped or Error (asserted in #184);
-  - that a member without quorum refuses `GET /1.0/instances`, so a partitioned agent stops at its next tick (a live partition, in #184, not only node loss);
-  - cross-member read-after-write visibility (as before);
-  - how go-git handles a force-pushed branch in a persistent clone.
-
-### Addendum (2026-09-30, #101): what building it settled
-
-- **go-git and a force-push: verified, and the failure is silent.** Without a `+` (force) refspec, go-git v5.19's fetch *succeeds* and leaves the tracking ref on the abandoned commit, so an agent would sit on a stale checkout indefinitely with no error. `configsync.Clone` fetches `+refs/heads/<ref>:refs/remotes/origin/<ref>`; `TestCloneFollowsAForcePush` pins it.
-- **"In my history" means reachable from the commit of my last successful sync.** It doesn't mean "the object is in my clone". A clone keeps abandoned commits after a force-push, so an object-presence check would let the agent that fetched the rewrite trust a peer still on the old history. Ancestry gives exactly the addendum's force-push prediction instead: both sides see the other as unknown, and both stand down until they converge.
-  - **A rollback is the one case commits don't fence.** Suppose a push resets the branch to an ancestor. An agent still on the newer, removed commit sees the rolled-back commit as in its history, so it keeps acting on its stale designation until its next poll. The acting handoff still prevents overlap, because the new primary waits for its flag. Only liveness suffers.
-- **A commit that fetches but fails to parse or validate is a failed sync.** It counts toward #187's threshold. The previous commit stays current, and that's the commit the agent publishes. An agent whose binary accepts the newer commit therefore looks *ahead* to one that doesn't, and the latter stands down. That's the conservative reading: an agent that can't use HEAD is behind.
-- **Two small checks beyond the four-part rule**, both making a claim that nobody could see impossible:
-  - an agent whose own instance isn't in the running-peer list refuses to lead;
-  - after publishing `acting: true`, the re-read must show its own flag set. That holds on every tick an agent is already acting too, not only on a fresh claim: each tick re-publishes the flag before reading, so that read is also one taken after publishing.
-- **Refinements from #219's review**, each narrowing the rule above rather than changing its shape:
-  - **Peers are the agent's own App's instances.** A peer must carry the same `user.homelab-ops.app` value as the agent's own instance. Without that, every agent on one Incus elected together, so a validate script's throwaway agents fenced real ones with commits from a history they don't share, and held them off with their acting flag. The App is read from the agent's own listed instance, not configured.
-  - **Rule 2 skips draining peers.** A peer drained for sync failure can't republish (its `Source` errors before `Record`), so after a force-push its abandoned commit would hold every agent Behind until it reached git again. A draining peer that is still acting still fences, through rule 3. The cost: if the only peers ahead of a stale primary are drained, it isn't fenced by commit; the acting handoff still keeps it from overlapping anyone.
-  - **Un-draining needs a successful sync.** "Not failing" isn't recovery, since a restarted agent's failure count starts at zero; otherwise a drained agent that restarts with git still unreachable un-drains on its first tick.
-  - **A claim whose re-read fails is withdrawn by `MayAct` itself**, as when the re-check fails, rather than left to the caller's `Stop`.
-- **Shape of the code.** `Designation` keeps a `Commit` alongside `Primary`, since only the sync knows which commit a designation came from.
-  - `MayAct` performs the claim itself, so a `Leader` answer always means `acting` is published and re-checked.
-  - `Stop` is separate, because only the caller knows when its work has stopped.
-  - `MayUndrain` is the #187 un-drain gate, as a pure function.
-  - The tick loop, with the drain state machine and acting bookkeeping, is `internal/agent`, so #109's self-upgrade handoff can reuse it; `cmd/agent` only wires it to the environment.
-- **Proven against real Incus** by `scripts/validate/agents-act-one-at-a-time-through-failover.sh`. Three agent processes, each claiming a throwaway container's identity, show:
-  - exactly one acts;
-  - a `primary` change hands over in about one tick, with no snapshot or log interval showing two acting;
-  - a stale-checkout agent that believes it's primary stands down. A control then stops the peers that fence it, and the same agent acts.
+- **2026-09-20 (#160, #108):** replaced §17's ETag lease with `Designated`, fenced by an operator-maintained `Epoch`. Every agent recorded the highest epoch it had seen as a ratchet, and the operator fenced the old primary before raising the epoch.
+- **2026-09-20 (#187):** added the sync-failure threshold, self-draining and the un-drain gate. It also rejected git recency as a leadership input, since an unrelated commit would make a peer look "more current" and SHA freshness needs ancestry machinery an `int64` avoids.
+- **2026-09-30 (#212): commits and the acting handoff replaced the epoch, superseding #187's rejection of git recency.** The epoch was a second source of truth that had to move in step with `primary`. And as shipped, a change of `primary` at the same epoch wasn't fenced at all, since `MayAct` stood down only for a *strictly higher* epoch, so both nodes acted until the old one synced. #187's objections were answered: being ahead never makes an agent leader, and with a persistent full clone the ancestry check is local. The cost moved from a counter the operator maintains to a clone the agent maintains.
+- **2026-10-03 (#101, PR #219):** building it settled the force-push refspec, ancestry as the meaning of "in my history", a failed parse as a failed sync, the own-instance and own-flag checks, peers scoped to the agent's own App, draining peers skipped by rule 2, and un-draining only after a successful sync.
+- **2026-10-03 (#223):** the #187, #212 and #101 addenda folded into the body above.
 
 ## 26. Incus clustering: 0.x claimed a one-member cluster it never built; splitting the fix into Tier A and Tier B (#177)
 
@@ -1763,48 +1716,86 @@ The app-manager agent still ships, but its first real jobs are **cluster members
 
 The rest of the blue-green reconcile machinery (#98, #103, #109) is paused, and so is cluster-group placement (#182). An agent that is deployed and does little else is an acceptable Phase 3 end state.
 
-This section records what reading the code found, which is not yet proven on real hardware. A manual join spike (below) comes first, before any of it is built. The web app's interim security posture was raised at the same time but is independent of this pivot; it is §28.
+What follows was first read from `lxc/incus/v7` v7.5.1 and IncusOS source, then checked by hand on `homelab-host` in the #193 spike (evidence below). The web app's interim security posture was raised at the same time but is independent of this pivot; it is §28.
 
 ### What a join actually does to the joining node
 
-Read from `lxc/incus/v7` v7.5.1 and IncusOS at the pinned submodule commit. Not yet exercised against a real booted node.
-
-- **The joiner's global database is wiped.** `cluster.Join` removes `GlobalDatabaseDir()` and adopts the cluster's (`internal/server/cluster/membership.go`). Anything recorded there on the joiner — instances, profiles, trusted certificates — is gone afterwards. `clusterPutJoin` also rejects a server that is already clustered.
+- **The joiner's global database is wiped.** `cluster.Join` removes `GlobalDatabaseDir()` and adopts the cluster's (`internal/server/cluster/membership.go`). Anything recorded there on the joiner — instances, profiles, trusted certificates — is gone afterwards. `clusterPutJoin` also rejects a server that is already clustered (`400 This server is already clustered`), so a node booted from today's seed can't join over the API.
 - **So an agent cannot join its own node.** It would be an instance whose record disappears mid-call. The joiner must be driven from outside, and must be empty when it joins.
 - **Today's seed does the wrong things on a joiner, whichever way it joins.** `ApplyServerPreseed` applies config, then pools, networks and profiles, then `certificates`, and only then `cluster`. IncusOS's `applyDefaults` runs after the whole preseed.
   - The break-glass cert, the one-shot bootstrap cert and (#99) the `incus-socket` profile are written locally and then discarded by the join.
-  - The join needs `member_config` values for member-specific keys, which the seed doesn't carry: the `local` zfs pool's `source=local/incus`, and a physical network's `parent`.
-  - **If the join happens from the seed** (a `cluster_token` in the preseed), it runs before `applyDefaults`. `applyDefaults` then skips pool creation because the cluster's pools already exist. The joiner never gets the `backups`/`images`/`logs` volumes or its member-scoped `storage.*_volume` settings.
-  - **If the join happens over the API after boot** (the route chosen below), `applyDefaults` has already created `local`, the three volumes and `incusbr0`. The join wipes the volume records but keeps the `storage.*_volume` keys. Those keys are member-local config in the node database, which the join doesn't wipe (`internal/server/node/config.go`). So the joiner is left pointing at volumes the cluster doesn't know about.
-- **Members must match versions.** `Accept` rejects a joiner whose schema or API version differs from the cluster's. #68 (one flasher-tool/IncusOS pin) helps. But IncusOS updates itself, so members also drift apart depending on when each one updated. The join loop has to tolerate a mismatch (below).
+  - The join needs `member_config` for the `local` zfs pool's `source=local/incus`. No other member-specific key applies to our seeds: there is no physical network, because IncusOS creates one only for a bridge interface with the `instances` role and our `network.yaml` sets `management` only. `incusbr0` has no member-specific keys.
+  - **If the join happens from the seed** (a `cluster_token` in the preseed), it runs before `applyDefaults`, which then skips quietly because the cluster's pools already exist. The joiner never gets the `backups`/`images`/`logs` volumes or its `storage.*_volume` settings.
+  - **If the join happens over the API after `applyDefaults`,** the join fails outright when given `member_config`: it tries to *update* the existing `local` pool with a member-specific key, is refused, and spends the token. Without `member_config` it succeeds, but the `storage.*_volume` keys (member-local, in the node database) are left pointing at volumes the cluster has no records for, whose ZFS datasets still exist. Only Incus's internal recovery API repairs that. Hence `apply_defaults: false` on joiners.
+- **A joiner trusts its seed's certificates before it has finished initializing.** They're applied before `applyDefaults` runs, so a joiner answers `auth: trusted` while still initializing. `GET /os/1.0/applications/incus` → `state.initialized: true` is the signal to wait for, and the joiner cert can read it.
+- **Members must match versions.** `Accept` rejects a joiner whose schema or API version differs from the cluster's (`membershipCheckClusterStateForAccept`; not yet exercised). #68 (one flasher-tool/IncusOS pin) helps. But IncusOS updates itself, so members also drift apart depending on when each one updated. The join loop has to tolerate a mismatch (below).
 
 ### Decision: an agent on an existing member drives the join
 
 The designated primary's agent (§25) reconciles declared membership (#181) against `GET /1.0/cluster/members` and joins what is missing:
 
-1. **Find the joiner** on its own subnet (below).
-2. **Check its version.** Read `GET /1.0` on the joiner, which trusts the joiner cert. While its version differs from the cluster's, wait; IncusOS's own updates usually close the gap. A version mismatch at `Accept` is retried, not treated as a failure.
-3. **Mint the token over its own unix socket** (`POST /1.0/cluster/members`, through the `incus-socket` proxy, #99). No credential trusted by the cluster exists outside the node, so §4's custody principle holds without new machinery. This also removes the need for the web app to mint tokens.
-4. **Build `member_config` from live state.** `GET /1.0/cluster` lists the member-specific keys a joiner must supply. Most of #183 (storage/network parity) is this step.
-5. **Call `PUT /1.0/cluster` on the joiner** over the LAN. The call carries the token, the filled `member_config`, and the address discovery found as `ServerAddress`.
-6. **Fix up the new member** afterwards: create its volumes and set its member-scoped server config (`target=<member>`).
+1. **Find the joiner** on its own subnet (below), and wait for `/os/1.0/applications/incus` → `initialized: true`.
+2. **Check its version.** Read `GET /1.0` on the joiner. While its version differs from the cluster's, wait; IncusOS's own updates usually close the gap. A version mismatch at `Accept` is retried, not treated as a failure.
+3. **Mint the token over its own unix socket** (`POST /1.0/cluster/members {"server_name": <name>}`, through the `incus-socket` proxy, #99). No credential trusted by the cluster exists outside the node, so §4's custody principle holds without new machinery, and the web app needn't mint tokens.
+   - The response is an operation, not a token string. The token is `base64(JSON{server_name, fingerprint, addresses, secret, expires_at})`, assembled from the operation's metadata, as the `incus` CLI does.
+   - It expires after `cluster.join_token_expiry` (default **3 hours**) and is single-use. A *failed* join still spends it, and leaves the joiner's server cert in the cluster's trust store.
+4. **Build `member_config` from live state.** `GET /1.0/cluster` lists the member-specific keys; fill in `local`'s `source=local/incus`. Also read `GET /1.0` → `environment.certificate` over the socket, and check its SHA-256 against the token's `fingerprint`. Most of #183 (storage/network parity) is this step.
+5. **Call `PUT /1.0/cluster` on the joiner** over the LAN, and wait on the operation it returns (the joiner cert stays trusted long enough for the wait to succeed). A token alone doesn't join: the body also needs `server_address` (the address discovery found), `cluster_address` (from the token's `addresses`) and `cluster_certificate`. Without `cluster_address`, `clusterPut` takes the request as a *bootstrap*, and the joiner would become a one-member cluster of its own. The minimal body that worked:
 
-Consequences:
+   ```json
+   {
+     "server_name": "joiner-a",
+     "enabled": true,
+     "server_address": "192.168.1.211:8443",
+     "cluster_address": "192.168.1.210:8443",
+     "cluster_certificate": "<PEM of member1's cluster cert>",
+     "cluster_token": "<base64 token>",
+     "member_config": [
+       {"entity": "storage-pool", "name": "local", "key": "source", "value": "local/incus"}
+     ]
+   }
+   ```
 
-- **Seeds don't depend on live cluster state.** No token is baked into an image, so a token can't expire between building the image and flashing it. This reverses §26's expectation that a joiner's seed would carry a join token.
-- **Bring-up order:**
-  1. Member 1 bootstraps itself from its seed (§26 Tier A).
-  2. The web app deploys the agent onto member 1 (#100).
-  3. The agent joins members 2 and 3, and puts an agent on each (#203, below).
-- **The joiner's seed changes:**
-  - it skips clustering and profiles;
-  - it sets `apply_defaults: false` **explicitly**, because IncusOS applies defaults when there is no Incus seed at all;
-  - it trusts the joiner cert (below).
+6. **Fix up the new member.** Four calls against any member, with any cluster-trusted cert. Nothing else is missing: the profile, pools, networks and trust all come from the cluster.
 
-  This needs the membership model (#181) to tell the renderer which role an `Instance` has.
-- **The agent's scope, in issue terms:**
-  - Needed: #99, #100 (both the web app route and the `bootstrap deploy-agent` CLI path), #101, #102, #160 and #203.
-  - Paused: #98 (apart from #203's slice), #103, #109 and #182.
+   ```
+   POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"backups","type":"custom","content_type":"filesystem"}
+   POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"images", ...}
+   POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"logs", ...}
+   PATCH /1.0?target=<member>  {"config":{"storage.backups_volume":"local/backups","storage.images_volume":"local/images","storage.logs_volume":"local/logs"}}
+   ```
+
+**Not from the seed.** Both routes join and leave the same gap, but a seed-time join bakes a 3-hour, single-use token, member 1's address and its cluster certificate into the image. Joining over the API means seeds don't depend on live cluster state. This reverses §26's expectation that a joiner's seed would carry a join token.
+
+**Bring-up order:**
+
+1. Member 1 bootstraps itself from its seed (§26 Tier A).
+2. The web app deploys the agent onto member 1 (#100).
+3. The agent joins members 2 and 3, and puts an agent on each (#203, below).
+
+**The joiner's seed** skips clustering, profiles, pools and networks, sets `apply_defaults: false` **explicitly** (IncusOS applies defaults when there is no Incus seed at all), trusts the joiner cert (below), and sets `dns.hostname` so the node reports its name (below). The renderer needs the membership model (#181) to know which role an `Instance` has.
+
+```yaml
+# network.yaml: as today, plus
+dns:
+  hostname: <instance name>   # without it, the node reports its machine UUID
+# incus.yaml
+apply_defaults: false          # explicit: no incus.yaml at all means apply_defaults: true
+preseed:
+  config:
+    core.https_address: "<static_ip>:8443"
+  certificates:
+    - {name: <name>, type: client, certificate: <break-glass cert>}
+    - {name: <name>-joiner, type: client, certificate: <joiner cert>}
+# no cluster block, no profiles, no pools, no networks
+```
+
+A joiner booted this way comes up with an empty Incus: no pools, no networks, and a `default` profile with no devices. The join replaces its trust store; the break-glass cert keeps working afterwards only because member 1 was seeded with it.
+
+**The agent's scope, in issue terms:**
+
+- Needed: #99, #100 (both the web app route and the `bootstrap deploy-agent` CLI path), #101, #102, #160 and #203.
+- Paused: #98 (apart from #203's slice), #103, #109 and #182.
 
 ### Decision: every member runs an agent (#203)
 
@@ -1825,7 +1816,7 @@ The join call (step 5) needs a credential the *unjoined* node trusts. Its seed c
 
 - Its public half goes into the web app's deployment config, like the break-glass cert, and is preseeded into joining nodes' seeds only.
 - Its private half goes to the agents.
-- It limits itself by construction. It only works against fresh, unjoined nodes. The join replaces the node's trust store, so each node stops trusting the cert as soon as it joins. The exposure window is a node that has booted but not yet joined.
+- It limits itself by construction. It only works against fresh, unjoined nodes. The join replaces the node's trust store, so each node stops trusting the cert as soon as it joins (confirmed: `auth: trusted` before, `untrusted` after). The exposure window is a node that has booted but not yet joined.
 
 **Not yet decided: how the private half reaches the agents.** The config repo is public, so git is out. Any agent that may become primary needs the key, so a `Designated` failover (§25) shouldn't require pushing it again. #194 decides, alongside the joiner seed variant. Options:
 
@@ -1842,10 +1833,10 @@ The agent needs a joiner's address for `PUT /1.0/cluster`. But IPAM-assigned add
 **Discovery (chosen).** Members cluster over one LAN, so a joiner is on the same subnet as the agent's own node.
 
 - The agent reads that subnet from its host's network state over the Incus socket, so no address ranges are needed in git.
-- It probes those addresses on `:8443` with the joiner cert. Only fresh, unjoined nodes trust that cert.
-- It matches a host that responds to a declared `Instance` by the server name the host reports.
+- It probes those addresses on `:8443` with the joiner cert. Only fresh, unjoined nodes trust that cert. An instance behind its member's `incusbr0` NAT reaches a joiner's `:8443` (confirmed).
+- It matches a host that responds to a declared `Instance` by `environment.server_name` from `GET /1.0`. Unclustered, that is the OS hostname, which IncusOS sets to the machine UUID unless `network.yaml` sets `dns.hostname`, so the renderer must set it. Only a trusted cert sees `environment` at all.
 
-This needs no web app, no addresses in git and no new credential, and the web app's IPAM stays authoritative. An explicit `static_ip` in a git-addressed network (§28) skips discovery for that node. To verify in the spike: what server name an unjoined IncusOS node reports, and that the agent's instance can reach the LAN through `incusbr0`'s NAT.
+This needs no web app, no addresses in git and no new credential, and the web app's IPAM stays authoritative. An explicit `static_ip` in a git-addressed network (§28) skips discovery for that node.
 
 Rejected alternatives:
 
@@ -1873,7 +1864,7 @@ This sits uneasily with §28, which treats anyone on the LAN as a real threat to
 - The open question is how that fingerprint reaches the agent. Either the operator commits it to git beside the instance (one manual step per join; fingerprints aren't secret), or the agent reads it from a read-only web-app route (automatic, but it puts the web app on the join path).
 - Either way, the fingerprint would also replace the self-reported server name as the way to match a joiner.
 
-Not decided; revisit with #194 or after the spike.
+Not decided; revisit with #194.
 
 ### The web app must be able to be down without affecting the cluster
 
@@ -1887,22 +1878,6 @@ The web app is a provisioning and observation plane, never on the cluster's runt
   - the missing-primary-heartbeat alert (`docs/AppManager.md`). That one is monitoring, not function; Phase 5's Grafana stack is its longer-term home.
 - **Rule for future work:** nothing on a node or in the agent may call the web app synchronously. If a feature seems to need that, it belongs in git or in the agent.
 
-### The spike that comes first (#193)
-
-Before building any of the above, join a second VM to a Tier A cluster **by hand** on `homelab-host`:
-
-- mint the token on member 1;
-- boot the joiner from a seed with no clustering or profiles, and `apply_defaults: false`;
-- `PUT /1.0/cluster` with a hand-filled `member_config`;
-- record exactly what fails and what the new member is missing afterwards.
-
-Also try:
-
-- the join both ways — from the seed and after boot over the API — because the source reading above could be wrong in either direction;
-- an API join of a node booted from today's seed (`apply_defaults: true`), then check its `storage.*_volume` keys and volume list.
-
-The result is what the agent has to automate, and it sets the scope of #180, #181, #183 and #194.
-
 ### Operations Center, again
 
 `docs/Architecture.md` said wrapping Operations Center would be revisited "once real multi-member clustering (Phase 4) is actually on the table". It now is.
@@ -1912,133 +1887,47 @@ The result is what the agent has to automate, and it sets the scope of #180, #18
 
 It's worth an hour's read of how Operations Center joins members before building #180, if only to borrow its answers to the questions above.
 
-### Addendum: the manual join spike (#193, 2026-09-29)
+### Evidence: the manual join spike (#193, 2026-09-29)
 
-The spike above, run by hand on `homelab-host`. Every node booted IncusOS **202609271243** (the stable channel's current release, straight from the CDN) with Incus **7.5.1** (562 API extensions). The versions matched at every join. IncusOS checked for updates during the run (`Update check completed`, no `os_version_next`) and found nothing newer, so the version-skew path wasn't exercised.
+Run by hand on `homelab-host`. Every node booted IncusOS **202609271243** (the stable channel's current release, straight from the CDN) with Incus **7.5.1** (562 API extensions). The versions matched at every join. IncusOS checked for updates during the run and found nothing newer, so the version-skew path wasn't exercised.
 
-Four nodes were booted, all on `home-lan`:
+Four nodes were booted, all on `home-lan`, and all three joiners joined (`Online`, `database-standby` in member1's `GET /1.0/cluster/members`):
 
-- **member1** from today's seed (§26 Tier A). `GET /1.0/cluster/members` listed it alone, as `database-leader`.
-- **joiner-a**, the §27 joiner seed ("Variant A" below), joined over the API.
-- **joiner-b2**, with `apply_defaults: true` but no `cluster` block, joined over the API.
+- **member1** from today's seed (§26 Tier A), listed alone as `database-leader`;
+- **joiner-a**, the joiner seed above without `dns.hostname`, joined over the API;
+- **joiner-b2**, with `apply_defaults: true`, no `cluster` block and `dns.hostname: joiner-b2`, joined over the API;
 - **joiner-seed**, joined at seed time from a `cluster` preseed carrying a `cluster_token`.
 
-**All three joiners joined.** Each appeared in member1's `GET /1.0/cluster/members` as `Online`, `database-standby`.
-
-#### The predictions, checked
-
-| §27 prediction | Result | Evidence |
+| Claim (first read from source) | Result | Evidence |
 |---|---|---|
 | The join wipes the joiner's global database | **Confirmed** | joiner-a's two preseeded client certs were gone afterwards. Its trust store became the cluster's: the member server certs plus member1's break-glass entry. Its `default` profile became the cluster's. |
-| `clusterPutJoin` rejects an already-clustered server | **Confirmed** | `PUT /1.0/cluster` with a join body against member1, itself booted from today's seed: `400 This server is already clustered`. A node booted from today's seed can't join over the API. |
-| A seed-time join leaves the joiner without volumes and `storage.*_volume` keys | **Confirmed** | joiner-seed (`apply_defaults: true`) had no custom volumes and no `storage.*_volume` keys. IncusOS still reported the app `initialized: true`, so `applyDefaults` skipped quietly rather than failing. |
-| An API join after `applyDefaults` keeps the `storage.*_volume` keys but loses the volume records | **Confirmed, and worse than predicted** | See joiner-b2 below. The join fails outright if `member_config` is supplied. Without it the join succeeds, and the keys are left pointing at volumes the cluster doesn't know, whose ZFS datasets are still on disk. |
+| `clusterPutJoin` rejects an already-clustered server | **Confirmed** | `PUT /1.0/cluster` with a join body against member1: `400 This server is already clustered`. |
+| A seed-time join leaves the joiner without volumes and `storage.*_volume` keys | **Confirmed** | joiner-seed had neither. IncusOS still reported the app `initialized: true`, so `applyDefaults` skipped quietly rather than failing. |
+| An API join after `applyDefaults` keeps the `storage.*_volume` keys but loses the volume records | **Confirmed, and worse** | joiner-b2: with `member_config`, `Failed to update storage pool "local": Config key "source" is cluster member specific`, which spent the token. Retried with a fresh token and no `member_config`, it joined, and `incusbr0`'s addresses were overwritten with the cluster's. The keys survived; recreating the volumes failed (`dataset already exists`). `POST /internal/recover/import` with `{"pools":[{"name":"local","driver":"zfs","config":{"source":"local/incus"}}]}` on the joiner re-imported all three. |
 | `member_config` is needed for the `local` pool's `source` | **Confirmed, for an empty joiner** | member1's `GET /1.0/cluster` listed `local`'s `source` and `zfs.pool_name`, both empty. Supplying `source=local/incus` alone was enough for joiner-a and joiner-seed. |
-| `member_config` is needed for a physical network's `parent` | **Wrong for our seeds** | No physical network exists. IncusOS creates one only for a bridge interface with the `instances` role, and our `network.yaml` sets `management` only. `incusbr0` has no member-specific keys. |
-| Members must match versions; the join has to tolerate a mismatch | **Not exercised** | Every node ran the same release. Still true from source (`membershipCheckClusterStateForAccept`), but unproven. |
-| The joiner cert limits itself: trusted before the join, untrusted after | **Confirmed** | Before: `auth: trusted` on joiner-a. After: `auth: untrusted` on both joiner-a and member1. |
-| An instance behind member1's `incusbr0` NAT can reach a joiner's `:8443` | **Confirmed** | An Alpine container launched on member1's own Incus (`10.21.89.249`) fetched `https://192.168.1.211:8443/1.0` with the joiner cert and got `auth: trusted`. |
+| `member_config` is needed for a physical network's `parent` | **Wrong for our seeds** | No physical network exists; see above. |
+| Members must match versions | **Not exercised** | Every node ran the same release. |
+| The joiner cert limits itself | **Confirmed** | Before: `auth: trusted` on joiner-a. After: `auth: untrusted` on both joiner-a and member1. |
+| An instance behind member1's `incusbr0` NAT can reach a joiner's `:8443` | **Confirmed** | An Alpine container on member1 (`10.21.89.249`) fetched `https://192.168.1.211:8443/1.0` with the joiner cert and got `auth: trusted`. |
 
-#### Findings §27 didn't predict
+Also found:
 
-- **A token alone doesn't join.** `PUT /1.0/cluster` also needs the member's address and its cluster certificate. Tried against joiner-a, one field removed at a time:
-  - without `cluster_certificate`: `400 No target cluster member certificate provided`;
-  - without `server_address`: `400 No server address provided for this member`;
-  - without `cluster_address`: not tried. From source, `clusterPut` takes that as a *bootstrap* request, and the joiner would become a new one-member cluster of its own.
-
-  The minimal body that worked:
-
-  ```json
-  {
-    "server_name": "joiner-a",
-    "enabled": true,
-    "server_address": "192.168.1.211:8443",
-    "cluster_address": "192.168.1.210:8443",
-    "cluster_certificate": "<PEM of member1's cluster cert>",
-    "cluster_token": "<base64 token>",
-    "member_config": [
-      {"entity": "storage-pool", "name": "local", "key": "source", "value": "local/incus"}
-    ]
-  }
-  ```
-
-  The agent has what it needs. `cluster_address` is in the token's `addresses`. The certificate is `environment.certificate` from `GET /1.0` over its own socket, and its SHA-256 matches the token's `fingerprint`, which is how to check it.
-
-- **The token isn't returned as a string.** `POST /1.0/cluster/members` returns an operation. The token is `base64(JSON{server_name, fingerprint, addresses, secret, expires_at})`, assembled from the operation's metadata (`serverName`, `fingerprint`, `addresses`, `secret`, `expiresAt`), exactly as the `incus` CLI does.
-  - The token expires after `cluster.join_token_expiry`, which defaults to **3 hours**.
-  - It is single-use, and a *failed* join still spends it.
-  - A failed join also leaves the joiner's server cert in the cluster's trust store.
-
-- **An unjoined node reports its OS hostname as its server name.** Unclustered, `GET /1.0` reports `os.Hostname()`.
-  - With today's `network.yaml` (`hostname: ""`), IncusOS sets that to the machine UUID. joiner-a reported `5ae89e64-7325-4ef7-91cb-3eb434705b04`.
-  - Setting `dns.hostname: joiner-b2` in `network.yaml` made joiner-b2 report `joiner-b2`.
-  - An untrusted client gets no `environment` at all, so only a trusted cert can read the name.
-  - §27's "match the joiner by the name it reports" therefore needs the renderer to set `dns.hostname`. Today's seed doesn't.
-
-- **A joiner that ran `applyDefaults` fails the API join if given `member_config`.** joiner-b2 already had `local`, the three volumes and `incusbr0`.
-  - `clusterInitMember` tries to *update* the existing `local` pool with the member-specific key and is refused: `Failed to update storage pool "local": Config key "source" is cluster member specific`. That spent the token.
-  - Retried with a fresh token and **no** `member_config`, it joined.
-  - `incusbr0`'s addresses were overwritten with the cluster's.
-  - The `storage.*_volume` keys survived (`local/backups` and so on), but the cluster had no volume records for joiner-b2.
-  - Recreating the volumes failed: `zfs create ... local/incus/custom/default_backups: dataset already exists`.
-  - What repaired it was Incus's recovery API on the joiner itself: `POST /internal/recover/import` with `{"pools":[{"name":"local","driver":"zfs","config":{"source":"local/incus"}}]}`. It re-imported all three volumes, now owned by `joiner-b2`.
-  - This works, but it goes through an internal endpoint. It's a reason to keep `apply_defaults: false` on joiners, not a route to build on.
-
-- **Wait for IncusOS to finish initializing before joining.** The seed's `certificates` are applied before `applyDefaults` runs, so a joiner answers `auth: trusted` to the joiner cert while it is still initializing. joiner-b2's first `GET /1.0` had no `storage.*_volume` keys; they appeared seconds later. `GET /os/1.0/applications/incus` → `state.initialized: true` is the signal, and the joiner cert can read it.
-
-- **Every member's `incusbr0` gets the same subnet.** `ipv4.address` isn't member-specific. Each member runs its own NAT'd bridge with the cluster-wide subnet (`10.21.89.1/24` here). That's normal for Incus clusters and harmless, since the bridges never meet.
-
-- **Removing a fixed-up member takes more than one call.**
-  - `DELETE /1.0/cluster/members/joiner-a` refused while it held custom volumes: `Node still has the following custom volumes: backups, images, logs`.
-  - After unsetting the three keys, deleting `logs` failed with `dataset is busy`, because it is mounted as Incus's log directory until the daemon restarts.
-  - `?force=1` removed the member, and it also cleared the member's volume records and its server cert from the cluster. Worth recording in the runbook (#185).
-
+- **The join body:** removing fields one at a time from joiner-a's body gave `400 No target cluster member certificate provided` without `cluster_certificate`, and `400 No server address provided for this member` without `server_address`. Removing `cluster_address` wasn't tried; the bootstrap reading is from source.
+- **Server names:** joiner-a (no `dns.hostname`) reported `5ae89e64-7325-4ef7-91cb-3eb434705b04`; joiner-b2 reported `joiner-b2`.
+- **Initialization:** joiner-b2's first trusted `GET /1.0` had no `storage.*_volume` keys; they appeared seconds later.
+- **The fix-up** fixed both joiner-a (API route) and joiner-seed (seed route). On joiner-a, a container launched with `--target joiner-a` afterwards got an address from joiner-a's own `incusbr0`.
+- **Every member's `incusbr0` gets the same subnet.** `ipv4.address` isn't member-specific, so each member runs its own NAT'd bridge on the cluster-wide subnet (`10.21.89.1/24` here). Normal for Incus clusters, and harmless, since the bridges never meet.
+- **Removing a fixed-up member takes more than one call.** `DELETE /1.0/cluster/members/joiner-a` refused while it held custom volumes (`Node still has the following custom volumes: backups, images, logs`). After unsetting the three keys, deleting `logs` failed with `dataset is busy`, because it stays mounted as Incus's log directory until the daemon restarts. `?force=1` removed the member, its volume records and its server cert. Worth recording in the runbook (#185).
 - **IncusOS tags `local/incus` with `incusos:use=incus`** when `applyDefaults` creates it. A joined member's dataset, created by the join instead, lacks the tag. From IncusOS source it is only reported in `/os/1.0/system/storage` state, so the gap is cosmetic.
-
 - **An IncusOS VM takes a fully allocated 50 GiB.** The installer refuses a smaller disk and wipes the whole target. On `homelab-host`'s btrfs pool that allocates all 50 GiB, and a first attempt at this spike filled the pool. Any multi-VM validate script (#184) needs about 55 GiB per node.
 
-#### Which route, and what a joiner needs
-
-**Both routes join, and both leave the same gap: no volumes and no `storage.*_volume` keys.** The seed-time route bakes a 3-hour, single-use token, member1's address and member1's cluster certificate into the image, which is exactly the live-state dependency §27 set out to avoid. **§27's decision stands: join over the API, from an agent on an existing member.**
-
-**The joiner seed that worked** (Variant A, as booted on joiner-a), with one change the spike showed is needed: `dns.hostname`.
-
-```yaml
-# network.yaml: as today, plus
-dns:
-  hostname: <instance name>   # without it, the node reports its machine UUID
-# incus.yaml
-apply_defaults: false          # explicit: no incus.yaml at all means apply_defaults: true
-preseed:
-  config:
-    core.https_address: "<static_ip>:8443"
-  certificates:
-    - {name: <name>, type: client, certificate: <break-glass cert>}
-    - {name: <name>-joiner, type: client, certificate: <joiner cert>}
-# no cluster block, no profiles, no pools, no networks
-```
-
-A joiner booted this way comes up with an empty Incus: no pools, no networks, and a `default` profile with no devices. That's what the join wants.
-
-**The join, as the agent will drive it:**
-
-1. Probe the subnet with the joiner cert. Match `environment.server_name` against the declared name, and wait for `/os/1.0/applications/incus` → `initialized: true`.
-2. Mint a token on the agent's own member (`POST /1.0/cluster/members {"server_name": <name>}`) and assemble it from the operation metadata.
-3. Read `GET /1.0/cluster` → `member_config` and fill in `local`'s `source=local/incus`. Also read `GET /1.0` → `environment.certificate`, and check it against the token's fingerprint.
-4. Send `PUT /1.0/cluster` on the joiner with the body above, then wait on the operation it returns. The joiner cert stays trusted long enough for the wait to succeed.
-
-**Post-join fix-up.** Four calls against any member, with any cluster-trusted cert. The same calls fixed up both joiner-a (API route) and joiner-seed (seed route). On joiner-a, a container launched with `--target joiner-a` afterwards got an address from joiner-a's own `incusbr0`:
-
-```
-POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"backups","type":"custom","content_type":"filesystem"}
-POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"images", ...}
-POST  /1.0/storage-pools/local/volumes/custom?target=<member>  {"name":"logs", ...}
-PATCH /1.0?target=<member>  {"config":{"storage.backups_volume":"local/backups","storage.images_volume":"local/images","storage.logs_volume":"local/logs"}}
-```
-
-Nothing else was missing. The profile, pools, networks and trust all came from the cluster. The joiner's break-glass entry was lost, but the break-glass cert kept working only because member1 trusts the same cert; a cluster trusts whatever member1 was seeded with.
-
 **No characterization script was kept.** The behaviours worth guarding are a real join and its fix-up. A script for them needs two IncusOS VMs (about 110 GiB) and about 20 minutes. It belongs with #180's agent-driven join, which exercises exactly this path, rather than as a standalone guard on hand-written calls the agent will replace.
+
+### History
+
+- **2026-09-28 (#202):** the pivot, with the join mechanics read from source and a manual join spike (#193) required before building any of it.
+- **2026-09-29 (#193):** the spike confirmed the source reading, except that no physical network needs `member_config`. It added what a join body needs beyond the token, how the token is assembled, the wait for `initialized`, `dns.hostname` on joiners, and the four-call fix-up.
+- **2026-10-03 (#223):** the spike addendum folded into the body above; its evidence kept as its own subsection.
 
 ## 28. The web app's interim security posture: WireGuard-only API, one operator-held key (2026-09-28)
 

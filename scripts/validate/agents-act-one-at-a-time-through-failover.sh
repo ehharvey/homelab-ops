@@ -1,6 +1,6 @@
 #! /bin/bash
 # Validates GH issue #101: real cmd/agent processes, electing through real
-# Incus (docs/Decisions.md §25 and its #212 addendum), keep leadership to one
+# Incus (docs/Decisions.md §25), keep leadership to one
 # agent at a time.
 #
 # Unit tests cover leaderelection.Designated's rule over fake peers. This runs
