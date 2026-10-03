@@ -29,6 +29,14 @@ long multi-issue sessions were ~77% of the cost.
   `sed -n` ranges on large files. When output is saved to a tool-results file
   for being too large, grep or `sed -n` it; never read it whole, because that
   just brings the same bulk back a turn later.
+- **Navigate Go code with the `gopls` MCP tools, not grep/`cat`** (#226;
+  grepping and reading Go was ~11% of tool output in #221). `go_search` finds a
+  symbol by name; `go_symbol_references` (`file` + `symbol`, spelled as that
+  file refers to it, e.g. `config.Parse`) finds type-aware uses that grep
+  misses; `go_file_context` summarises a file's cross-file dependencies;
+  `go_diagnostics` checks build errors after edits. `go_package_api` dumps a
+  whole package's API, so use it on small packages only (Incus `shared/api` is
+  ~185 KB). Keep grep for Markdown, YAML, logs and string literals.
 - **Supersede in place; newest wins.** A decision's body and an issue's body
   state the current rule; history goes in a `### History` subsection or in
   issue comments (`docs/Development Conventions.md`, #223). Where older text
@@ -141,7 +149,8 @@ the main context:
   plus the exact `§N`/doc sections to read), not "read `docs/` in full". Every
   file you tell it to read, it pays for again.
 - The built-in **`Explore`**: Incus/IncusOS source questions in the Go module
-  cache (`$(go env GOMODCACHE)/github.com/lxc/incus/v7@…`).
+  cache (`$(go env GOMODCACHE)/github.com/lxc/incus/v7@…`). `gopls` only
+  indexes packages this repo imports, so it can't see e.g. the Incus client.
 
 Don't delegate design Q&A, rebases, or issue filing: they're a few calls
 each, so a subagent's startup costs more than it saves.
