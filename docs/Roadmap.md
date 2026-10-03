@@ -278,9 +278,10 @@ option's cost worth paying.
 > plane: nothing on a node or in the agent may call it synchronously, and
 > the cluster must keep running while it's down or locked (§27).
 
-- [ ] Serve the HTTP API only over the web app's in-process WireGuard
-  tunnel, to operator peers. Closes the leak where the seed and image routes
-  hand any caller a node's WireGuard private key (#63) — see #195
+- [ ] Serve the HTTP API over the web app's in-process WireGuard tunnel, to
+  operator peers, by default; a plain-HTTP host listener only by explicit
+  opt-in (`docs/Decisions.md` §28, §29). Closes the leak where the seed and image
+  routes hand any caller a node's WireGuard private key (#63) — see #195
 - [ ] Operator CLI for the API, over the tunnel — see #196
 - [ ] Operator-held symmetric key: held only in memory, web app locked on
   restart, store encrypted at rest, and a wrong key on unlock never resets
@@ -293,10 +294,39 @@ option's cost worth paying.
 - [ ] *(optional)* Push encrypted store snapshots to off-cluster S3 — see
   #200
 
-**Done when:** the web app's API is reachable only by operator peers over
-WireGuard; nothing it stores or serves exists in plaintext outside its own
-memory, apart from its WireGuard identity (operator-supplied deployment
-config, `docs/Decisions.md` §28); and its state survives the loss of its host.
+**Done when:** by default, the web app's API is reachable only by operator
+peers over WireGuard; nothing it stores or serves exists in plaintext outside
+its own memory, apart from its WireGuard identity (operator-supplied
+deployment config, `docs/Decisions.md` §28); and its state survives the loss
+of its host.
+
+## Web app deployment (alongside Phase 4)
+
+> **Added 2026-10-03 (#247, `docs/Decisions.md` §29).** Like Web app
+> hardening, this sits off Phase 4's critical path. The web app runs on its
+> own appliance machine, either an internet-reachable VM or a spare machine on
+> the nodes' LAN. Every deployment setting is an operator choice with a safe
+> default. An internet-reachable deployment needs #195 first.
+
+- [ ] Publish the web image to GHCR from `main` — see #240
+- [ ] Deployment config contract: one directory, every setting with its
+  default, the WireGuard endpoint as a DNS name — see #241
+- [ ] Build install media client-side: a local image build from a downloaded
+  seed, or a `SEED_DATA` stick beside a stock IncusOS image — see #242
+- [ ] Docker-box appliance: production compose, VM and LAN runbooks, and a
+  validate script — see #243
+- [ ] Provision node0 from the web app by default; the bootstrap CLI as the
+  alternative — see #244
+- [ ] Migrate the web app between hosts without reflashing nodes, including
+  the endpoint DNS re-resolution probe — see #245
+- [ ] *(later)* IncusOS turnkey appliance: appliance seed plus
+  `bootstrap deploy-web`, which is also the path into the fleet — see #246
+
+**Done when:** the web app runs from the published image on a dedicated
+appliance machine, either an internet VM or a LAN machine. The operator
+chooses each deployment setting, and it can be moved to another host without
+reflashing any node. HA, as a warm standby, is decided after that
+(`docs/Decisions.md` §29).
 
 ## Phase 5 — Tailscale, logging + metrics
 
