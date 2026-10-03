@@ -56,6 +56,20 @@ services:
       - ${INCUS_BRIDGE_CONFIG_DIR:-/home/vscode/.config/incus}:/certs:ro
       - ${INCUS_BRIDGE_SOCKET_DIR:-/tmp/incus-bridge}:/socket
 
+  # A local OCI registry for the agent image (#102), so dev and validation can
+  # deploy an agent build without pushing to GHCR or holding cloud
+  # credentials:
+  #
+  #   docker build -f Dockerfile.agent -t localhost:5000/agent:dev .
+  #   docker push localhost:5000/agent:dev
+  #
+  # Inside the stack it is http://registry:5000, which is what an agent App's
+  # image.server points at for a local build (internal/config's ImageRef).
+  registry:
+    image: registry:3.0.0
+    ports:
+      - "5000:5000"
+
   loki:
     image: grafana/loki:3.7.3
     ports:
