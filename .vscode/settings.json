@@ -1,9 +1,7 @@
 {
-    "editor.defaultFormatter": "ms-python.black-formatter",
     "editor.formatOnSave": true,
     "[opentofu]": {
         "editor.defaultFormatter": "opentofu.vscode-opentofu"
     },
-    "vscode-lsp-mcp.autostart": true,
     "containers.containerCommand": "podman"
 }

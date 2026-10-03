@@ -1,8 +1,9 @@
 {
 	"mcpServers": {
-		"lsp": {
-			"url": "http://localhost:37140",
-			"type": "http"
+		"gopls": {
+			"type": "stdio",
+			"command": "gopls",
+			"args": ["mcp"]
 		}
 	},
 	"inputs": []
