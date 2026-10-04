@@ -38,7 +38,7 @@ Sections written before this convention may still end in addenda. The newest one
 
 Landing finished work is two steps (`scripts/ship.sh`, `scripts/lgtm.sh`):
 
-- **`make ship`** — pushes and opens the PR with `gh pr create --fill`. Stops there. CI runs while you read the diff.
+- **`make ship`** — pushes and opens the PR with `gh pr create --fill`. Stops there. CI runs while you read the diff. Run it again after amending the commit (e.g. for review feedback) to re-ship to the open PR (#273): it force-pushes with a lease on the PR's head SHA, so it refuses to overwrite anything pushed since it read the PR, and it leaves the PR's title and body alone (`/address-feedback` syncs them from the commit). It refuses a closed or merged PR.
 - **`make lgtm`** — enables auto-merge on the current branch's PR, so it merges once the required checks pass. `make lgtm PR=<n>` for a PR opened another way.
 
 Splitting them (see #125) is what keeps a PR from merging before anyone has looked at it. It's a speed bump, not an enforced control: a real approval gate isn't available to a solo dev, since GitHub won't let you approve your own PR and requiring one review would deadlock every PR. `required_approving_review_count` is therefore 0 and `make lgtm` is the honour-system stand-in.
@@ -57,7 +57,7 @@ To squash a branch that got away from you:
 git fetch origin main
 git reset --soft FETCH_HEAD
 git commit -c HEAD@{1}
-git push --force-with-lease
+make ship
 ```
 
 Why one commit rather than squash-merging: squash-vs-rebase was a per-PR judgment call with no right answer (#119), and rebase-only removes the decision while keeping history linear. The cost is moving the squash upstream, to the branch, where a force-push is still cheap and the commit message is still editable.

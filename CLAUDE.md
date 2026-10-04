@@ -198,6 +198,9 @@ The recurring loops, so a session runs them rather than re-deriving them:
 - **`/review-work <PR | branch | worktree>`** (#272, operator-invoked only):
   the review before `make lgtm`, ending in ready or a list of gaps. Its
   `audit.sh` is also `/ship-issue`'s and `/run-chain`'s mechanical check.
+- **`/address-feedback [<pr>]`**: review threads or failing checks on an open
+  PR; amend, re-verify, `make ship`, sync the PR, reply. It never runs
+  `make lgtm`.
 - **`/run-chain [<n> …]`** (#253, operator-invoked only): a root session works
   through the `Ready` queue (`queue.sh`: run / park / skip). Each issue gets
   a `decisions-scout` brief, an `issue-worker`, a Done-when audit and
