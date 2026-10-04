@@ -1,0 +1,49 @@
+name: Auto-rebase
+
+# Rebases auto-merge PRs that fell behind main, so a PR `make lgtm` queued
+# actually merges under the strict required-checks ruleset instead of sitting
+# BEHIND (#264). The logic and the reasoning live in scripts/auto-rebase.sh.
+#
+# Triggers:
+# - push to main: something landed, so every other queued PR is now behind.
+# - auto_merge_enabled: `make lgtm` on a PR that's already behind gets rebased
+#   straight away rather than waiting for the next merge.
+#   pull_request_target runs main's copy of this workflow with no PR code
+#   checked out, so a PR can't change what runs here.
+# - workflow_dispatch: a manual sweep.
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [auto_merge_enabled]
+    branches: [main]
+  workflow_dispatch: {}
+
+# GITHUB_TOKEN only reads PRs and posts conflict comments. The rebase itself
+# uses ISSUE264_REBASE_BOT_PAT (a fine-grained PAT, contents + pull-requests +
+# workflows write on this repo): a push made with GITHUB_TOKEN triggers no
+# workflow runs, so the rebased PR would never get its required checks.
+permissions:
+  contents: read
+  pull-requests: write
+
+# Every run sweeps all PRs, so one queued run covers any number of triggers.
+concurrency:
+  group: auto-rebase
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Rebase auto-merge PRs that are behind main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REBASE_TOKEN: ${{ secrets.ISSUE264_REBASE_BOT_PAT }}
+          REPO: ${{ github.repository }}
+        run: ./scripts/auto-rebase.sh
