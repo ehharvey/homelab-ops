@@ -64,10 +64,13 @@ type ImageBuilder interface {
 // (internal/wireguard.Tunnel). nil means WireGuard isn't configured for
 // this deployment (WIREGUARD_ENDPOINT unset) — the seed/image routes then
 // report themselves unconfigured, mirroring CertSource/ImageBuilder's nil
-// convention.
+// convention. OperatorPeers reports the operator devices from deployment
+// config (#195), which reconcileTunnelPeers keeps registered alongside the
+// instances.
 type TunnelSource interface {
 	PublicKey() wireguard.PublicKey
 	Endpoint() string
+	OperatorPeers() []wireguard.OperatorPeer
 	UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	Close() error
@@ -249,6 +252,7 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 		if err := wireguard.AssignTunnelIPs(cfg.Instances, oldCfg.Instances); err != nil {
 			return SyncResult{}, fmt.Errorf("%w: %w", ErrWireGuard, err)
 		}
+		logMovedTunnelIPs(cfg.Instances, oldCfg.Instances)
 
 		if firstSync {
 			log.Printf("configdiff: first sync, %d networks / %d instances / %d apps baseline",
@@ -278,7 +282,36 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 
 // reconcileTunnelPeers registers every instance in instances as a trusted
 // peer on tunnels, minting each one's nodeprovision.Credential on first
-// sight. Best-effort/logged — see SyncOnce's doc comment.
+// sight, and then re-registers the operator peers (#195), so the peer table
+// is always instances plus operators, never instances alone. Operators go
+// last so that, should an instance ever hold an operator's address, the
+// operator's key keeps it; AssignTunnelIPs keeps instances out of
+// wireguard.OperatorCIDR, so that is a backstop. Each upsert replaces the
+// peer's allowed IPs, which unmaps its address for the instant between
+// wireguard-go's remove and insert; a packet arriving then is dropped and
+// resent by TCP, for operators as for instances. Best-effort/logged — see
+// SyncOnce's doc comment.
+// logMovedTunnelIPs logs each instance whose tunnel address AssignTunnelIPs
+// changed from the prior snapshot's. AssignTunnelIPs reuses a prior address
+// unless it now falls outside the instance pool (for one, inside
+// wireguard.OperatorCIDR since #195), and that address is baked into the
+// node's flashed seed, so the node's tunnel breaks until it is reflashed.
+// configdiff doesn't see TunnelIP, which isn't fleet YAML, so this is the
+// only place the move surfaces.
+func logMovedTunnelIPs(instances, prior []config.Instance) {
+	priorByName := make(map[string]netip.Addr, len(prior))
+	for _, inst := range prior {
+		if inst.TunnelIP.IsValid() {
+			priorByName[inst.Name] = inst.TunnelIP
+		}
+	}
+	for _, inst := range instances {
+		if old, ok := priorByName[inst.Name]; ok && old != inst.TunnelIP {
+			log.Printf("wireguard: WARNING: instance %q's tunnel address moved from %s (no longer in the instance pool) to %s; its flashed seed still has %s, so reflash it to restore its tunnel", inst.Name, old, inst.TunnelIP, old)
+		}
+	}
+}
+
 func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) {
 	for _, inst := range instances {
 		cred, err := nodeprovision.EnsureCredential(ctx, creds, inst.Name)
@@ -289,6 +322,11 @@ func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodep
 		pub := wireguard.PublicKeyOf(cred.WireGuardPrivateKey)
 		if err := tunnels.UpsertPeer(pub, inst.TunnelIP); err != nil {
 			log.Printf("wireguard: register peer for %q: %v", inst.Name, err)
+		}
+	}
+	for _, op := range tunnels.OperatorPeers() {
+		if err := tunnels.UpsertPeer(op.PublicKey, op.Addr); err != nil {
+			log.Printf("wireguard: register operator peer %s: %v", op.Addr, err)
 		}
 	}
 }

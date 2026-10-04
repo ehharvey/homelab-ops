@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,7 +34,10 @@ func main() {
 }
 
 func run() error {
-	addr := ":" + port()
+	hostAddr := os.Getenv("API_HOST_LISTEN_ADDR")
+	if err := checkRetiredPort(os.Getenv("PORT"), os.Getenv("WIREGUARD_ENDPOINT"), hostAddr); err != nil {
+		return err
+	}
 
 	syncer := newSyncer()
 
@@ -46,29 +50,36 @@ func run() error {
 	}
 	defer st.Close() //nolint:errcheck // best-effort cleanup on shutdown
 
+	operators, err := wireguard.ParseOperatorPeers(os.Getenv("WIREGUARD_OPERATOR_PEERS"))
+	if err != nil {
+		return fmt.Errorf("WIREGUARD_OPERATOR_PEERS: %w", err)
+	}
+
 	// Unlike the other optional sources (cert/image builder, which degrade to
 	// "route reports itself unconfigured"), a *set* WIREGUARD_ENDPOINT
 	// expresses explicit operator intent to run the tunnel — failing to
 	// start it is fatal, not silently degraded. An unset WIREGUARD_ENDPOINT
 	// leaves tunnelSrc as a true nil server.TunnelSource.
 	var tunnelSrc server.TunnelSource
+	var tun *wireguard.Tunnel
 	if endpoint := os.Getenv("WIREGUARD_ENDPOINT"); endpoint != "" {
-		ts, err := newTunnelSource(ctx, st, endpoint)
+		ts, err := newTunnelSource(ctx, st, endpoint, operators)
 		if err != nil {
 			return fmt.Errorf("start wireguard tunnel: %w", err)
 		}
-		tunnelSrc = ts
+		tunnelSrc, tun = ts, ts.tun
 		defer tunnelSrc.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	} else if len(operators) > 0 {
+		return errors.New("WIREGUARD_OPERATOR_PEERS is set but WIREGUARD_ENDPOINT is not: operator peers reach the API over the tunnel, which only runs when WIREGUARD_ENDPOINT is set")
 	}
 
-	// One Service shared between the HTTP handler and the background poller so
-	// their syncs serialize through a single lock.
+	// One Service shared between the HTTP handlers and the background poller
+	// so their syncs serialize through a single lock.
 	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder(), tunnelSrc, st)
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           server.NewFromService(svc),
-		ReadHeaderTimeout: 5 * time.Second,
+	listeners, err := listen(server.NewFromService(svc), tun, operators, hostAddr)
+	if err != nil {
+		return err
 	}
 
 	if syncer != nil {
@@ -77,23 +88,149 @@ func run() error {
 		}
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("listening on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
+	errCh := make(chan error, len(listeners))
+	for _, l := range listeners {
+		go func() {
+			if err := l.srv.Serve(l.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("%s: %w", l.name, err)
+			}
+		}()
+	}
 
+	var serveErr error
 	select {
-	case err := <-errCh:
-		return err
+	case serveErr = <-errCh:
 	case <-ctx.Done():
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := shutdown(listeners, 5*time.Second); err != nil && serveErr == nil {
+		serveErr = err
+	}
+	return serveErr
+}
+
+// checkRetiredPort refuses to start a deployment that still sets PORT, which
+// #195 retired, when nothing else serves the API: before #195 such a
+// deployment served the API on PORT, and now it would serve it nowhere while
+// /healthz, on its own listener, kept reporting healthy. With an API listener
+// configured, a set PORT is only logged.
+func checkRetiredPort(port, endpoint, hostAddr string) error {
+	if port == "" {
+		return nil
+	}
+	if endpoint == "" && hostAddr == "" {
+		return fmt.Errorf("PORT=%q is no longer read (#195), and no API listener is configured: set WIREGUARD_ENDPOINT and WIREGUARD_OPERATOR_PEERS (the default, tunnel-only posture), or API_HOST_LISTEN_ADDR=:%s to keep serving plain HTTP on that port", port, port)
+	}
+	//nolint:gosec // G706: port is an operator-supplied env var (not untrusted input) and %q quotes it
+	log.Printf("PORT=%q is no longer read (#195): the API is served over the WireGuard tunnel, or on API_HOST_LISTEN_ADDR if set; /healthz is on HEALTH_LISTEN_ADDR", port)
+	return nil
+}
+
+// shutdown drains every listener's server in parallel, all against one
+// deadline. Shutdown closes a server's listener before it waits, so in
+// parallel every listener stops accepting at once; one at a time, a slow
+// drain on one (say, an image stream on the tunnel listener) would leave the
+// later ones taking new requests that the deadline then cuts off. It reports
+// the first listener's error, in listener order.
+func shutdown(listeners []listener, grace time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	errs := make([]error, len(listeners))
+	var wg sync.WaitGroup
+	for i, l := range listeners {
+		wg.Go(func() {
+			if err := l.srv.Shutdown(ctx); err != nil {
+				errs[i] = fmt.Errorf("shut down %s: %w", l.name, err)
+			}
+		})
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listener is one bound address and the server that serves it.
+type listener struct {
+	name string
+	ln   net.Listener
+	srv  *http.Server
+}
+
+// listen binds every listener the deployment config asks for (#195,
+// docs/Decisions.md §28 and §29), before anything is served, so a bad or
+// taken address fails startup instead of a background goroutine:
+//
+//   - health: GET /healthz only, on HEALTH_LISTEN_ADDR (default :8081),
+//     whatever the API listener setting, for container health checks.
+//   - tunnel (the default API listener): the API at wireguard.WebAppAddr,
+//     port wireguard.APIPort, inside the tunnel, admitting operator peers
+//     only. It runs whenever the tunnel does (tun non-nil).
+//   - host (explicit opt-in): the API as plain HTTP on hostAddr
+//     (API_HOST_LISTEN_ADDR), with no source filter. Off unless set; there
+//     is no default address.
+//
+// A TLS host listener is the expected third mode (§29). It would be one
+// more entry here; it is not built yet.
+func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.OperatorPeer, hostAddr string) ([]listener, error) {
+	var out []listener
+	fail := func(err error) ([]listener, error) {
+		for _, l := range out {
+			_ = l.ln.Close()
+		}
+		return nil, err
+	}
+	add := func(name string, ln net.Listener, h http.Handler) {
+		out = append(out, listener{name: name, ln: ln, srv: &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}})
+		//nolint:gosec // G706: the address is the bound listener's, from operator-supplied env vars (not untrusted input), and %q quotes it
+		log.Printf("%s listening on %q", name, ln.Addr().String())
+	}
+
+	healthAddr := healthListenAddr()
+	ln, err := net.Listen("tcp", healthAddr)
+	if err != nil {
+		return fail(fmt.Errorf("health listener on %s: %w", healthAddr, err))
+	}
+	add("health listener (/healthz only)", ln, server.NewHealthHandler())
+
+	if tun != nil {
+		ln, err := tun.Listen(wireguard.APIPort)
+		if err != nil {
+			return fail(fmt.Errorf("tunnel API listener: %w", err))
+		}
+		add(fmt.Sprintf("tunnel API listener (%d operator peers)", len(operators)), ln, server.OperatorsOnly(operators, api))
+		if len(operators) == 0 {
+			log.Print("WARNING: WIREGUARD_OPERATOR_PEERS is empty, so the tunnel API listener refuses every request; add an operator peer to use the API over the tunnel")
+		}
+	}
+
+	if hostAddr != "" {
+		ln, err := net.Listen("tcp", hostAddr)
+		if err != nil {
+			return fail(fmt.Errorf("API_HOST_LISTEN_ADDR %s: %w", hostAddr, err))
+		}
+		add("host API listener (plain HTTP, no source filter)", ln, api)
+		//nolint:gosec // G706: hostAddr is an operator-supplied env var (not untrusted input) and %q quotes it
+		log.Printf("WARNING: API_HOST_LISTEN_ADDR=%q exposes the whole API as plain HTTP with no authentication: anyone who can reach that address can call POST /instances/{name}/seed or GET /instances/{name}/image and receive that node's WireGuard private key. Bind it only to an address you trust (#195)", hostAddr)
+	}
+
+	if tun == nil && hostAddr == "" {
+		log.Print("WARNING: the API is not served on any listener: set WIREGUARD_ENDPOINT and WIREGUARD_OPERATOR_PEERS (the default, tunnel-only posture), or opt in to API_HOST_LISTEN_ADDR")
+	}
+	return out, nil
+}
+
+// healthListenAddr reports the /healthz listener's address from
+// HEALTH_LISTEN_ADDR, or ":8081" if unset. That listener serves nothing but
+// /healthz, so binding every interface by default exposes no API route.
+func healthListenAddr() string {
+	if a := os.Getenv("HEALTH_LISTEN_ADDR"); a != "" {
+		return a
+	}
+	return ":8081"
 }
 
 // newSyncer builds the config-sync client from the environment, or a nil
@@ -149,13 +286,6 @@ func pollSync(ctx context.Context, svc *server.Service, interval time.Duration) 
 		case <-ticker.C:
 		}
 	}
-}
-
-func port() string {
-	if p := os.Getenv("PORT"); p != "" {
-		return p
-	}
-	return "8080"
 }
 
 // storePath reports the local store's location from STORE_PATH, or
@@ -224,24 +354,36 @@ func (b flasherBuilder) Build(ctx context.Context, seedDir, outputPath string, l
 // newTunnelSource builds the web app's in-process WireGuard tunnel, bound
 // to endpoint (the operator-supplied host:port nodes dial to reach this
 // deployment — see run()'s WIREGUARD_ENDPOINT check, which only calls this
-// when it's set). Always returns either a non-nil server.TunnelSource or a
-// non-nil error — unlike newCertSource/newImageBuilder's nil-means-
-// unconfigured convention, "unconfigured" is decided by the caller before
-// this runs, since a *set* WIREGUARD_ENDPOINT that then fails to start is
-// fatal (see run()'s comment). The identity persists in st (internal/
-// wireguard.LoadOrGenerateIdentity), so it survives restarts without a new
-// file-based deployment config surface. WIREGUARD_PORT overrides the UDP
-// listen port (default 51820, WireGuard's IANA-assigned port).
-func newTunnelSource(ctx context.Context, st *store.Store, endpoint string) (server.TunnelSource, error) {
+// when it's set), and registers operators as peers straight away, so the
+// operator can reach the tunnel API before the first sync. Always returns
+// either a usable source or a non-nil error — unlike newCertSource/
+// newImageBuilder's nil-means-unconfigured convention, "unconfigured" is
+// decided by the caller before this runs, since a *set* WIREGUARD_ENDPOINT
+// that then fails to start is fatal (see run()'s comment). The identity
+// persists in st (internal/wireguard.LoadOrGenerateIdentity), so it survives
+// restarts without a new file-based deployment config surface.
+// WIREGUARD_PORT overrides the UDP listen port (default 51820, WireGuard's
+// IANA-assigned port).
+func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, operators []wireguard.OperatorPeer) (wireguardTunnelSource, error) {
 	priv, err := wireguard.LoadOrGenerateIdentity(ctx, st)
 	if err != nil {
-		return nil, fmt.Errorf("load wireguard identity: %w", err)
+		return wireguardTunnelSource{}, fmt.Errorf("load wireguard identity: %w", err)
 	}
 	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: wireguardPort(), LocalAddr: wireguard.WebAppAddr})
 	if err != nil {
-		return nil, fmt.Errorf("start tunnel: %w", err)
+		return wireguardTunnelSource{}, fmt.Errorf("start tunnel: %w", err)
 	}
-	return wireguardTunnelSource{tun: tun, endpoint: endpoint}, nil
+	for _, op := range operators {
+		if err := tun.UpsertPeer(op.PublicKey, op.Addr); err != nil {
+			_ = tun.Close()
+			return wireguardTunnelSource{}, fmt.Errorf("register operator peer %s: %w", op.Addr, err)
+		}
+	}
+	// Operators need this key for their own peer entry, and in the default
+	// tunnel-only posture no API route can hand it to them. It is public.
+	//nolint:gosec // G706: endpoint is an operator-supplied env var (not untrusted input) and %q quotes it
+	log.Printf("wireguard public key %s, overlay address %s, endpoint %q", tun.PublicKey(), wireguard.WebAppAddr, endpoint)
+	return wireguardTunnelSource{tun: tun, endpoint: endpoint, operators: operators}, nil
 }
 
 // wireguardPort reports the configured WireGuard UDP listen port from
@@ -264,14 +406,18 @@ func wireguardPort() int {
 // wireguardTunnelSource implements server.TunnelSource over a live
 // *wireguard.Tunnel plus the operator-supplied endpoint nodes dial to
 // reach it (the tunnel itself has no way to learn its own externally
-// reachable address, e.g. behind NAT).
+// reachable address, e.g. behind NAT), and the operator peers from
+// WIREGUARD_OPERATOR_PEERS that every sync keeps registered (#195).
 type wireguardTunnelSource struct {
-	tun      *wireguard.Tunnel
-	endpoint string
+	tun       *wireguard.Tunnel
+	endpoint  string
+	operators []wireguard.OperatorPeer
 }
 
 func (t wireguardTunnelSource) PublicKey() wireguard.PublicKey { return t.tun.PublicKey() }
 func (t wireguardTunnelSource) Endpoint() string               { return t.endpoint }
+
+func (t wireguardTunnelSource) OperatorPeers() []wireguard.OperatorPeer { return t.operators }
 
 func (t wireguardTunnelSource) UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error {
 	return t.tun.UpsertPeer(pub, tunnelIP)
