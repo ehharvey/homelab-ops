@@ -91,6 +91,10 @@ gaps, then audit again. A second miss **parks** the issue, with the gaps as
 the reason. An item that can't be met in a worktree at all (e.g. it needs the
 operator) parks it straight away.
 
+A hand-back with verdict `awaiting operator answers` (`/refine-issue` as a
+subagent) isn't a miss: ask its open questions with `AskUserQuestion`, then
+resume the same worker with the answers via `SendMessage`.
+
 ## 4. Ship
 
     make -C <wt> ship
@@ -110,7 +114,7 @@ together:
   **never `Ready`**. The body says `Noticed while working on #<n>.` (that's
   what `/next` reads) and gives the `path:line`.
 - An item too thin to fill in "Done when" honestly goes under open questions
-  in the summary instead.
+  in the summary instead, as a candidate for `/refine-issue`.
 
 ## 6. Run summary
 

@@ -41,7 +41,7 @@ comes from.
 - **`check off?`** on a Roadmap item means its issue is closed but the box is
   unchecked. That's drift worth mentioning.
 - An open issue in the current phase that isn't `Ready` needs design first.
-  Suggest a `decisions-scout` brief or a design discussion, not implementation.
+  Suggest `/refine-issue <n>`, not implementation.
 
 ## Answer
 
