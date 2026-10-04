@@ -34,6 +34,10 @@ comes from.
   off is waiting on the operator's `make lgtm`. Say so; never run it yourself.
   A PR with failing checks, or an open issue that has a local branch but no
   PR, is unfinished work to resume.
+- **Proposed — awaiting triage** lists issues Claude filed on its own
+  (`proposed`, #253), with their age and the issue they came from. They're
+  the operator's to triage, not work to pick up. Mention how many are waiting,
+  especially old ones, and never recommend implementing one.
 - **`check off?`** on a Roadmap item means its issue is closed but the box is
   unchecked. That's drift worth mentioning.
 - An open issue in the current phase that isn't `Ready` needs design first.
@@ -43,7 +47,8 @@ comes from.
 
 Give a short recommendation, not the report pasted back:
 
-1. what's waiting on the operator (PRs to review / `make lgtm`),
+1. what's waiting on the operator (PRs to review / `make lgtm`, proposed
+   issues to triage),
 2. the top one to three things to pick up, in order, each with one line on why
    and on what it unblocks,
 3. anything stale you noticed (Roadmap drift, dependency inconsistencies,
