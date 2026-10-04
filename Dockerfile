@@ -19,6 +19,9 @@ RUN CGO_ENABLED=0 go install \
     github.com/lxc/incus-os/incus-osd/cmd/flasher-tool@v0.0.0-20260623005315-10705332c6cf
 
 FROM gcr.io/distroless/static-debian12
+# Links the GHCR package (ghcr.io/ehharvey/homelab-ops/web, #240) to this repo,
+# so it shows on the repo page and inherits the repo's access settings.
+LABEL org.opencontainers.image.source=https://github.com/ehharvey/homelab-ops
 COPY --from=builder /out/web /web
 COPY --from=flasher /go/bin/flasher-tool /flasher-tool
 # Absolute path so the web app resolves flasher-tool without a $PATH (distroless

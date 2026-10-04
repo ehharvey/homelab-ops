@@ -31,20 +31,75 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@v9.3.0
 
-  # Builds the web image and proves flasher-tool actually executes inside the
-  # distroless/static final stage. The image route (#39) shells out to it, but
-  # no other CI job builds the Docker image — so a cgo/glibc/exec-format
-  # regression (e.g. flasher-tool gaining a cgo dependency that no longer links
-  # static) would otherwise only surface when someone runs image-route-streams-seeded-image.sh
-  # by hand. distroless has no shell, so the binary is invoked directly via
+  # Builds the web image on every PR and push, proves it works, and publishes
+  # it to GHCR from main only (#240): tagged with the commit SHA, plus latest.
+  # The published image is the web app's deployment artifact (Decisions.md
+  # §29: one image for both appliance host forms).
+  #
+  # The checks prove the distroless/static final stage actually works. The
+  # image route (#39) shells out to flasher-tool, and no other CI job builds
+  # this image, so a cgo/glibc/exec-format regression (e.g. flasher-tool
+  # gaining a cgo dependency that no longer links static) would otherwise only
+  # surface when someone runs image-route-streams-seeded-image.sh by hand.
+  # distroless has no shell, so the binaries are invoked directly via
   # --entrypoint rather than through `sh -c`.
+  #
+  # The push is a step gated with `if:` rather than a separate job: the checks
+  # before it gate it (steps run only while every earlier one succeeded), the
+  # image is built once, and this required check still reports a status on
+  # PRs. The concurrency group keeps two quick merges to main from racing:
+  # without it the older commit's run can push latest last. cancel-in-progress
+  # stays false so a push already under way finishes; a newer run queueing
+  # cancels any older one still pending.
   docker-smoke:
     runs-on: ubuntu-latest
+    concurrency:
+      group: web-image-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/ehharvey/homelab-ops/web
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t homelab-ops-web .
       - name: flasher-tool runs in the built image
         run: docker run --rm --entrypoint /flasher-tool homelab-ops-web --help
+      - name: flasher-tool reports its version
+        run: docker run --rm --entrypoint /flasher-tool homelab-ops-web --version
+      # /healthz answers 200 even with no deployment config, and cmd/web
+      # needs no environment (PORT defaults to 8080, STORE_PATH to :memory:),
+      # so a bare `docker run` is enough to prove the app starts and serves.
+      - name: web serves /healthz
+        run: |
+          docker run -d --name web-smoke -p 8080:8080 homelab-ops-web
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "/healthz did not answer 200 within 30s"
+            docker logs web-smoke
+            exit 1
+          fi
+      - name: stop the web container
+        if: always()
+        run: docker rm -f web-smoke >/dev/null 2>&1 || true
+      - name: push to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for tag in "$GITHUB_SHA" latest; do
+            docker tag homelab-ops-web "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
 
   # Builds the agent image (#102) on every PR and push, and publishes it to
   # GHCR from main only: tagged with the commit SHA, plus latest, which the
