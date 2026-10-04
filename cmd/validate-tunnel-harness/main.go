@@ -1,5 +1,6 @@
 // Command validate-tunnel-harness is test-only scaffolding for
-// scripts/validate-issue-91.sh — it is NOT an operator-facing command like
+// scripts/validate/node-tunnel-survives-nat-and-provisions.sh and
+// scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh — it is NOT an operator-facing command like
 // cmd/bootstrap or cmd/web, and ships no stability promise. It exists
 // because the validate script needs to drive internal/wireguard's
 // userspace tunnel and internal/nodeprovision's create-instance mechanism
@@ -40,7 +41,7 @@ func main() {
 }
 
 func run() error {
-	mode := flag.String("mode", "", "genkey | probe | create-instance | extract-credential | patch-seed")
+	mode := flag.String("mode", "", "genkey | probe | create-instance | extract-credential | patch-seed | http")
 	privateKeyFile := flag.String("private-key-file", "", "path to this harness's own WireGuard private key (base64); genkey writes it, probe/create-instance read it")
 	localAddr := flag.String("local-addr", "10.100.0.254", "this harness's own tunnel-overlay address — deliberately far from the normal instance-assignable range (internal/wireguard.OverlayCIDR, assigned from .2 up) to avoid colliding with a real instance's tunnel_ip, since the harness registers as a second, independent test peer on node0 alongside the real web app")
 	peerPublicKey := flag.String("peer-public-key", "", "base64 WireGuard public key of the peer (node) to trust")
@@ -66,6 +67,8 @@ func run() error {
 	addRouteVia := flag.String("add-route-via", "", "gateway address for the route added by -add-route-to (patch-seed mode)")
 	addPeerPublicKey := flag.String("add-peer-public-key", "", "base64 public key of a second WireGuard peer to append (patch-seed mode)")
 	addPeerAllowedIP := flag.String("add-peer-allowed-ip", "", "CIDR (e.g. 10.100.0.254/32) allowed for the peer added by -add-peer-public-key (patch-seed mode)")
+	method := flag.String("method", http.MethodGet, "HTTP method (http mode)")
+	path := flag.String("path", "/healthz", "request path on the web app's tunnel API, http://<peer-tunnel-ip>:80<path> (http mode)")
 	flag.Parse()
 
 	switch *mode {
@@ -79,8 +82,10 @@ func run() error {
 		return runExtractCredential(*storePath, *instanceName, *outCert, *outKey)
 	case "patch-seed":
 		return runPatchSeed(*networkYAMLPath, *addRouteTo, *addRouteVia, *addPeerPublicKey, *addPeerAllowedIP)
+	case "http":
+		return runHTTP(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *method, *path, *timeout)
 	default:
-		return fmt.Errorf("unknown -mode %q (want genkey, probe, create-instance, extract-credential, or patch-seed)", *mode)
+		return fmt.Errorf("unknown -mode %q (want genkey, probe, create-instance, extract-credential, patch-seed, or http)", *mode)
 	}
 }
 
@@ -359,4 +364,46 @@ func runCreateInstance(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, p
 	}
 	fmt.Printf("created placeholder instance %q via one-time bootstrap credential (now revoked)\n", instanceName)
 	return nil
+}
+
+// runHTTP joins the web app's tunnel as a peer (an operator device, or a node
+// whose key the caller holds) and sends one request to the web app's tunnel
+// API (#195). It prints the response status code on the first line of
+// stdout and the body after it. The first attempts also wait out the
+// WireGuard handshake, so a request that never connects is retried until
+// timeout and then fails, which is how a caller observes a peer whose
+// packets the web app drops.
+func runHTTP(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint string, listenPort int, method, path string, timeout time.Duration) error {
+	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint, listenPort)
+	if err != nil {
+		return err
+	}
+	defer tun.Close() //nolint:errcheck // best-effort cleanup on exit
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	client := &http.Client{Transport: &http.Transport{DialContext: tun.DialContext}}
+	url := fmt.Sprintf("http://%s:%d%s", peerTunnelIP, wireguard.APIPort, path)
+
+	var lastErr error
+	for ctx.Err() == nil {
+		req, err := http.NewRequestWithContext(ctx, method, url, nil)
+		if err != nil {
+			return fmt.Errorf("build request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(time.Second)
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close() //nolint:errcheck,gosec // read-only response, nothing to flush
+		if err != nil {
+			return fmt.Errorf("read %s %s: %w", method, url, err)
+		}
+		fmt.Printf("%d\n%s", resp.StatusCode, body)
+		return nil
+	}
+	return fmt.Errorf("%s %s never answered through the tunnel within %s: %w", method, url, timeout, lastErr)
 }

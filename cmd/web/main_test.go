@@ -101,12 +101,12 @@ func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
 	}
 	defer st.Close() //nolint:errcheck // test cleanup
 
-	ts, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820")
+	ts, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", nil)
 	if err != nil {
 		t.Fatalf("newTunnelSource: %v", err)
 	}
-	if ts == nil {
-		t.Fatal("newTunnelSource = nil, want non-nil")
+	if ts.tun == nil {
+		t.Fatal("newTunnelSource returned no tunnel")
 	}
 	defer ts.Close() //nolint:errcheck // test cleanup
 
@@ -117,7 +117,7 @@ func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
 	// A second call must reuse the persisted identity rather than minting a
 	// new one, so a restarted process keeps the same public key every node's
 	// seed already trusts.
-	ts2, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820")
+	ts2, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", nil)
 	if err != nil {
 		t.Fatalf("second newTunnelSource: %v", err)
 	}
