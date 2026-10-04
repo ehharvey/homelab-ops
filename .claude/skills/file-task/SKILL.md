@@ -44,12 +44,23 @@ Write the "why" into the body. The implementer has only this text and the docs.
 
 ## Labels and milestone
 
-- Always `task`.
+- Always `task`. A design-decision or bug issue takes its template's labels
+  instead (`design-decision` + `question`, or `bug`).
 - `phase-<n>` when the phase has one (`gh label list --search phase`).
 - `ai-optimization` for Claude Code tooling and context work.
   `documentation` when the deliverable is docs.
-- `Ready` **only** when the design is settled and nothing needs planning
-  before implementation. If you aren't sure, leave it off and say so.
+- `Ready` **only** when the issue meets every one of these **Ready criteria**.
+  If you aren't sure, leave it off and say so.
+  - No open blockers: no open blocked-by link, no unchecked `- [ ]` prerequisite.
+  - No open design questions.
+  - Every `Done when` item is concrete and checkable.
+  - `Done when` names the `scripts/validate/` script that proves the work: an
+    existing one by name, or a new one sketched as pseudocode in the body. A
+    tooling or docs issue with no pipeline names its real-run check instead.
+- Issues filed while refining another (`/refine-issue`): subtasks from an
+  umbrella split get `Ready` if they meet the Ready criteria; otherwise they
+  don't, and the report says what's left. Separate tasks and design-decision
+  issues it turns up get `proposed`, never `Ready`.
 - `proposed` when the issue is **your** idea, not the operator's: a worker's
   "Noticed" item in `/run-chain`, or something you spotted and chose to file.
   A `proposed` issue never gets `Ready` from you. The operator triages it,

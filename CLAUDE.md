@@ -188,6 +188,11 @@ The recurring loops, so a session runs them rather than re-deriving them:
 - **`/file-task`**: file an issue in `roadmap_task.yml`'s shape, with labels.
   Dependencies are native blocked-by links (`--blocked-by` / `--blocking`),
   which are all `/next` reads.
+- **`/refine-issue <n>`** (#274): take an existing stub toward `Ready`:
+  classify and retitle it, set blockers, ask the operator the open design
+  questions, rewrite the body in template shape, and report every change with
+  its revert command and a Ready verdict. It never adds `Ready` or removes
+  `proposed`; the Ready criteria live in `/file-task`.
 - **`/ship-issue`**: the pre-ship checklist, ending at `make ship`. It never
   runs `make lgtm`.
 - **`/review-work <PR | branch | worktree>`** (#272, operator-invoked only):
