@@ -48,7 +48,10 @@ long multi-issue sessions were ~77% of the cost.
   module-cache source or run a real probe. Otherwise, label the claim unverified.
 - **One issue per session.** After a PR ships, don't roll into the next issue
   in the same context. Post anything not yet captured (findings, open
-  questions) as an issue comment, then suggest a fresh session. Operator
+  questions) as an issue comment, then suggest a fresh session. The one
+  sanctioned exception is **`/run-chain`**, which the operator invokes. Its
+  root session implements nothing; it collects briefs and hand-back reports
+  while `issue-worker`s do the work, so its context stays small across issues. Operator
   note: resuming a large session after more than an hour idle, or switching
   models mid-session, rewrites its whole context into the cache.
 - **Mechanics.** In a worktree-isolated session, run git as plain standalone
@@ -187,6 +190,12 @@ The recurring loops, so a session runs them rather than re-deriving them:
   which are all `/next` reads.
 - **`/ship-issue`**: the pre-ship checklist, ending at `make ship`. It never
   runs `make lgtm`.
+- **`/run-chain [<n> …]`** (#253, operator-invoked only): a root session works
+  through the `Ready` queue (`queue.sh`: run / park / skip). Each issue gets
+  a `decisions-scout` brief, an `issue-worker`, a Done-when audit and
+  `make ship`. It never runs `make lgtm`. Workers' "Noticed" items are filed
+  as **`proposed`** issues, which nothing picks up until the operator triages
+  them to `Ready`.
 
 They point at this file and `docs/Development Conventions.md` for the rules
 rather than restating them. Change the rules there.

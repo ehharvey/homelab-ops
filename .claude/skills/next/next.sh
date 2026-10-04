@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The data behind /next (#222): Ready issues with what blocks them, the current
-# Roadmap phase's unchecked items, open PRs with their checks, and local issue
-# branches. Everything is filtered down here, so the report stays at a few
-# hundred lines however many issues exist; a session reads it once rather than
-# re-deriving it over 10–30 gh calls.
+# Roadmap phase's unchecked items, proposed issues awaiting triage, open PRs
+# with their checks, and local issue branches. Everything is filtered down
+# here, so the report stays at a few hundred lines however many issues exist; a
+# session reads it once rather than re-deriving it over 10–30 gh calls.
 #
 # Blockers come from GitHub's native blocked-by links only (#234 moved the
 # repo's dependency prose onto them). The inconsistencies section is what keeps
@@ -24,7 +24,7 @@ query($owner: String!, $name: String!, $endCursor: String) {
     issues(states: OPEN, first: 100, after: $endCursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title body
+        number title body createdAt
         labels(first: 20) { nodes { name } }
         blockedBy(first: 50) { nodes { number state stateReason } }
         blocking(first: 50) { nodes { number state } }
@@ -91,6 +91,20 @@ q -r "$common"'
 ' "$tmp/open.json"
 echo
 
+# Issues Claude filed on its own (/run-chain's "Noticed" items, #253) carry
+# `proposed` and never `Ready`; the operator triages them. The origin is the
+# "Noticed while working on #N" line /file-task writes into the body.
+echo "== Proposed — awaiting triage (add Ready and drop proposed, or close) =="
+q -r "$common"'
+  [.[] | select(any(.labels.nodes[]; .name == "proposed"))] | sort_by(.number)
+  | if length == 0 then "(none)" else .[]
+    | ((now - (.createdAt | fromdateiso8601)) / 86400 | floor) as $age
+    | ([(.body // "") | scan("(?i)noticed while working on #([0-9]+)") | .[0]] | first) as $from
+    | "#\(.number) \($age)d\(if $from then " from #\($from)" else "" end) \(.title | short)"
+  end
+' "$tmp/open.json"
+echo
+
 # Dependency prose with no matching link, for issues filed or edited outside
 # /file-task. Phrasings are #234's keyword set plus the ones its review found
 # in Roadmap phase lines ("needed by", "follows", "should land before" …).
@@ -108,7 +122,9 @@ q -r "$common"'
         | scan("#([0-9]+)") | .[0] | tonumber]
       | unique | map(select(st(.) == "OPEN"));
   (map(.number) | map(select(. as $n | reach($n) | index($n)))) as $cyc
-  | [ (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(blockers | length > 0)
+  | [ (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(any(.labels.nodes[]; .name == "proposed"))
+       | "#\(.number) has both Ready and proposed; triage drops proposed (until then /run-chain skips it)"),
+      (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(blockers | length > 0)
        | "#\(.number) is Ready but blocked by open \(blockers | map(tag(.)) | join(" "))"),
       (.[] | . as $i | .blockedBy.nodes[] | select(.stateReason == "NOT_PLANNED" or .stateReason == "DUPLICATE")
        | "#\($i.number) is blocked by #\(.number), closed as \(.stateReason | ascii_downcase | sub("_"; " ")); drop the link or rethink #\($i.number)"),

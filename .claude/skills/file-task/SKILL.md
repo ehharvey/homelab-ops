@@ -50,6 +50,15 @@ Write the "why" into the body. The implementer has only this text and the docs.
   `documentation` when the deliverable is docs.
 - `Ready` **only** when the design is settled and nothing needs planning
   before implementation. If you aren't sure, leave it off and say so.
+- `proposed` when the issue is **your** idea, not the operator's: a worker's
+  "Noticed" item in `/run-chain`, or something you spotted and chose to file.
+  A `proposed` issue never gets `Ready` from you. The operator triages it,
+  either adding `Ready` and removing `proposed`, or closing it. `/next` and
+  `/run-chain` pick up only `Ready` issues, which is what makes triage the
+  gate. Leave `proposed` off when the operator asked for the issue directly.
+  Put `Noticed while working on #<n>.` in a proposed issue's
+  `### What needs to be built` when it came out of another issue's work.
+  `/next` shows that origin.
 - Milestone: only when an open milestone's title matches the phase exactly
   (`gh api 'repos/{owner}/{repo}/milestones?state=open' --jq '.[].title'`).
   If none matches, skip it and say which one was missing.
