@@ -69,14 +69,16 @@ jobs:
       - name: flasher-tool reports its version
         run: docker run --rm --entrypoint /flasher-tool homelab-ops-web --version
       # /healthz answers 200 even with no deployment config, and cmd/web
-      # needs no environment (PORT defaults to 8080, STORE_PATH to :memory:),
-      # so a bare `docker run` is enough to prove the app starts and serves.
+      # needs no environment (its health listener defaults to :8081,
+      # STORE_PATH to :memory:), so a bare `docker run` is enough to prove the
+      # app starts and serves. With no config, the API itself is on no
+      # listener (#195).
       - name: web serves /healthz
         run: |
-          docker run -d --name web-smoke -p 8080:8080 homelab-ops-web
+          docker run -d --name web-smoke -p 8081:8081 homelab-ops-web
           ok=0
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/healthz; then
+            if curl -fsS http://127.0.0.1:8081/healthz; then
               ok=1
               break
             fi

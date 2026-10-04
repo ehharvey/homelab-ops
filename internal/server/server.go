@@ -64,10 +64,13 @@ type ImageBuilder interface {
 // (internal/wireguard.Tunnel). nil means WireGuard isn't configured for
 // this deployment (WIREGUARD_ENDPOINT unset) — the seed/image routes then
 // report themselves unconfigured, mirroring CertSource/ImageBuilder's nil
-// convention.
+// convention. OperatorPeers reports the operator devices from deployment
+// config (#195), which reconcileTunnelPeers keeps registered alongside the
+// instances.
 type TunnelSource interface {
 	PublicKey() wireguard.PublicKey
 	Endpoint() string
+	OperatorPeers() []wireguard.OperatorPeer
 	UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	Close() error
@@ -278,7 +281,12 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 
 // reconcileTunnelPeers registers every instance in instances as a trusted
 // peer on tunnels, minting each one's nodeprovision.Credential on first
-// sight. Best-effort/logged — see SyncOnce's doc comment.
+// sight, and then re-registers the operator peers (#195), so the peer table
+// is always instances plus operators, never instances alone. Operators go
+// last so that, should an instance ever hold an operator's address, the
+// operator's key keeps it; AssignTunnelIPs keeps instances out of
+// wireguard.OperatorCIDR, so that is a backstop. Best-effort/logged — see
+// SyncOnce's doc comment.
 func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) {
 	for _, inst := range instances {
 		cred, err := nodeprovision.EnsureCredential(ctx, creds, inst.Name)
@@ -289,6 +297,11 @@ func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodep
 		pub := wireguard.PublicKeyOf(cred.WireGuardPrivateKey)
 		if err := tunnels.UpsertPeer(pub, inst.TunnelIP); err != nil {
 			log.Printf("wireguard: register peer for %q: %v", inst.Name, err)
+		}
+	}
+	for _, op := range tunnels.OperatorPeers() {
+		if err := tunnels.UpsertPeer(op.PublicKey, op.Addr); err != nil {
+			log.Printf("wireguard: register operator peer %s: %v", op.Addr, err)
 		}
 	}
 }

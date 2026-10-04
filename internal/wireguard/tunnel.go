@@ -36,6 +36,12 @@ var OverlayCIDR = netip.MustParsePrefix("10.100.0.0/24")
 // WebAppAddr is the web app's own fixed address within OverlayCIDR.
 var WebAppAddr = netip.MustParseAddr("10.100.0.1")
 
+// APIPort is the TCP port the web app serves its HTTP API on, inside the
+// tunnel, at WebAppAddr (#195, docs/Decisions.md §28). Plain HTTP: WireGuard
+// already authenticates and encrypts the path. The port is on the in-process
+// virtual network stack, so binding a privileged number needs no capability.
+const APIPort uint16 = 80
+
 // mtu is conservative enough to survive being further encapsulated by
 // whatever real-world transport carries the WireGuard UDP packets.
 const mtu = 1420
@@ -113,6 +119,7 @@ type Tunnel struct {
 	dev       *device.Device
 	net       *netstack.Net
 	publicKey PublicKey
+	localAddr netip.Addr
 }
 
 // Start brings up a Tunnel bound to opts.ListenPort with local address
@@ -137,7 +144,7 @@ func Start(opts Options) (*Tunnel, error) {
 		return nil, fmt.Errorf("bring device up: %w", err)
 	}
 
-	return &Tunnel{dev: dev, net: nsNet, publicKey: PublicKeyOf(opts.PrivateKey)}, nil
+	return &Tunnel{dev: dev, net: nsNet, publicKey: PublicKeyOf(opts.PrivateKey), localAddr: opts.LocalAddr}, nil
 }
 
 // PublicKey reports this Tunnel's own public key — embedded into every
@@ -226,6 +233,23 @@ func (t *Tunnel) DialContext(ctx context.Context, network, address string) (net.
 		return nil, fmt.Errorf("dial %s: %w", address, err)
 	}
 	return conn, nil
+}
+
+// Listen accepts TCP connections on port at this Tunnel's own overlay address
+// (Options.LocalAddr), on the in-process virtual network stack. Like
+// DialContext, it is reachable only through the tunnel: nothing listens on
+// the host, so only peers that complete a WireGuard handshake can connect.
+//
+// Each accepted connection's RemoteAddr is the peer's overlay source address.
+// WireGuard's cryptokey routing drops any packet whose source isn't in the
+// sending peer's allowed IPs (see UpsertPeer), so that address identifies the
+// peer's key, which is what the web app's source filter relies on (#195).
+func (t *Tunnel) Listen(port uint16) (net.Listener, error) {
+	ln, err := t.net.ListenTCPAddrPort(netip.AddrPortFrom(t.localAddr, port))
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s:%d: %w", t.localAddr, port, err)
+	}
+	return ln, nil
 }
 
 func resolveAddrPort(address string) (netip.AddrPort, error) {

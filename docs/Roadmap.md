@@ -278,10 +278,10 @@ option's cost worth paying.
 > plane: nothing on a node or in the agent may call it synchronously, and
 > the cluster must keep running while it's down or locked (§27).
 
-- [ ] Serve the HTTP API over the web app's in-process WireGuard tunnel, to
+- [x] Serve the HTTP API over the web app's in-process WireGuard tunnel, to
   operator peers, by default; a plain-HTTP host listener only by explicit
   opt-in (`docs/Decisions.md` §28, §29). Closes the leak where the seed and image
-  routes hand any caller a node's WireGuard private key (#63) — see #195
+  routes hand any caller a node's WireGuard private key (#63): DONE; see #195
 - [ ] Operator CLI for the API, over the tunnel — see #196
 - [ ] Operator-held symmetric key: held only in memory, web app locked on
   restart, store encrypted at rest, and a wrong key on unlock never resets

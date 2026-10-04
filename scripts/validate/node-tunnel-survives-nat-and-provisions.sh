@@ -517,7 +517,7 @@ check "webapp fleet repo + binary + cert pushed" bash -c "
 
 echo "Starting the real web app (WIREGUARD_ENDPOINT=$WEBAPP_WAN_IP:$WG_PORT) ..."
 incus_exec_bg "$WORK_DIR/webapp.log" "$REMOTE:$WEBAPP_NAME" -- env \
-  PORT=8080 \
+  API_HOST_LISTEN_ADDR=127.0.0.1:8080 \
   STORE_PATH=/root/store.db \
   CLIENT_CERT_PATH=/root/client.crt \
   CONFIG_REPO_URL=/root/fleet-repo.git \
