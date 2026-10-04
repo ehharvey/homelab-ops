@@ -121,6 +121,40 @@ but the deployment must give the container enough writable disk for at least
 one full image copy (more if concurrent downloads are expected), or mount a
 suitably-sized volume/`tmpfs` at `/tmp`.
 
+### Who can reach the API (#195)
+
+The routes above are unauthenticated, and the seed and image routes hand out a
+node's WireGuard private key. So by default the API is served only **inside
+the WireGuard tunnel**, to operator peers (`Decisions.md` §28, §29). Which
+listeners run is deployment config:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `WIREGUARD_ENDPOINT` | unset (no tunnel) | Starts the tunnel. With it set, the API is served at `10.100.0.1:80` inside the tunnel, on the in-process network stack, so only the WireGuard UDP port is exposed on the host. |
+| `WIREGUARD_OPERATOR_PEERS` | empty | The operator devices allowed to use the tunnel API: `<overlay-address>=<base64-public-key>` entries, separated by commas or whitespace. Each address must be in `10.100.0.240`–`10.100.0.254` (`wireguard.OperatorCIDR`), a range instances are never assigned. Only the public key reaches the web app. Requires `WIREGUARD_ENDPOINT`. |
+| `API_HOST_LISTEN_ADDR` | unset (off) | **Opt-in.** Also serves the whole API as plain HTTP on this host address, e.g. `127.0.0.1:8080` or one LAN interface, with no source filter. There is no default address. Startup logs a warning naming the exposure. |
+| `HEALTH_LISTEN_ADDR` | `:8081` | Serves `GET /healthz` and nothing else, for container health checks, whatever the API setting. |
+
+- **The source filter.** The tunnel listener admits a request only when its
+  source is a listed operator address, and answers 403 otherwise. That address
+  check is sound because WireGuard drops any packet whose source isn't in the
+  sending peer's allowed IPs, so the address identifies the key. Nodes, and
+  anyone holding a node's leaked key, are refused. The filter doesn't apply to
+  the host listener, where a source address proves nothing.
+- **Operator setup.** Generate a keypair (`wg genkey | tee op.key | wg pubkey`),
+  pick an address in the operator range, and list it in
+  `WIREGUARD_OPERATOR_PEERS`. The web app logs its own public key at startup
+  (`wireguard public key …`). Use that key as the operator's peer, with
+  `AllowedIPs = 10.100.0.1/32` and the web app's `WIREGUARD_ENDPOINT` as its
+  endpoint. Then call `http://10.100.0.1/…` through the tunnel. Every sync
+  re-registers the operator peers alongside the instances.
+- **Nothing configured.** The API is served on no listener, and startup warns.
+- **Dev.** `docker-compose.yml` opts in with `API_HOST_LISTEN_ADDR=:8080`,
+  published on the host's `127.0.0.1` only, so `curl localhost:8080` works.
+  `scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh` proves
+  both postures against that stack. A TLS host listener is the expected third
+  mode; it isn't built.
+
 Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is resolved as of #91 — see § Web app's WireGuard tunnel module above and `Decisions.md` § Networking for the three options originally weighed and why WireGuard won.
 
 ## Incus Node networking to Web App

@@ -332,3 +332,90 @@ func TestUpsertPeerWithEndpointLetsTheDialerInitiate(t *testing.T) {
 		t.Errorf("echoed payload = %q, want %q", got, marker)
 	}
 }
+
+// TestListenServesPeersAndSeesTheirOverlayAddress covers what the web app's
+// tunnel API listener relies on (#195): Listen accepts connections from a
+// peer through the tunnel, and each connection's RemoteAddr is that peer's
+// overlay address, the address its key is allowed to send from.
+func TestListenServesPeersAndSeesTheirOverlayAddress(t *testing.T) {
+	privA, pubA, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	tunA, err := Start(Options{PrivateKey: privA, ListenPort: 0, LocalAddr: WebAppAddr})
+	if err != nil {
+		t.Fatalf("Start (A): %v", err)
+	}
+	defer tunA.Close() //nolint:errcheck // test cleanup
+	portA, err := tunA.ListenPort()
+	if err != nil {
+		t.Fatalf("A.ListenPort: %v", err)
+	}
+
+	privB, pubB, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	operatorAddr := netip.MustParseAddr("10.100.0.240")
+	tunB, err := Start(Options{PrivateKey: privB, ListenPort: 0, LocalAddr: operatorAddr})
+	if err != nil {
+		t.Fatalf("Start (B): %v", err)
+	}
+	defer tunB.Close() //nolint:errcheck // test cleanup
+
+	if err := tunA.UpsertPeer(pubB, operatorAddr); err != nil {
+		t.Fatalf("A.UpsertPeer(B): %v", err)
+	}
+	endpointA := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(portA)) //nolint:gosec // G115: a UDP port fits in uint16
+	if err := tunB.UpsertPeerWithEndpoint(pubA, WebAppAddr, endpointA); err != nil {
+		t.Fatalf("B.UpsertPeerWithEndpoint(A): %v", err)
+	}
+
+	ln, err := tunA.Listen(APIPort)
+	if err != nil {
+		t.Fatalf("A.Listen: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck // test cleanup
+	if got, want := ln.Addr().String(), fmt.Sprintf("%s:%d", WebAppAddr, APIPort); got != want {
+		t.Errorf("listener address = %s, want %s", got, want)
+	}
+
+	remote := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		remote <- conn.RemoteAddr().String()
+		_ = conn.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var conn net.Conn
+	var dialErr error
+	for ctx.Err() == nil {
+		conn, dialErr = tunB.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", WebAppAddr, APIPort))
+		if dialErr == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if dialErr != nil {
+		t.Fatalf("B could not dial A's listener through the tunnel: %v", dialErr)
+	}
+	defer conn.Close() //nolint:errcheck // test cleanup
+
+	select {
+	case got := <-remote:
+		host, _, err := net.SplitHostPort(got)
+		if err != nil {
+			t.Fatalf("split RemoteAddr %q: %v", got, err)
+		}
+		if host != operatorAddr.String() {
+			t.Errorf("accepted connection's RemoteAddr host = %s, want B's overlay address %s", host, operatorAddr)
+		}
+	case <-ctx.Done():
+		t.Fatal("A's listener never accepted B's connection")
+	}
+}

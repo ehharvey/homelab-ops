@@ -28,7 +28,11 @@ COPY --from=flasher /go/bin/flasher-tool /flasher-tool
 # has no shell/PATH). newImageBuilder reads this; unset in dev falls back to
 # resolving "flasher-tool" from $PATH.
 ENV FLASHER_TOOL_PATH=/flasher-tool
-EXPOSE 8080
+# The /healthz-only health listener (HEALTH_LISTEN_ADDR). The API itself is
+# served inside the WireGuard tunnel by default, so it needs no host port; an
+# operator who opts in to API_HOST_LISTEN_ADDR publishes that port themselves
+# (#195).
+EXPOSE 8081
 # WireGuard's IANA-assigned UDP port. internal/wireguard terminates the
 # tunnel entirely in-process via a userspace network stack (no host TUN
 # device) — no NET_ADMIN or other added capability needed, just this one

@@ -55,7 +55,9 @@ Run any subcommand with `--help` for the full flag list.
 Builds the web app's Docker image and starts it via `docker-compose.yml`,
 alongside a throwaway git remote (`dev/git-fixture`) seeded with a sample
 `fleet.yaml` — no real GitHub repo needed for local dev. The app syncs from
-that fixture on `PORT=8080`.
+that fixture. The dev stack opts in to the plain-HTTP host listener on
+`localhost:8080`; a real deployment serves the API only over WireGuard unless
+you opt in (see [Architecture](Architecture) § Who can reach the API).
 
     curl localhost:8080/healthz
     curl -X POST localhost:8080/sync
