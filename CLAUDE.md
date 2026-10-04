@@ -62,6 +62,9 @@ long multi-issue sessions were ~77% of the cost.
     make lint    # golangci-lint via Docker — slow; run before declaring done
     make fmt     # gofmt + goimports
 
+    make wt N=<n>  # worktree for issue #n on eharvey/#<n>; prints its path
+    make wt-gc     # remove worktrees whose PR merged (make wt-list: dry run)
+
     make validate           # the unattended validate suite (~2.5m, needs Docker)
     make validate-hardware  # the Incus/VM subset (~30m, boots real VMs)
 
@@ -92,6 +95,23 @@ long multi-issue sessions were ~77% of the cost.
   not noise — don't strip them assuming they're spurious; `make lint` is the
   arbiter.
 
+## Worktrees (#252)
+
+- **The main checkout (`/workspaces/infra`) is the operator's.** It often holds
+  uncommitted work. Don't edit, switch branches or commit there; every issue
+  gets its own worktree: `make wt N=<n>` for the main session (then work from
+  the printed path), or `isolation: worktree` for `issue-worker`.
+- **Run `make wt-gc` at the start of a session.** It removes worktrees, and
+  their local branches, only when nothing can be lost (clean, and the PR merged
+  at that commit, or no commits beyond main). It keeps and reports the rest.
+- **gopls sees the main checkout, not your worktree.** The MCP server is rooted
+  where the session started, so in a worktree it resolves imports to main's
+  `internal/` (verified, #252). There, check with `go build ./...` / `go vet`
+  and read the worktree's files; a session *started* in a worktree is fine.
+- Hooks need no setup (`core.hooksPath` is relative). Validate scripts that
+  bring up compose stacks share host ports, so only one worktree runs them at
+  a time.
+
 ## Validating changes for real
 
 Unit tests don't catch everything here — issue #5 shipped with a passing
@@ -120,7 +140,7 @@ names are meant to make the suite readable as a set: `sync-warns-on-config-diff`
 and `background-poll-warns-on-config-diff` are visibly a pair proving the same
 behaviour on two code paths.
 
-`scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`,
+`scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`, `worktree.sh`,
 `vendor-incusos.sh`, `ship.sh`, `lgtm.sh`.
 
 They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
