@@ -10,8 +10,12 @@ __pycache__/
 # Go build artifacts
 bin/
 # `go build ./cmd/<name>` with no -o drops the binary in the repo root rather
-# than bin/, which is easy to do by hand with the test-only validate harnesses
-# (the validate scripts themselves build into a mktemp dir).
+# than bin/ (where `make build` puts it), so every cmd/ binary is ignored at the
+# root. A new cmd/<name> needs its own /<name> line here. Keep each entry
+# root-anchored: an unanchored `agent` would also match the tracked cmd/agent.
+/agent
+/bootstrap
+/web
 /validate-tunnel-harness
 /validate-incuslocal-harness
 
