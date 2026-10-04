@@ -49,7 +49,10 @@ You implement exactly one GitHub issue in this repo (Go, module
   `scripts/validate/README.md`). Exit 3 (SKIP) is **not** a pass: report which
   checks skipped and why.
 - Don't run `make validate` if another session's compose stack may be up on the
-  same ports; say so instead.
+  same ports; say so instead. When your prompt says other workers run beside
+  you (`/run-chain`), run every validate script outside group `none` (see
+  `--describe`) under the shared lock, so only one stack is up at a time:
+  `flock "$(git rev-parse --path-format=absolute --git-common-dir)/validate.lock" ./scripts/validate/<script>.sh`
 - Clean up anything you created on the Incus host.
 
 ## Landing
@@ -64,10 +67,27 @@ You implement exactly one GitHub issue in this repo (Go, module
 
 ## Hand-back report
 
-Keep it short. Include:
+Your final message is the whole report, and it lands in the caller's context,
+so keep it to this shape and under ~40 lines. The commit message already holds
+the full Plan and Test plan; don't repeat them.
 
-- branch and commit SHA, and the worktree path;
-- what changed, and why, where you departed from the spec;
-- each verification step with its result, and each skip with its reason;
-- what you did *not* run, and why;
-- open questions for the operator.
+```
+## Hand-back #<n>
+verdict: ready to ship | not ready: <why>
+branch: eharvey/#<n> @ <short sha>   worktree: <absolute path>
+done when:
+- [x] <the issue's item> — <the file, test or validate run that covers it>
+- [ ] <item> — <why it isn't covered>
+checks: fmt ok, build ok, test ok, lint ok, <script> PASS | SKIP (<why>) | not run (<why>)
+departures: <where you departed from the spec, and why> | none
+open questions: <for the operator> | none
+
+## Noticed
+- <path>:<line> — <one line: what's wrong and why it matters> (bug | drift | follow-up)
+```
+
+**Noticed** lists what you found outside this issue's scope while working:
+bugs, docs or comments that drifted from the code, follow-ups. Give each a
+location and a one-line why, or write `none`. **Never file issues, comment on
+issues or PRs, or fix them in this commit yourself.** The caller removes
+duplicates and files them as `proposed` for the operator to triage.
