@@ -164,10 +164,11 @@ there" — not an environmental limit like a missing multi-gigabyte
 
 Two deliberate irregularities, both documented in the scripts themselves:
 
-- **`multi-commit-pr-cannot-reach-main.sh` is fail-fast.** It drives one real PR
-  through GitHub and each step depends on the last, so there is nothing to
-  accumulate after a failure. It uses the shared recorders for output and exit
-  codes but keeps its own aborting `fail`.
+- **The `github` scripts are fail-fast** (`multi-commit-pr-cannot-reach-main.sh`,
+  `amended-commit-reships-to-open-pr.sh`). Each drives one real PR through
+  GitHub and each step depends on the last, so there is nothing to accumulate
+  after a failure. They use the shared recorders for output and exit codes but
+  keep their own aborting `fail`.
 - **`cmd/validate-tunnel-harness` is a Go program.** It runs *inside* a container
   to drive create-instance from the node's side of the tunnel, which bash can't
   do from outside. It's a fixture the bash drives — the same category as
