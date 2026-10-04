@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm vendor-incusos docker-build dev validate validate-hardware
+.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -43,6 +43,17 @@ ship:
 # make lgtm  /  make lgtm PR=123
 lgtm:
 	./scripts/lgtm.sh $(PR)
+
+# One worktree per issue, outside the operator's checkout (scripts/worktree.sh,
+# #252). `make wt N=123` prints the path; @ keeps it the only stdout line.
+wt:
+	@./scripts/worktree.sh new $(N)
+
+wt-list:
+	@./scripts/worktree.sh list
+
+wt-gc:
+	@./scripts/worktree.sh gc
 
 # The unattended subset, and CI's intended entry point when a validate workflow
 # exists — there isn't one yet, so today this only runs by hand. Same

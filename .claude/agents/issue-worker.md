@@ -27,7 +27,11 @@ You implement exactly one GitHub issue in this repo (Go, module
 ## Working
 
 - Branch: `git switch -c 'eharvey/#<n>'` in your worktree, from the current
-  `origin/main` (`git fetch -q origin` first).
+  `origin/main` (`git fetch -q origin` first). Never touch the main checkout
+  (`CLAUDE.md` § Worktrees); `make wt-gc` removes your worktree once the PR
+  merges.
+- gopls answers from the main checkout, not your worktree (`CLAUDE.md`
+  § Worktrees). Check your changes with `go build ./...` and `go vet ./...`.
 - Core logic goes in `internal/<package>/`. Subcommands are one file each in
   `cmd/bootstrap/cmd/`. Prefer stdlib or vendoring one small file over a new module.
 - Run git as plain standalone commands, not inside Python heredocs or long
