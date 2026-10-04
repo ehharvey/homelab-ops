@@ -308,7 +308,7 @@ of its host.
 > the nodes' LAN. Every deployment setting is an operator choice with a safe
 > default. An internet-reachable deployment needs #195 first.
 
-- [ ] Publish the web image to GHCR from `main` — see #240
+- [x] Publish the web image to GHCR from `main`: DONE; see #240
 - [ ] Deployment config contract: one directory, every setting with its
   default, the WireGuard endpoint as a DNS name — see #241
 - [ ] Build install media client-side: a local image build from a downloaded
