@@ -70,22 +70,20 @@ slot doesn't sit idle.
 
 ## 3. Audit "Done when"
 
-Check the worker's claims against the branch, not against its prose:
+Check the worker's claims against the branch, not against its prose. The
+mechanical checks are the shared audit (#272), which `/review-work` and
+`/ship-issue` run too:
 
-    gh issue view <n> --json body --jq .body | sed -n '/^### Done when/,/^### /p'
-    git -C <wt> status --porcelain                  # must be empty
-    git -C <wt> fetch -q origin main
-    git -C <wt> rev-list --count FETCH_HEAD..HEAD   # must be 1
-    git -C <wt> show --stat --format=%B HEAD | head -120
+    .claude/skills/review-work/audit.sh <wt>
 
-It passes when all of these hold:
+It prints the issue's Done-when section, the commit message and `--stat`, and
+a `FAIL` line per mechanical gap. It passes when all of these hold:
 
+- `audit.sh` exits 0;
 - every Done-when item maps to a `- [x]` line in the hand-back, and the files
   in `--stat` back that up;
 - every `- [x]` in the commit's Test plan actually ran and passed according to
   the hand-back. A SKIP, "not run", or "left to CI" ticked as done doesn't count;
-- the body has `## Plan`, `## Test plan` and `Closes #<n>`, and the branch is
-  `eharvey/#<n>`;
 - the verdict is "ready to ship" and the open questions don't block shipping.
 
 If it falls short, `SendMessage` the same worker **once** with the specific
