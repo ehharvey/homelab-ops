@@ -15,6 +15,9 @@ bin/
 /validate-tunnel-harness
 /validate-incuslocal-harness
 
+# Per-issue git worktrees (scripts/worktree.sh, #252)
+.claude/worktrees/
+
 # Bootstrap CLI generated artifacts (certs, seeds, images) — never commit private keys
 bootstrap-output/
 
