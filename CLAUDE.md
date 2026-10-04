@@ -144,7 +144,7 @@ and `background-poll-warns-on-config-diff` are visibly a pair proving the same
 behaviour on two code paths.
 
 `scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`, `worktree.sh`,
-`vendor-incusos.sh`, `ship.sh`, `lgtm.sh`.
+`vendor-incusos.sh`, `ship.sh`, `lgtm.sh`, `auto-rebase.sh`.
 
 They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
 prerequisite is a **SKIP with exit 3**, never a FAIL — "you didn't install a
