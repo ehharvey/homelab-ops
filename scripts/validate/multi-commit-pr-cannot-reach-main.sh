@@ -11,10 +11,10 @@
 #      than merely proving the workflow ran and went red advisorily.
 #   4. Squashing to 1 commit flips the check green and the PR mergeable.
 #
-# It also asserts strict_required_status_checks_policy is false: flipping it
-# on would make GitHub's "Update branch" button add a merge commit to the
-# branch, silently breaking `one-commit` for everyone (see docs/Development
-# Conventions.md "Linting & CI").
+# It also asserts strict_required_status_checks_policy is true (#264): PRs must
+# have passed CI against current main. That coexists with one-commit only
+# because .github/workflows/auto-rebase.yml rebases BEHIND PRs rather than
+# merge-updating them (see docs/Development Conventions.md "Linting & CI").
 #
 # The throwaway PR is always closed, never merged. Its branch is prefixed
 # `validate-119/` so a leaked one is obvious.
@@ -90,9 +90,9 @@ pass "build-test, lint, docker-smoke, one-commit are all required"
 
 strict=$(echo "$rules" | jq -r '.rules[] | select(.type=="required_status_checks")
 	| .parameters.strict_required_status_checks_policy')
-[ "$strict" = "false" ] \
-	|| fail "strict_required_status_checks_policy is $strict; must be false or 'Update branch' adds a merge commit and breaks one-commit"
-pass "strict_required_status_checks_policy is false"
+[ "$strict" = "true" ] \
+	|| fail "strict_required_status_checks_policy is $strict; must be true so PRs pass CI against current main (auto-rebase.yml keeps them up to date)"
+pass "strict_required_status_checks_policy is true"
 
 echo "$rules" | jq -e '.rules[] | select(.type=="required_linear_history")' >/dev/null \
 	|| fail "required_linear_history is not set"
