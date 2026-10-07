@@ -35,7 +35,7 @@
 # first time since #91. See docs/Decisions.md §23 (making these assertions
 # honest) and §24 (why the fix is the address, not a route).
 #
-# Expect 41 passed, 0 failed. The create-instance check spent one run red for a
+# Expect 44 passed, 0 failed (with INCUSOS_BASE_IMAGE set). The create-instance check spent one run red for a
 # second reason #157 uncovered rather than caused: cmd/validate-tunnel-harness
 # defaulted -storage-pool to "default" while IncusOS names its only pool
 # "local", so the request reached Incus over the now-working tunnel and failed
@@ -43,6 +43,14 @@
 # Fixed in #161. Like #157 before it, that check had never once passed, so a
 # wrong pool name sat behind a network failure from #91 onward — until an
 # assertion actually passes, nothing downstream of it has been exercised.
+#
+# #288: wan-sim was only ever IPv4-isolated. Incus gave it a default fd42::/64
+# with ipv6.nat=true, and the webapp container's `apk add git` went out over
+# that for as long as homelab-host had an IPv6 upstream. When the host lost it,
+# apk hung, /web was never pushed and section 4 stopped exercising the web app.
+# wan-sim now has ipv6.address=none and a check that the webapp container has no
+# global IPv6 address; the container installs git on home-lan, then moves to
+# wan-sim, so nothing runs `apk` there. That added three checks to the count.
 #
 # If either goes red again: node0's /os/1.0/system/network state is NOT an
 # oracle for that route. IncusOS builds state.interfaces.wg0.routes by
@@ -267,8 +275,15 @@ echo "== 2. NAT-simulation topology: wan-sim network + gateway =="
 # home-lan already exists (shared with node-boots-and-trusts-bootstrap-cert.sh); wan-sim is
 # this run's own, deleted in cleanup. No ipv4.nat here — the gateway
 # container does its own MASQUERADE (see this file's header for why).
+#
+# ipv6.address=none as well, as home-lan has it (#288). ipv4.nat=false alone
+# leaves IPv6 at Incus's defaults: an auto fd42::/64 with ipv6.nat=true, i.e.
+# host-NATed IPv6 egress whenever the host has an IPv6 upstream. That quietly
+# let the webapp container `apk add git` from wan-sim for months, and broke
+# the run the day homelab-host lost IPv6.
 check "network '$WAN_NETWORK' created" incus network create "$REMOTE:$WAN_NETWORK" \
-  "ipv4.address=$WAN_GATEWAY_ADDR/24" "ipv4.nat=false" "ipv4.dhcp=true"
+  "ipv4.address=$WAN_GATEWAY_ADDR/24" "ipv4.nat=false" "ipv4.dhcp=true" \
+  "ipv6.address=none"
 
 check "gateway container launched on $LAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$GATEWAY_NAME" \
   --project "$PROJECT" --network "$LAN_NETWORK"
@@ -375,13 +390,49 @@ check "fleet git repo built" bash -c "
   git clone -q --bare . '$WORK_DIR/fleet-repo.git'
 "
 
-check "webapp container launched on $WAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$WEBAPP_NAME" \
-  --project "$PROJECT" --network "$WAN_NETWORK"
+# The webapp container starts on home-lan, the only network here with egress,
+# installs `git` there, and only then moves to wan-sim — the same pattern as
+# the gateway's `apk add iptables` in section 2. Nothing runs `apk` while
+# attached to wan-sim, which has no route out over either address family
+# (#288; asserted after the NAT probe below).
+check "webapp container launched on $LAN_NETWORK" incus launch "$VALIDATE_ALPINE_CT" "$REMOTE:$WEBAPP_NAME" \
+  --project "$PROJECT" --network "$LAN_NETWORK"
 
-# The primary NIC DHCPs on first boot, but not necessarily instantly —
-# retry rather than checking exactly once immediately after launch.
+# git is installed here purely for go-git's benefit: internal/configsync's
+# "no git binary needed" guarantee holds for the git://, http(s)://, and
+# ssh:// transports it uses in production, but go-git's *local filesystem
+# path* transport (this script's own convenience choice, not a production
+# concern) shells out to a real `git` binary internally
+# (go-git/plumbing/transport/file/client.go) — confirmed while building
+# this script. The distroless production image never needs this, and the
+# pinned validate-alpine image doesn't ship it. Wait for a home-lan lease
+# first so apk doesn't race the first-boot DHCP.
+check "webapp git installed (on $LAN_NETWORK)" bash -c "
+  for _ in \$(seq 1 20); do
+    incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- \
+      sh -c 'ip -4 -o addr show eth0 | grep -q inet' && break
+    sleep 1
+  done &&
+  incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- apk add --no-cache git
+"
+
+# Stopped, re-pointed and started rather than re-pointed live: on boot the
+# primary NIC DHCPs on its new bridge by itself (verified on homelab-host,
+# leased on the first poll), whereas whether a live change re-DHCPs is
+# unverified — the gateway's hot-added eth1 above needs udhcpc by hand.
+# --force because a clean stop of the Alpine container sits out
+# Incus's shutdown wait (~50s measured on homelab-host), and apk has already
+# exited, so nothing is left unwritten.
+check "webapp moved to $WAN_NETWORK" bash -c "
+  incus stop --force --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' &&
+  incus config device set --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' eth0 network='$WAN_NETWORK' &&
+  incus start --project '$PROJECT' '$REMOTE:$WEBAPP_NAME'
+"
+
+# The primary NIC DHCPs on boot, but not necessarily instantly — retry rather
+# than checking exactly once immediately after the start.
 WEBAPP_WAN_IP=""
-for _ in $(seq 1 10); do
+for _ in $(seq 1 20); do
   WEBAPP_WAN_IP=$(incus exec --project "$PROJECT" "$REMOTE:$WEBAPP_NAME" -- \
     sh -c "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null)
   [ -n "$WEBAPP_WAN_IP" ] && break
@@ -401,10 +452,13 @@ check "webapp has a wan-sim address" bash -c "[ -n '$WEBAPP_WAN_IP' ]"
 # and before /web starts, so nothing is competing for the port. A port other
 # than $WG_PORT for the same reason.
 #
-# busybox nc on both ends deliberately: wan-sim is ipv4.nat=false and nothing
-# MASQUERADEs for it, so the webapp container has no route off its bridge —
-# verified, not assumed. Anything needing `apk add` would hang on mirror
-# timeouts rather than fail cleanly.
+# busybox nc on both ends deliberately: wan-sim is ipv4.nat=false with
+# ipv6.address=none and nothing MASQUERADEs for it, so the webapp container
+# has no route off its bridge over either address family. IPv4 egress was
+# verified absent under #137; IPv6 was not, and was there (#288) — the
+# no-global-IPv6 check below now asserts it every run. Anything needing
+# `apk add` would hang on mirror timeouts rather than fail cleanly, which is
+# why git went in on home-lan above.
 NAT_PROBE_PORT=51821
 NAT_NONCE="natprobe-$$"
 check "NAT probe sender launched behind the gateway" bash -c "
@@ -441,16 +495,22 @@ check "the gateway NAT-translated it (conntrack reply dst is the gateway's wan-s
 "
 incus delete --force --project "$PROJECT" "$REMOTE:$NAT_SENDER_NAME" >/dev/null 2>&1
 
-# git is installed here purely for go-git's benefit: internal/configsync's
-# "no git binary needed" guarantee holds for the git://, http(s)://, and
-# ssh:// transports it uses in production, but go-git's *local filesystem
-# path* transport (this script's own convenience choice, not a production
-# concern) shells out to a real `git` binary internally
-# (go-git/plumbing/transport/file/client.go) — confirmed while building
-# this script. The distroless production image never needs this.
-check "webapp fleet repo + git + binary + cert pushed" bash -c "
+# wan-sim must hand out no IPv6 at all (#288): a global address here means
+# the bridge has IPv6 — and, at Incus's defaults, host-NATed IPv6 egress — so
+# any egress dependency would pass only on hosts with an IPv6 upstream. Placed
+# after the NAT probe, seconds after the container came up on wan-sim, so a
+# SLAAC address from a router advertisement would already have landed: the
+# check can't pass by running before one arrives. The exit status rides along
+# so that a failed `incus exec` (empty output) can't pass for "no addresses";
+# on failure the addresses found are printed.
+check_eq "webapp has no global IPv6 address on $WAN_NETWORK" "rc=0" \
+  "$(incus exec --project "$PROJECT" "$REMOTE:$WEBAPP_NAME" -- \
+    ip -6 -o addr show scope global 2>&1; echo "rc=$?")"
+
+# git is already in the container (installed on home-lan above), so this is
+# only the files: the bare repo go-git clones from, the web binary and the cert.
+check "webapp fleet repo + binary + cert pushed" bash -c "
   incus file push -r --project '$PROJECT' '$WORK_DIR/fleet-repo.git' '$REMOTE:$WEBAPP_NAME/root/' &&
-  incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- apk add --no-cache git &&
   incus file push --project '$PROJECT' '$WEB_BIN' '$REMOTE:$WEBAPP_NAME/web' --mode=0755 &&
   incus file push --project '$PROJECT' '$WORK_DIR/cert/client.crt' '$REMOTE:$WEBAPP_NAME/root/client.crt'
 "
