@@ -107,8 +107,9 @@ func (f *fakeStore) Instance(_ context.Context, name string) (config.Instance, b
 // fakeTunnelSource is a no-op TunnelSource: enough for handlers/SyncOnce to
 // treat WireGuard as "configured" without a real in-process tunnel.
 type fakeTunnelSource struct {
-	pub      wireguard.PublicKey
-	endpoint string
+	pub       wireguard.PublicKey
+	endpoint  string
+	operators []wireguard.OperatorPeer
 
 	upsertErr  error
 	upsertCall []struct {
@@ -119,6 +120,8 @@ type fakeTunnelSource struct {
 
 func (f *fakeTunnelSource) PublicKey() wireguard.PublicKey { return f.pub }
 func (f *fakeTunnelSource) Endpoint() string               { return f.endpoint }
+
+func (f *fakeTunnelSource) OperatorPeers() []wireguard.OperatorPeer { return f.operators }
 
 func (f *fakeTunnelSource) UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Addr) error {
 	f.upsertCall = append(f.upsertCall, struct {

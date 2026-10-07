@@ -2,10 +2,18 @@ services:
   web:
     build: .
     ports:
-      - "8080:8080"
+      # Published on the host's localhost only: see API_HOST_LISTEN_ADDR.
+      - "127.0.0.1:8080:8080"
       - "51820:51820/udp"
     environment:
-      - PORT=8080
+      # Dev opts in to the plain-HTTP host listener (#195, docs/Decisions.md
+      # §28), so curl and the compose validate scripts can call the API. The
+      # shipped default is tunnel-only, with no host listener at all.
+      # Inside the container it binds every interface so the published port
+      # reaches it; the publish above keeps it on the host's 127.0.0.1.
+      # scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh
+      # blanks it to exercise the default.
+      - API_HOST_LISTEN_ADDR=:8080
       - CONFIG_REPO_URL=git://config-repo/fleet.git
       - CONFIG_REPO_REF=main
       - WIREGUARD_PORT=51820

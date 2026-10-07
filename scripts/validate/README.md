@@ -129,7 +129,7 @@ client and server share a major version.
 ## Parallelism
 
 `run.sh --jobs N` runs scripts concurrently. **The `compose` group cannot use it
-yet**: those scripts share host ports 8080/3000/3100/9090 and a single Compose
+yet**: those scripts share host ports 8080/8081/3000/3100/9090 and a single Compose
 project name, so two at once fight over both. The `incus-vm` group likewise
 shares the `home-lan` bridge, and `app-produces-working-installer-e2e.sh`'s
 header warns against running it concurrently with
