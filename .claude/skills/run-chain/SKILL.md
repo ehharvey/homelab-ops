@@ -59,7 +59,8 @@ only if the operator says so):
    <brief>
    Read only the §N / doc sections the brief cites.
    Other workers run beside you: <#m, … | none>. Run non-`none`-group
-   validate scripts under the shared lock (your agent file, § Verifying).
+   validate scripts under the shared lock (your agent file, § Verifying);
+   `make lint` locks itself.
    Commit, but don't push or ship; the root ships after its audit.
    End with the hand-back block from your agent file, Noticed section included.
    ```
