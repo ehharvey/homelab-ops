@@ -14,8 +14,26 @@ build:
 test:
 	$(GO) test ./... -race -cover
 
+# One lint at a time across every worktree of this repo (#282): each run is a
+# fresh container that re-downloads modules and peaks near 3 GiB, so N runs at
+# once each take ~N times as long and push the host into swap. The lock lives
+# in the shared git dir, beside validate.lock. A killed make frees it at once,
+# though a SIGKILLed `docker run` leaves its container running to the end.
+# The first, non-blocking try exits 75 only when the lock is held, so the wait
+# gets announced. No flock (macOS) or no git checkout: run unlocked.
+LINT_CMD := docker run --rm -v $(CURDIR):/app -w /app $(LINT_IMAGE) golangci-lint run ./...
+LINT_LOCK := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/lint.lock
+LINT_LOCKED := $(and $(shell command -v flock 2>/dev/null),$(filter-out /lint.lock,$(LINT_LOCK)))
+
 lint:
-	docker run --rm -v $(CURDIR):/app -w /app $(LINT_IMAGE) golangci-lint run ./...
+ifeq ($(LINT_LOCKED),)
+	$(LINT_CMD)
+else
+	@echo 'flock $(LINT_LOCK) $(LINT_CMD)'
+	@flock -n -E 75 "$(LINT_LOCK)" $(LINT_CMD); rc=$$?; [ $$rc -eq 75 ] || exit $$rc; \
+	echo "make lint: waiting for another make lint to release $(LINT_LOCK)"; \
+	flock "$(LINT_LOCK)" $(LINT_CMD)
+endif
 
 # Proves docs/'s mermaid diagrams actually parse — a broken one renders as an
 # error box on GitHub, which reviewing the source in a diff won't catch (see

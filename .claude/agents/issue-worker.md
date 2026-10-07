@@ -44,6 +44,12 @@ You implement exactly one GitHub issue in this repo (Go, module
 
 - `make fmt`, `make build`, `make test`, `make lint`. Add `make lint-docs` if
   `docs/` changed.
+- `make lint` takes its own lock (`lint.lock` in the shared git dir, #282), so
+  don't wrap it in `flock`. Beside other workers it may print that it's waiting
+  and take several minutes: give it a `600000` timeout, and don't start a
+  second `make lint` while one is still running, even one moved to the
+  background. A bare `Exit code 137` from the Bash tool means the shell was
+  killed (a session restart, in #282), not lint; rerun it once.
 - The validate script(s) that prove the issue's "done when". Write a new one in
   `scripts/validate/` if none does, named for the behaviour it proves (see
   `scripts/validate/README.md`). Exit 3 (SKIP) is **not** a pass: report which
