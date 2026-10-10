@@ -19,8 +19,9 @@
 #
 # Requires a real, bootable base IncusOS raw image — unlike
 # cli-renders-seed-and-builds-image.sh's placeholder, a VM actually has to boot and install
-# from this one. Point INCUSOS_BASE_IMAGE at a local copy; the relevant
-# section is skipped with a clear message if it's unset.
+# from this one. `make incusos-base` caches the pinned one, used when
+# INCUSOS_BASE_IMAGE is unset (#296); export the variable to use another. The
+# relevant section is skipped with a clear message if no image is usable.
 #
 # Getting the .img's bytes onto homelab-host: a plain `disk source=<path>`
 # device is resolved on the SERVER's filesystem, not the client's — since
@@ -53,6 +54,7 @@ VALIDATE_NEEDS="incus go jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAG
 VALIDATE_DURATION="~9m"
 
 validate_parse_args "$@"
+default_incusos_base_image
 WORK_DIR="$(mktemp -d)"
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -176,9 +178,10 @@ check "incus.yaml rendered" test -f "$WORK_DIR/seed/incus.yaml"
 echo
 echo "== 3. Boot an Incus VM from the produced .img and confirm install + cert trust =="
 if ! have_env_file INCUSOS_BASE_IMAGE; then
-  # The operator supplies this 3.2 GB image; its absence says nothing about
-  # whether node provisioning works, so it's a skip rather than four failures.
-  _why="INCUSOS_BASE_IMAGE ${INCUSOS_BASE_IMAGE:+=$INCUSOS_BASE_IMAGE }not usable"
+  # `make incusos-base` supplies this 3.2 GB image; its absence says nothing
+  # about whether node provisioning works, so it's a skip rather than four
+  # failures.
+  _why="$(base_image_skip_reason)"
   for _desc in \
     "build-image exits 0" \
     "seed .img streamed onto $REMOTE as a block volume" \

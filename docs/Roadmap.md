@@ -201,6 +201,11 @@ once a peer is on a newer commit (§25; this originally said
   harness finally dialling node0 with node0's own key and endpoint. Its three
   headline assertions had never passed since #91 introduced them; records why
   the test cannot be made hermetic in `docs/Decisions.md` §23: DONE; see #137
+- [x] A fetchable, verified IncusOS base image, so the `[base-image]` checks
+  stop skipping wherever nobody placed one by hand: `make incusos-base`
+  fetches the version pinned in `scripts/incusos-base.version`, verifies it
+  against the signed CDN manifest, and caches it once for every worktree; the
+  harness defaults `INCUSOS_BASE_IMAGE` to that pinned image: DONE; see #296
 
 **Done when:** the suite is honest about its own results — a missing tool
 reports as a skip rather than a failure, a script that silently gains a

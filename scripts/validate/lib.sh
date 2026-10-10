@@ -183,13 +183,14 @@ require_incus_image() {
 		_prereq_missing "incus image alias '$alias' not found in project '$project' on $remote — run .devcontainer/scripts/3-pin-validate-images.sh"
 }
 
-# require_env_file <VARNAME> — the variable must be set AND name a real file.
+# require_env_file <VARNAME> [hint] — the variable must be set AND name a real
+# file. The hint, if given, is appended to the diagnostic (what to run to fix it).
 require_env_file() {
-	local name="$1" value="${!1:-}"
+	local name="$1" value="${!1:-}" hint="${2:+ — $2}"
 	if [ -z "$value" ]; then
-		_prereq_missing "$name not set"
+		_prereq_missing "$name not set$hint"
 	elif [ ! -f "$value" ]; then
-		_prereq_missing "$name=$value not found"
+		_prereq_missing "$name=$value not found$hint"
 	fi
 }
 
@@ -213,6 +214,45 @@ have_env_file() {
 
 have_cmd() {
 	command -v "$1" >/dev/null 2>&1
+}
+
+# default_incusos_base_image — when INCUSOS_BASE_IMAGE is unset, point it at
+# the image `make incusos-base` cached for THIS checkout's pinned version
+# (scripts/incusos-base.version), if it is there, and say so in one NOTE (#296).
+# Call it once, after validate_parse_args, in any script that reads the
+# variable; then gate on have_env_file / require_env_file as before.
+#
+# Pinned version only. After a pin bump, or when only some other version was
+# fetched with INCUSOS_VERSION, the variable stays unset and the checks skip
+# until `make incusos-base` has run: two machines on one commit must not end up
+# testing different IncusOS builds without anyone asking for it (the drift
+# docs/Decisions.md §21 was written against). Any other image takes an explicit
+# `export INCUSOS_BASE_IMAGE=...`, which this never overrides.
+#
+# It never fetches (a ~610 MB download has no business hiding in a test run)
+# and never re-hashes 3.2 GB per run; the sidecar check is the fetch script's.
+# That script also owns where the cache is, so the layout lives in one place.
+default_incusos_base_image() {
+	[ -z "${INCUSOS_BASE_IMAGE:-}" ] || return 0
+	local img version
+	# INCUSOS_VERSION is the fetch script's override, not the harness's.
+	img=$(env -u INCUSOS_VERSION "$(dirname "${BASH_SOURCE[0]}")/../fetch-incusos-base.sh" --path 2>/dev/null) || return 0
+	# The fetch script moves image and sidecar into place together, so an image
+	# without its sidecar is not something it produced.
+	[ -f "$img" ] && [ -f "$img.sha256" ] || return 0
+	version=$(basename "$(dirname "$img")")
+	export INCUSOS_BASE_IMAGE="$img"
+	echo "NOTE: INCUSOS_BASE_IMAGE unset — using the cached pinned IncusOS $version: $img"
+}
+
+# base_image_skip_reason — the reason every [base-image] skip carries, so each
+# one names the command that makes it run.
+base_image_skip_reason() {
+	if [ -n "${INCUSOS_BASE_IMAGE:-}" ]; then
+		echo "INCUSOS_BASE_IMAGE=$INCUSOS_BASE_IMAGE not found — fix the path, or unset it and run 'make incusos-base'"
+	else
+		echo "INCUSOS_BASE_IMAGE unset and the pinned IncusOS image is not cached — run 'make incusos-base'"
+	fi
 }
 
 # ---------------------------------------------------------------------------

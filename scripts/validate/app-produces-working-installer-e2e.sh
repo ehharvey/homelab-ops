@@ -22,7 +22,8 @@
 # Requires: docker compose, curl, jq, go, openssl, incus. Needs the real
 # "homelab-host" Incus remote / "default" project / "home-lan" network
 # set up by .devcontainer/scripts/2-setup-dev-network.sh, and a real bootable
-# INCUSOS_BASE_IMAGE (same one node-boots-and-trusts-bootstrap-cert.sh needs). The image route
+# INCUSOS_BASE_IMAGE (same one node-boots-and-trusts-bootstrap-cert.sh needs;
+# it defaults to the pinned image `make incusos-base` cached, #296). The image route
 # copies the multi-GB base image into the container's /tmp per request, so
 # the devcontainer host needs enough writable disk.
 #
@@ -49,6 +50,7 @@ VALIDATE_NEEDS="docker-compose incus go openssl pinned-base-images INCUSOS_BASE_
 VALIDATE_DURATION="~10m"
 
 validate_parse_args "$@"
+default_incusos_base_image
 cd "$ROOT_DIR"
 
 pass=0
@@ -142,7 +144,7 @@ require_incus_project "$REMOTE" "$PROJECT"
 require_incus_network "$REMOTE" "$PROJECT" "$NETWORK"
 require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_CT"
 require_incus_image "$REMOTE" "$PROJECT" "$VALIDATE_ALPINE_VM"
-require_env_file INCUSOS_BASE_IMAGE
+require_env_file INCUSOS_BASE_IMAGE "run 'make incusos-base', or export it to use another image"
 check_prereqs
 record_pass "all hard prerequisites met"
 

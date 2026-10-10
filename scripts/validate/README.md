@@ -13,6 +13,7 @@ each file's header comment and in its `VALIDATE_PROVES` declaration.
 ```
 make validate                     # the unattended subset — CI's intended entry point
 make validate-hardware            # needs the Incus remote and a real VM boot
+make incusos-base                 # once per host: fetch the IncusOS base image they use
 
 ./scripts/validate/run.sh --group compose
 ./scripts/validate/run.sh --describe            # the prerequisite matrix, live
@@ -49,8 +50,11 @@ always outranks "everything that ran, passed".
 An unmet *soft* prerequisite produces a `SKIP` carrying a reason tag:
 
 ```
-SKIP: image route returns 200 [base-image] — INCUSOS_BASE_IMAGE not usable
+SKIP: image route returns 200 [base-image] — INCUSOS_BASE_IMAGE unset and the pinned IncusOS image is not cached — run 'make incusos-base'
 ```
+
+Every `[base-image]` skip carries that reason (`base_image_skip_reason` in
+`lib.sh`), so the output names the command that makes the check run.
 
 `--strict` turns any skip into a failure, except those explicitly allowed:
 
@@ -59,8 +63,9 @@ run.sh --group compose --strict --allow-skip base-image
 ```
 
 That combination is the suite's intended anti-rot mechanism. A hosted runner
-genuinely cannot supply a 3.2 GB IncusOS image, so `base-image` skips are
-blessed — but **any other** skip fails the build, including a *new* tag nobody
+has no 3.2 GB IncusOS image and no workflow fetches one (see
+[The IncusOS base image](#the-incusos-base-image-296)), so `base-image` skips
+are blessed — but **any other** skip fails the build, including a *new* tag nobody
 has blessed yet. A route that silently gains a precondition produces a `FAIL`,
 not a quietly-tolerated skip, on the day it lands rather than weeks later by
 accident (which is exactly how #107 broke four scripts).
@@ -72,7 +77,7 @@ it is tracked separately, and the "runs in CI" column below states intent, not
 current fact.
 
 Tags in use: `base-image`, `ct-image`, `flasher-tool`, `incus-instances`,
-`incus-socket`, `upstream`. Four describe a prerequisite the environment
+`incus-socket`, `opt-in`, `upstream`. Four describe a prerequisite the environment
 didn't supply — an IncusOS image, a container image, the `flasher-tool`
 binary, or a readable/writable Incus unix socket. `incus-instances` is a
 *probe* rather than a named cause: a script that needs to create instances
@@ -80,13 +85,179 @@ asks the daemon to create one and skips with the daemon's own words if it
 can't, which covers an uninitialized daemon (no storage pool) and a
 devcontainer with no idmap without enumerating either. `upstream` means "a
 prior check already failed, so this couldn't run" — a cascade, not a missing
-prerequisite.
+prerequisite. `opt-in` is `bump-workflow-opens-pin-only-pr.sh` declining to
+write to the real repository because nobody asked it to (below).
 
 Enumerate them from the scripts rather than trusting this list:
 
 ```
 grep -rhoE 'skip_check "[^"]*" [a-z-]+' scripts/validate/*.sh | awk '{print $NF}' | sort -u
 ```
+
+## The IncusOS base image (#296)
+
+The `[base-image]` checks need a real IncusOS raw image: 3.2 GB, gitignored,
+and not something the repo can carry. One command supplies it:
+
+```
+make incusos-base     # scripts/fetch-incusos-base.sh; ~610 MB down, 3.2 GB on disk
+```
+
+It fetches the version pinned in `scripts/incusos-base.version` from the Linux
+Containers CDN, verifies it, caches it, and prints an
+`export INCUSOS_BASE_IMAGE=…` line on stdout. A second run downloads nothing.
+After it, the validate scripts find the image themselves.
+
+**Trust chain.** The CDN publishes no `.sha256` file. The checksum is in
+`<version>/update.sjson`, an S/MIME-signed manifest, so the fetch is:
+
+1. `scripts/incusos-keys/root-E1.crt`, the committed trust root (`CN = Incus OS
+   - Root E1`, SHA-256 fingerprint `10:D0:90:00:12:CF:8E:60:E0:23:B4:C2:96:32:57:63:59:63:9F:F9:F2:53:24:68:4C:74:4C:8A:0C:EC:8D:47`,
+   expires 2045-06-21). It was downloaded once and checked against that
+   fingerprint. It is never fetched at run time: taking the trust root from the
+   CDN being verified would be circular.
+2. `update.sjson` must verify against that root (`openssl smime -verify`, with
+   the system CA store excluded), **and** its signer must have been issued by
+   the `Incus OS - Update E1` CA, itself issued directly by Root E1. Root E1
+   alone would accept a signer under any of its intermediates; upstream trusts
+   only the Update CA (`incus-osd/internal/providers/provider_images.go`). The
+   signing certificates themselves rotate yearly (`Incus OS - Update 2025 E1`,
+   `… 2026 E1`), which is why the check is on their issuer.
+3. The `.img.gz`'s sha256 is read from that verified JSON and must match the
+   download.
+4. The decompressed `.img`'s sha256 goes in a sidecar, `IncusOS_<v>.img.sha256`.
+   Every later `make incusos-base` re-checks the image against it. This catches
+   a truncated or corrupted cache; it says nothing new about authenticity.
+
+Any failure exits non-zero and leaves nothing at the final path. The image's
+own contents (sysext and verity signatures) are not verified: the chain stops
+at the signed manifest's sha256.
+
+**Cache layout.** One directory per version, under the *main checkout*:
+
+```
+<main checkout>/bootstrap-output/incusos/<version>/IncusOS_<version>.img
+<main checkout>/bootstrap-output/incusos/<version>/IncusOS_<version>.img.sha256
+```
+
+It is shared by every worktree on purpose. Each issue gets its own worktree
+(#252) with its own empty `bootstrap-output/`, so a per-checkout cache would
+leave every worker skipping. `make incusos-base` run from any worktree fills
+the same directory, and a later run from another is a no-op printing the same
+path. The directory is gitignored, so this never touches tracked work. A fetch
+is assembled in a temp directory beside the cache and renamed into place whole,
+so an interrupted run leaves nothing behind that a later check would trust. (A
+run killed outright can leave that `.fetch.*` directory; it is safe to delete.)
+
+If a cached image stops matching its sidecar, the script exits non-zero and
+names the directory to delete. It never re-fetches silently.
+
+A flat, hand-placed `bootstrap-output/incusos/IncusOS_<version>.img` from
+before this existed is neither used nor touched. Delete it once
+`make incusos-base` has run.
+
+**The default is the pinned version only.** When `INCUSOS_BASE_IMAGE` is unset,
+`default_incusos_base_image` (`lib.sh`) reads *this checkout's*
+`scripts/incusos-base.version` and uses that version's cached image if it is
+there, printing one `NOTE` with the path and version. It does not fall back to
+some other cached version. After a pin bump, or when only another version was
+fetched, the checks skip until `make incusos-base` has run again. That keeps
+two machines on the same commit from quietly testing different IncusOS builds,
+the drift `docs/Decisions.md` §21 was written against. The harness never
+fetches (a 610 MB download shouldn't hide inside a test run) and never
+re-hashes the image.
+
+To test against another image, say so explicitly:
+
+```
+INCUSOS_VERSION=202609271243 make incusos-base   # fetch a non-pinned version
+export INCUSOS_BASE_IMAGE=…                      # the line it printed
+```
+
+`INCUSOS_VERSION` overrides the pin for the fetch script only; the harness
+ignores it.
+
+**The pin and how it moves.** `scripts/incusos-base.version` is one line: a
+CDN `stable`-channel version. It is *not* the `third_party/incus-os` submodule
+tag. Not every tag gets a CDN build, and old builds are pruned, so the two move
+independently.
+
+`.github/workflows/bump-incusos.yml` runs daily. Its `bump-base-pin` job asks
+`scripts/fetch-incusos-base.sh --latest-stable` for the newest `stable` version
+in the verified `os/index.sjson`, and when that differs from the pin it opens a
+PR on `chore/bump-incusos-base` changing only the pin file. That PR is separate
+from the submodule bump's `chore/bump-incus-os`, and is opened whether or not
+lxc/incus-os cut a new tag.
+
+**Pin PRs need an operator push before their checks run.** The PR is opened
+with `GITHUB_TOKEN`, and a `GITHUB_TOKEN` push triggers no workflows. So it
+arrives without the required checks (`build-test`, `lint`, `docker-smoke`,
+`one-commit`) and stays blocked. To land one: check out the branch, run
+`make incusos-base` and the scripts that use the image, then push to the branch
+(amending the commit is enough). This is a known limitation and it is accepted:
+a pin refresh is meant to be a conscious act (§21), not something that merges
+itself.
+
+**The pin job is tested, on request.** Nothing lints workflows, so the only
+proof is a real run: `bump-workflow-opens-pin-only-pr.sh` (group `github`).
+It writes to the real repository, so it is opt-in and in no `make` target:
+
+```
+VALIDATE_GITHUB_WRITES=1 ./scripts/validate/bump-workflow-opens-pin-only-pr.sh
+```
+
+Without that variable it skips (`[opt-in]`, exit 3) before contacting GitHub,
+and it never runs in CI. With it, it:
+
+- pushes a throwaway branch, `validate-296/pin-<time>-<pid>`: this checkout's
+  `HEAD` plus one commit setting the pin to an older version
+  (`VALIDATE_OLD_PIN`, default `202609271243`);
+- dispatches `bump-incusos.yml` from that branch with `test_mode=true` and
+  waits for that run (`VALIDATE_RUN_TIMEOUT`, default 300 s);
+- asserts the run succeeded, the submodule job was skipped, and exactly one PR
+  came of it: on `chore/bump-incusos-base-test-<run id>`, into the throwaway
+  branch, one commit, one file, the pin moved to the newest stable;
+- closes that PR and deletes both branches, in an `EXIT` trap, so also after a
+  failed assertion, a timeout or Ctrl-C (a run still in progress is cancelled
+  first). It only removes what that run made, never anything matched by name;
+- asserts `chore/bump-incus-os`, `chore/bump-incusos-base` and every PR on them
+  are exactly as they were before it started.
+
+The throwaway push uses `--no-verify`: the branch is two commits ahead of
+`main` by construction and never becomes a PR into `main`, so the pre-push
+hook's one-commit rule doesn't apply to it. The hook is unchanged.
+
+**Why `test_mode` exists: never dispatch `bump-incusos.yml` from a branch
+other than `main` without it.** Both jobs commit on top of the ref the
+workflow was dispatched from. A plain dispatch from a feature branch therefore
+rebuilds `chore/bump-incus-os` on that branch and puts its commits into the
+real submodule bump PR (this happened while proving #296 by hand). The
+`test_mode` input skips the submodule job entirely and gives the pin PR a
+per-run branch, so a test run cannot touch a real bump branch or PR. With the
+input unset, which is every scheduled run and any plain dispatch, the workflow
+behaves as if the input did not exist.
+
+**The rejections are tested.**
+`incusos-base-fetch-rejects-untrusted-or-corrupt.sh` (group `none`, so it is
+part of `make validate`) drives the fetch script through each link of that
+chain failing: a manifest with one digit flipped, one served unsigned, one
+signed under a foreign root, three shapes of "under the root but not through
+the Update CA", an `.img.gz` with the wrong sha256, a manifest replayed for
+another version, a download that isn't gzip, and a cached image that no longer
+matches its sidecar. Each must exit non-zero for that reason, print no `export`
+line and leave the cache empty; the sidecar cases must name the directory and
+re-fetch nothing. Positive controls show the same setup accepts a correctly
+signed image.
+
+It is hermetic. It builds a private PKI at run time, serves a fake CDN from a
+temp directory over `file://`, and uses a made-up version, so it needs no
+network, never downloads the real image and never touches the real cache. It
+does this through the fetch script's three environment overrides
+(`INCUSOS_CDN_URL`, `INCUSOS_ROOT_CERT`, `INCUSOS_CACHE_DIR`), which exist for
+that purpose. Each is announced on stderr when set, and none of them skips a
+verification step. What it cannot show is that the real CDN's files verify
+against the committed root; `make incusos-base` and the daily
+`--latest-stable` in `bump-incusos.yml` do that.
 
 ## Prerequisite matrix
 
@@ -106,11 +277,11 @@ absence causes a skip rather than a failure.
 
 | group | what it needs | belongs in CI |
 |---|---|---|
-| `none` | Go only | yes |
+| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network) | yes |
 | `compose` | Docker, `docker compose` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
-| `incus-vm` | an Incus remote, the pinned base images, a real VM boot, `INCUSOS_BASE_IMAGE` | no — needs the host |
-| `github` | authenticated `gh` with repo admin | no — opens real PRs, would recurse |
+| `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
+| `github` | authenticated `gh` with repo admin; `bump-workflow-opens-pin-only-pr.sh` also needs `VALIDATE_GITHUB_WRITES=1` | no — opens real PRs, would recurse |
 
 `run.sh` derives these from the scripts themselves rather than a list kept here,
 so a new script is covered without editing anything central.
@@ -152,23 +323,26 @@ an older or CI-provided Compose where `down` returns early (#153).
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `skip_check`, the prereq DSL, arg parsing, `summary` | all |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `skip_check`, the prereq DSL, `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
 | `lib-compose.sh` | `compose()`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 
 `lib.sh`'s prereq DSL includes `require_incus_image`, which asserts the pinned
 base images exist. It is a hard prerequisite (exit 2), not a skip: a missing
 alias means operator setup wasn't run, the same class as "the remote isn't
-there" — not an environmental limit like a missing multi-gigabyte
-`INCUSOS_BASE_IMAGE`. The diagnostic names the script that fixes it.
+there" — not an environmental limit like a missing multi-gigabyte IncusOS
+image, which is a skip (below). The diagnostic names the script that fixes it.
 
 Two deliberate irregularities, both documented in the scripts themselves:
 
 - **The `github` scripts are fail-fast** (`multi-commit-pr-cannot-reach-main.sh`,
-  `amended-commit-reships-to-open-pr.sh`). Each drives one real PR through
-  GitHub and each step depends on the last, so there is nothing to accumulate
-  after a failure. They use the shared recorders for output and exit codes but
-  keep their own aborting `fail`.
+  `amended-commit-reships-to-open-pr.sh`, `bump-workflow-opens-pin-only-pr.sh`).
+  Each drives one real PR through GitHub and each step depends on the last, so
+  there is nothing to accumulate after a failure. They use the shared recorders
+  for output and exit codes but keep their own aborting `fail`. The third is
+  fail-fast only until its workflow run has finished; its assertions about that
+  run accumulate. It is also the only one that is opt-in
+  (`VALIDATE_GITHUB_WRITES=1`), because it dispatches a workflow.
 - **`cmd/validate-tunnel-harness` is a Go program.** It runs *inside* a container
   to drive create-instance from the node's side of the tunnel, which bash can't
   do from outside. It's a fixture the bash drives — the same category as

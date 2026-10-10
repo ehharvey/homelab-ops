@@ -21,9 +21,10 @@
 # own network/instances entirely within the default project, alongside
 # node-boots-and-trusts-bootstrap-cert.sh's "home-lan" network, which it reuses read-only.
 #
-# Requires a real, bootable base IncusOS raw image — like #5, point
-# INCUSOS_BASE_IMAGE at a local copy; the node-boot-dependent sections are
-# skipped with a clear message if it's unset.
+# Requires a real, bootable base IncusOS raw image — like #5. `make
+# incusos-base` caches the pinned one, used when INCUSOS_BASE_IMAGE is unset
+# (#296); export the variable to use another. The node-boot-dependent sections
+# are skipped with a clear message if no image is usable.
 #
 # The last two checks (Incus reachable over the tunnel, and create-instance
 # over it) are the ones that prove this file's headline claim, and both were
@@ -117,6 +118,7 @@ VALIDATE_NEEDS="incus go git python3 jq pinned-base-images [flasher-tool] [INCUS
 VALIDATE_DURATION="~13m"
 
 validate_parse_args "$@"
+default_incusos_base_image
 WORK_DIR="$(mktemp -d)"
 # Overridable so this can run somewhere other than the devcontainer — notably
 # on the Incus host itself, where Incus is a local unix socket and no remote
@@ -572,10 +574,9 @@ _vm_checks=(
   "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
 )
 if ! have_env_file INCUSOS_BASE_IMAGE; then
-  # Operator-supplied image absent: says nothing about the tunnel.
+  # Base image absent: says nothing about the tunnel.
   for _desc in "${_vm_checks[@]}"; do
-    skip_check "$_desc" base-image \
-      "INCUSOS_BASE_IMAGE ${INCUSOS_BASE_IMAGE:+=$INCUSOS_BASE_IMAGE }not usable"
+    skip_check "$_desc" base-image "$(base_image_skip_reason)"
   done
 elif [ -z "$NODE_TUNNEL_IP" ]; then
   # Distinct from the case above: this isn't a missing prerequisite, it's a
