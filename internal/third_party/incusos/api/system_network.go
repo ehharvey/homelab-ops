@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ 9a69d28bd15a7290106a3eefffe15c906390d47c
+// Vendored from github.com/lxc/incus-os @ 3f2d738c4ded6af5840502a1cde3e19427d8ef3d
 // (incus-osd/api/system_network.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Unmodified.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
@@ -39,6 +39,11 @@ type SystemNetworkConfig struct {
 	// If defined, automatically roll back the new network changes after the
 	// specified timeout has elapsed unless those changes are confirmed before then.
 	ConfirmationTimeout string `json:"confirmation_timeout,omitempty" yaml:"confirmation_timeout,omitempty"`
+
+	// If defined and no confirmation timeout provided, automatically roll
+	// back the new network changes after the specified timeout has elapsed unless those
+	// changes are confirmed before then.
+	DefaultConfirmationTimeout string `json:"default_confirmation_timeout,omitempty" yaml:"default_confirmation_timeout,omitempty"`
 
 	DNS   *SystemNetworkDNS   `json:"dns,omitempty"   yaml:"dns,omitempty"`
 	Time  *SystemNetworkTime  `json:"time,omitempty"  yaml:"time,omitempty"`
