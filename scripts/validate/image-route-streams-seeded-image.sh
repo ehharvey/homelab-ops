@@ -11,8 +11,10 @@
 # one that carries flasher-tool (see Dockerfile), so this also exercises
 # flasher-tool running inside the distroless container end-to-end.
 #
-# The image checks need a real base IncusOS raw image: point INCUSOS_BASE_IMAGE
-# at a local copy. Those checks skip with a clear message if it's unset/missing
+# The image checks need a real base IncusOS raw image. `make incusos-base`
+# fetches and caches the pinned one, which is used when INCUSOS_BASE_IMAGE is
+# unset (#296); export the variable to use another. Those checks skip with a
+# clear message if no image is usable
 # (same convention as node-boots-and-trusts-bootstrap-cert.sh). A real IncusOS image injects the
 # seed in place at a fixed offset, so the output is the SAME size as the base —
 # this asserts that equality plus the presence of the seeded MAC in the output
@@ -40,6 +42,7 @@ VALIDATE_NEEDS="docker-compose curl jq go openssl [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~1m"
 
 validate_parse_args "$@"
+default_incusos_base_image
 cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"
@@ -83,10 +86,8 @@ services:
 EOF
 
 BASE_IMAGE_READY=0
-if [ -z "${INCUSOS_BASE_IMAGE:-}" ]; then
-  echo "NOTE: INCUSOS_BASE_IMAGE unset — image-generation checks will be skipped."
-elif [ ! -f "${INCUSOS_BASE_IMAGE}" ]; then
-  echo "NOTE: INCUSOS_BASE_IMAGE=${INCUSOS_BASE_IMAGE} not found — image-generation checks will be skipped."
+if ! have_env_file INCUSOS_BASE_IMAGE; then
+  echo "NOTE: $(base_image_skip_reason). Image-generation checks will be skipped."
 else
   BASE_IMAGE_READY=1
   BASE_IMAGE_ABS="$(cd "$(dirname "$INCUSOS_BASE_IMAGE")" && pwd)/$(basename "$INCUSOS_BASE_IMAGE")"
@@ -153,7 +154,7 @@ if [ "$BASE_IMAGE_READY" -ne 1 ]; then
     "downloaded .img carries devnode0's seeded MAC" \
     "the base image does not carry that MAC" \
     "unknown instance 404s"; do
-    skip_check "$_desc" base-image "INCUSOS_BASE_IMAGE not usable"
+    skip_check "$_desc" base-image "$(base_image_skip_reason)"
   done
 else
   out_img="$WORK_DIR/devnode0.img"
