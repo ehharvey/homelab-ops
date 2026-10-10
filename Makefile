@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware
+.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -77,7 +77,8 @@ wt-gc:
 # exists — there isn't one yet, so today this only runs by hand. Same
 # entry-point shape as `make lint-docs`, following its precedent. --strict makes
 # an unmet prerequisite a failure, except the 3.2 GB base image no hosted runner
-# can supply.
+# can supply. Where `make incusos-base` has cached the pinned image, those
+# checks run instead of skipping.
 #
 # Exit 3 ("some checks skipped") is success here: under --strict the only skips
 # that survive are ones this command explicitly blessed, so treating 3 as a
@@ -88,10 +89,20 @@ validate:
 	@./scripts/validate/run.sh --group none,compose --strict --allow-skip base-image; \
 	rc=$$?; [ $$rc -eq 0 ] || [ $$rc -eq 3 ] || exit $$rc
 
-# Needs the Incus remote, home-lan, INCUSOS_BASE_IMAGE and flasher-tool.
-# Serial by necessity: these share the home-lan bridge.
+# Needs the Incus remote, home-lan, flasher-tool and the IncusOS base image.
+# INCUSOS_BASE_IMAGE defaults to the pinned version `make incusos-base` cached;
+# export it to use another image. Serial by necessity: these share the home-lan
+# bridge.
 validate-hardware:
 	./scripts/validate/run.sh --group incus,incus-vm
+
+# Fetch, verify and cache the IncusOS base image pinned in
+# scripts/incusos-base.version (~610 MB down, 3.2 GB on disk) under the main
+# checkout's bootstrap-output/incusos/, shared by every worktree. A no-op once
+# cached. Prints the `export INCUSOS_BASE_IMAGE=...` line on stdout; the
+# validate scripts find the pinned image without it (#296).
+incusos-base:
+	@./scripts/fetch-incusos-base.sh
 
 vendor-incusos:
 	./scripts/vendor-incusos.sh

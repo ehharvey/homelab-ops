@@ -4,6 +4,18 @@ name: Bump incus-os submodule
 # (and re-vendoring internal/third_party/incusos) when one is found. The submodule is the
 # git-tracked pointer to the exact upstream commit our seed structs match
 # (see Development Conventions § Vendoring upstream IncusOS seed structs).
+#
+# A second, independent job (bump-base-pin, #296) moves the IncusOS base-image
+# pin, scripts/incusos-base.version, to the CDN's newest `stable` build. The pin
+# is not the submodule tag (not every tag gets a CDN build), so it gets its own
+# branch and PR, runs whether or not there is a new tag, and never touches the
+# submodule PR's diff.
+#
+# Both PRs are opened with GITHUB_TOKEN, and a GITHUB_TOKEN push triggers no
+# workflows: they arrive without the required checks (build-test, lint,
+# docker-smoke, one-commit) and stay blocked until the operator pushes to the
+# branch. For the pin that wait is accepted: refreshing a pinned image is meant
+# to be a conscious act (docs/Decisions.md §21). See scripts/validate/README.md.
 
 on:
   schedule:
@@ -79,4 +91,47 @@ jobs:
             before merging — `go build`/`go test` passed in this workflow,
             but that only catches breakage, not silent field-mapping drift
             in `internal/seed`.
+          labels: dependencies
+
+  bump-base-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # The one resolution path: the newest version the S/MIME-verified
+      # os/index.sjson lists on the `stable` channel.
+      - name: Resolve the newest stable IncusOS on the CDN
+        id: pin
+        run: |
+          latest=$(./scripts/fetch-incusos-base.sh --latest-stable)
+          current=$(tr -d '[:space:]' < scripts/incusos-base.version)
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$latest" != "$current" ]; then
+            echo "$latest" > scripts/incusos-base.version
+          fi
+
+      - uses: peter-evans/create-pull-request@v8.1.1
+        if: steps.pin.outputs.latest != steps.pin.outputs.current
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/bump-incusos-base
+          delete-branch: true
+          add-paths: scripts/incusos-base.version
+          title: "Bump the IncusOS base image pin to ${{ steps.pin.outputs.latest }}"
+          commit-message: "Bump the IncusOS base image pin to ${{ steps.pin.outputs.latest }}"
+          body: |
+            Moves `scripts/incusos-base.version` from
+            `${{ steps.pin.outputs.current }}` to `${{ steps.pin.outputs.latest }}`,
+            the newest `stable` build in the verified
+            `https://images.linuxcontainers.org/os/index.sjson`.
+
+            This PR was opened with `GITHUB_TOKEN`, so no workflow ran on it and
+            its required checks are missing. Before merging, run
+            `make incusos-base` on this branch, re-run the validate scripts
+            that use the image, then push to the branch (an amend is enough)
+            so the checks run. After the merge, every checkout's `[base-image]`
+            checks skip until `make incusos-base` has cached the new version.
           labels: dependencies
