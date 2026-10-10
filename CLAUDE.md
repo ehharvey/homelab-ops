@@ -70,6 +70,7 @@ long multi-issue sessions were ~77% of the cost.
 
     make validate           # the unattended validate suite (~2.5m, needs Docker)
     make validate-hardware  # the Incus/VM subset (~30m, boots real VMs)
+    make incusos-base       # fetch + verify + cache the pinned IncusOS base image (once; ~610 MB)
 
 ## Conventions (see docs/Development Conventions.md for full detail/rationale)
 
@@ -144,7 +145,7 @@ and `background-poll-warns-on-config-diff` are visibly a pair proving the same
 behaviour on two code paths.
 
 `scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`, `worktree.sh`,
-`vendor-incusos.sh`, `ship.sh`, `lgtm.sh`, `auto-rebase.sh`.
+`vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `lgtm.sh`, `auto-rebase.sh`.
 
 They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
 prerequisite is a **SKIP with exit 3**, never a FAIL — "you didn't install a
