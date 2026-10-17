@@ -1290,10 +1290,10 @@ eth0 addresses: [...]            routes: [default via …, 10.200.0.0/24 via …
 ```
 
 So node0 has no route covering `10.100.0.0/24` and cannot originate or reply
-to overlay traffic — the TCP SYN-ACK has nowhere to go. Incus itself is bound
-correctly (`core.https_address: ":8443"`, and `wg0` carries the `management`
-role), so this is not the binding assumption `internal/seed/seed.go` flags as
-unverified; that assumption survives.
+to overlay traffic — the TCP SYN-ACK has nowhere to go. Incus's bind was not
+the cause here: at the time it listened on every address, and `wg0` carries
+the `management` role. (#178 later narrowed that bind to the LAN IP, which did
+break tunnel reachability until #315; §26 holds the current rule.)
 
 `internal/seed` renders the peer's `AllowedIPs` but nothing on
 `SystemNetworkWireguard.Routes`, which the vendored API does expose. `wg-quick`
@@ -1660,37 +1660,40 @@ This splits the remaining clustering work into two tiers of very different size,
 
 ### Tier A: make the existing claim true — a real one-member cluster (Phase 3, #178) — DONE
 
-What §25's `leaderelection` design and #101's agent already assume — one Incus API surface, reachable identically from wherever an agent runs — needs Incus actually clustered, even at one member. This turned out to be config, but not *quite* as small as the initial spike below predicted; a real boot caught what source-reading missed.
+What §25's `leaderelection` design and #101's agent already assume — one Incus API surface, reachable identically from wherever an agent runs — needs Incus actually clustered, even at one member. It's config only: two server-config keys and a `cluster` block in the seed's Incus preseed.
 
-**Spike (source-reading only).** IncusOS's `incus-osd` applies the Incus seed with no clustering-specific gate at all: `internal/applications.(*incus).Initialize` calls `incusSeed.Preseed` straight into `github.com/lxc/incus/v7/client`'s `ApplyServerPreseed` — the exact function `incus admin init --preseed` itself calls. Reading that function (`client/incus_server.go`):
-- It applies `config.Config` (server config, e.g. `core.https_address`) *before* it looks at `config.Cluster` — so setting `core.https_address` in our own preseed's `Config` map, not relying on `incus-osd`'s own post-init fallback (which runs *after* `Initialize`'s preseed call), is what makes the ordering work.
-- Becoming a one-member cluster is `config.Cluster != nil && config.Cluster.Enabled`, which calls `UpdateCluster(config.Cluster.ClusterPut, etag)` — **bootstrap**, not join: `ClusterAddress`/`ClusterCertificate`/the join token are join-only fields and stay empty. Only `Enabled: true` and `ServerName` are needed.
+**How the seed reaches Incus.** IncusOS's `incus-osd` applies the Incus seed with no clustering-specific gate at all: `internal/applications.(*incus).Initialize` calls `incusSeed.Preseed` straight into `github.com/lxc/incus/v7/client`'s `ApplyServerPreseed`, the exact function `incus admin init --preseed` itself calls. Reading that function (`client/incus_server.go`):
+- It applies `config.Config` (server config) in one `UpdateServer` call *before* it looks at `config.Cluster`. So the addresses go in our own preseed's `Config` map; `incus-osd`'s own `:8443` fallback runs only after the whole preseed call returns, and only when `core.https_address` is missing, so it's too late for the `cluster` block and never fires on a clustered node.
+- Becoming a one-member cluster is `config.Cluster != nil && config.Cluster.Enabled`, which calls `UpdateCluster(config.Cluster.ClusterPut, etag)`. That's **bootstrap**, not join: `ClusterAddress`/`ClusterCertificate`/the join token are join-only fields and stay empty. Only `Enabled: true` and `ServerName` are needed.
 
-**What the spike missed, and a real boot caught (CLAUDE.md's issue #5 lesson, exactly on cue).** Setting `core.https_address: ":8443"` — a wildcard bind, and the value every `scripts/validate/*.sh` script already dials — renders and applies fine (confirmed: it showed up correctly in `GET /1.0`'s `config`), but `UpdateCluster` then fails outright:
+**Two addresses, split (#315).** The API listens on every address; the member address advertised to future members is the instance's own static IP:
+- `core.https_address: ":8443"`. Incus has exactly one API listener, on `core.https_address` (`internal/server/endpoints/endpoints.go:237`). It has to answer on the LAN *and* on `wg0`'s overlay address, because the tunnel is the provisioning path (§23). A LAN-only bind leaves nothing listening on `10.100.0.2`.
+- `cluster.https_address: "<static_ip>:8443"`. A cluster member must advertise a concrete, routable address for future members to dial, and a wildcard names none. Incus enforces that in `clusterPutBootstrap` (`cmd/incusd/api_cluster.go:372-381`) only when `cluster.https_address` is **empty**: it returns early when one is set, so a wildcard `core.https_address` passes bootstrap. There's no wildcard check on `core.https_address` at config-update time either (`internal/server/node/config.go:177`).
+- One socket serves both. When a wildcard `core.https_address` covers `cluster.https_address` (`util.IsAddressCovered`, `internal/util/network.go:83-171`: an empty host or `::` covers every address), Incus opens no separate cluster listener and serves cluster traffic on the API listener (`endpoints.go:239-257`, `277`), so there's no "address already in use" on 8443.
 
-```
-Cannot use wildcard core.https_address "" for cluster.https_address. Please specify a new
-cluster.https_address or core.https_address
-```
+(The first shape bound `core.https_address` to the static IP alone and left `cluster.https_address` unset; see History.)
 
-Found by replaying the exact `PUT /1.0/cluster` call `ApplyServerPreseed` makes directly against a real booted node — the VM's console log carries no `incus-osd` application output at all (kernel/systemd text only), so the only way to see the real error was to reproduce the call by hand. A cluster member has to advertise a concrete, routable address for future members to dial; `:8443` names none. Fix: `core.https_address` is the *instance's own static IP*, not a wildcard — `internal/seed.Render` now requires `inst.StaticIP` to compute it.
+Rejected: `core.https_address: "<tunnel IP>:8443"` takes the full API off the LAN and ties the seed to the tunnel; routing the node's LAN address through `wg0` needs a route outside the overlay /24, which §24 says the seed's wireguard API can't express.
 
-**Consequence: clustering is conditional on a known static IP, not unconditional.** A DHCP-only `Instance` (no `static_ip`, a supported mode since Roadmap Phase 0 — `TestRenderDHCP` already covered it) has no address to advertise at seed-render time. Erroring in that case would have regressed a real, tested, intentional mode — so `Render` skips the `Config`/`Cluster` preseed blocks entirely when `StaticIP` isn't valid, leaving that node a bare daemon exactly as before this existed. In practice this rarely matters: every `Instance` IPAM actually assigns an address to (the normal path from Phase 2 on) has a `static_ip` already, which is when clustering applies.
+**Consequence: clustering is conditional on a known static IP, not unconditional.** A DHCP-only `Instance` (no `static_ip`, a supported mode since Roadmap Phase 0, covered by `TestRenderDHCP`) has no member address to advertise at seed-render time. Erroring in that case would regress a real, tested, intentional mode, so `Render` skips the `Config`/`Cluster` preseed blocks entirely when `StaticIP` isn't valid, leaving that node a bare daemon on `incus-osd`'s `:8443` fallback. In practice this rarely matters: every `Instance` IPAM actually assigns an address to (the normal path from Phase 2 on) has a `static_ip` already, which is when clustering applies.
 
-The seed change, final shape:
+The seed, final shape:
 
 ```yaml
 incus:
   preseed:
     config:
-      core.https_address: "<instance static_ip>:8443"
+      core.https_address: ":8443"                       # the API: every address, LAN and wg0
+      cluster.https_address: "<instance static_ip>:8443" # the member address advertised to future members
     cluster:
       server_name: <instance name>
       enabled: true
     certificates: [...]   # unchanged
 ```
 
-**Verified against a real boot**, not just source-reading: `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` (extended with two assertions) shows a freshly installed node reporting `environment.server_clustered: true` and exactly one entry in `GET /1.0/cluster/members`, 12/0/0.
+**Verified against a real boot**, not just source-reading (#315): `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` passes 16/0/0. A freshly installed node reports `environment.server_clustered: true`, and `GET /1.0`'s `config` carries both keys exactly as seeded, not normalised: `core.https_address` is `":8443"` and `cluster.https_address` is `"192.168.1.201:8443"`. `GET /1.0/cluster/members?recursion=1` has exactly one member, with `url` `https://192.168.1.201:8443`. `scripts/validate/node-tunnel-survives-nat-and-provisions.sh` reaches the same node's API over `wg0` (`10.100.0.2:8443`) and provisions through it, passing 44/0/0. Before this fix, its section 6 got `connection was refused` on that address.
+
+**§27's joiner seed is not covered.** Its incus.yaml (Phase 4, not built) still sets `core.https_address: "<static_ip>:8443"`, so a joiner would bind its LAN address only and be unreachable over its own tunnel, the bug #315 fixed here. Revisit it when §27's seed is built.
 
 **Scope stayed deliberately small.** One member is still Incus's whole scheduler decision (§17's "no placement field" reasoning is unaffected — `Target`/cluster groups still buy nothing with one member). No join token, no membership config, no networks/storage-pool parity work: all of that is Tier B.
 
@@ -1708,6 +1711,11 @@ What it needs, roughly in dependency order:
 - **Revisit `leaderelection`.** §25's `Designated` and the deferred ranked-over-Incus election are both node-scoped already and don't need rework to keep working across real members; N≥3 real Incus members are what would make automated (ranked) election worth its cost over `Designated`'s operator step, per §25's own trade-off.
 
 Tier B is filed as a tracking issue plus its workstreams, all `later` — nothing here blocks Phase 3.
+
+### History
+
+- **2026-09-21, #178: concrete `core.https_address`, wildcard rejected.** The source-reading spike planned `core.https_address: ":8443"` (a wildcard bind, and the value every `scripts/validate/*.sh` script dials) with `cluster.https_address` unset. A real boot caught the problem: the config applied fine (it showed in `GET /1.0`'s `config`), but `UpdateCluster` failed with `Cannot use wildcard core.https_address "" for cluster.https_address. Please specify a new cluster.https_address or core.https_address`. That was found by replaying `ApplyServerPreseed`'s `PUT /1.0/cluster` by hand against the booted node, since the VM console log carries no `incus-osd` application output. The fix then bound `core.https_address` to the instance's static IP. The conclusion drawn, "Incus rejects a wildcard bind outright", was too broad: the `""` in that error is the empty *cluster* address the `%q` prints, and the check runs only when `cluster.https_address` is empty. `node-boots-and-trusts-bootstrap-cert.sh` passed 12/0/0.
+- **2026-10-17, #315: split the API bind from the member address.** Binding the API to the LAN IP alone left nothing listening on `wg0`'s `10.100.0.2`, so `node-tunnel-survives-nat-and-provisions.sh` section 6 failed with `connection was refused` (found while verifying #268). The seed now sets `core.https_address: ":8443"` plus a concrete `cluster.https_address`, per the body above.
 
 ## 27. Pivot to a real 3-member cluster; the agent joins members; AppManager's app reconciliation paused (2026-09-28)
 

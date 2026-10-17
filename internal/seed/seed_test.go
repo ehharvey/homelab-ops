@@ -217,17 +217,21 @@ func TestRenderIncusPreseedBootstrapsOneMemberCluster(t *testing.T) {
 		t.Fatalf("Incus.Preseed = nil, want non-nil")
 	}
 
-	// core.https_address must be the instance's own concrete address, not a
-	// wildcard bind: confirmed against a real boot, Incus rejects clustering
-	// outright ("Cannot use wildcard core.https_address... for
-	// cluster.https_address") since a member has to advertise a real address
-	// for others to dial. It also must be set via Config, not left to
-	// incus-osd's own post-init fallback: ApplyServerPreseed applies Config
-	// before it looks at Cluster, so the address has to already be there by
-	// the time UpdateCluster runs. (docs/Decisions.md §26.)
-	wantAddr := "192.168.1.201:" + incusHTTPSPort
-	if got := b.Incus.Preseed.Config["core.https_address"]; got != wantAddr {
-		t.Errorf(`Preseed.Config["core.https_address"] = %q, want %q`, got, wantAddr)
+	// The API listens on every address (LAN and wg0's overlay address, #315),
+	// while the member address advertised to future members is the
+	// instance's own concrete static IP. Incus only rejects a wildcard
+	// core.https_address at bootstrap when cluster.https_address is empty.
+	// Both are set via Config, not left to incus-osd's own post-init
+	// fallback: ApplyServerPreseed applies Config before it looks at
+	// Cluster, so they have to already be there by the time UpdateCluster
+	// runs. (docs/Decisions.md §26.)
+	for key, want := range map[string]string{
+		"core.https_address":    ":" + incusHTTPSPort,
+		"cluster.https_address": "192.168.1.201:" + incusHTTPSPort,
+	} {
+		if got := b.Incus.Preseed.Config[key]; got != want {
+			t.Errorf("Preseed.Config[%q] = %q, want %q", key, got, want)
+		}
 	}
 
 	cluster := b.Incus.Preseed.Cluster
@@ -268,8 +272,10 @@ func TestRenderDHCPSkipsClustering(t *testing.T) {
 	// same bare-daemon behavior as before clustering existed — rather than
 	// erroring: DHCP is a supported mode (TestRenderDHCP), and erroring here
 	// would regress it.
-	if _, ok := b.Incus.Preseed.Config["core.https_address"]; ok {
-		t.Errorf(`Preseed.Config["core.https_address"] = %q, want unset (no static_ip to advertise)`, b.Incus.Preseed.Config["core.https_address"])
+	for _, key := range []string{"core.https_address", "cluster.https_address"} {
+		if got, ok := b.Incus.Preseed.Config[key]; ok {
+			t.Errorf("Preseed.Config[%q] = %q, want unset (no static_ip to advertise)", key, got)
+		}
 	}
 	if b.Incus.Preseed.Cluster != nil {
 		t.Errorf("Preseed.Cluster = %+v, want nil (no static_ip to advertise)", b.Incus.Preseed.Cluster)
@@ -498,7 +504,7 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 	}
 	for _, want := range []string{
 		"apply_defaults:", "preseed:", "certificates:", "type: client",
-		"core.https_address: 192.168.1.201:8443", "cluster:", "server_name: node0", "enabled: true",
+		"core.https_address: :8443", "cluster.https_address: 192.168.1.201:8443", "cluster:", "server_name: node0", "enabled: true",
 		"profiles:", "name: incus-socket", "project: default", "type: proxy", "bind: instance",
 		"listen: unix:/dev/incus-host.sock", "connect: unix:/var/lib/incus/unix.socket",
 	} {
