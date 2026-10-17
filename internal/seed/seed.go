@@ -186,15 +186,14 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 		applications = append(applications, incusseed.Application{Name: app})
 	}
 
-	// Clustering (see renderIncusPreseed) needs a concrete address to
-	// advertise to future members — Incus rejects a wildcard bind outright
-	// ("Cannot use wildcard core.https_address \"\" for cluster.https_address",
-	// confirmed against a real boot, docs/Decisions.md §26). A DHCP-only
-	// Instance (no static_ip) has no such address at seed-render time, so it
-	// keeps today's behavior — a bare, unclustered daemon — rather than
-	// erroring: DHCP is a supported mode (Roadmap Phase 0), and every
-	// Instance IPAM actually assigns (the normal path from Phase 2 on) has a
-	// static_ip already, which is when clustering actually applies.
+	// Clustering (see renderIncusPreseed) needs a concrete member address
+	// to advertise to future members (cluster.https_address). A DHCP-only
+	// Instance (no static_ip) has no such address at seed-render time, so
+	// it keeps today's behavior — a bare, unclustered daemon on incus-osd's
+	// ":8443" fallback — rather than erroring: DHCP is a supported mode
+	// (Roadmap Phase 0), and every Instance IPAM actually assigns (the
+	// normal path from Phase 2 on) has a static_ip already, which is when
+	// clustering actually applies (docs/Decisions.md §26).
 	var clusterHTTPSAddress string
 	if inst.StaticIP.IsValid() {
 		clusterHTTPSAddress = fmt.Sprintf("%s:%s", inst.StaticIP, incusHTTPSPort)
@@ -287,22 +286,25 @@ func incusSocketProfile() lxcapi.InitProfileProjectPost {
 // ClusterAddress/ClusterCertificate/join token, which are join-only fields
 // (docs/Decisions.md §26 Tier A; growing past one member is Tier B).
 //
-// httpsAddress, when non-empty, must be a concrete <ip>:port, never a
-// wildcard bind like ":8443" — confirmed against a real boot
-// (docs/Decisions.md §26): Incus rejects wildcard-bind clustering outright
-// ("Cannot use wildcard core.https_address \"\" for cluster.https_address"),
-// since a cluster member has to advertise a real address for others to dial,
-// and a wildcard names none. Setting it explicitly, rather than relying on
-// incus-osd's own post-init fallback to the same port, is also what makes
-// the Cluster block possible at all: ApplyServerPreseed applies Config
-// before it looks at Cluster, so core.https_address must already be set by
-// the time the Cluster block runs — incus-osd's fallback runs only after the
-// whole preseed call returns, too late.
+// clusterAddress, when non-empty, is the member address (a concrete
+// <ip>:port) advertised to future members as cluster.https_address. The API
+// itself listens on every address (core.https_address ":8443"), so it
+// answers on the LAN and on wg0's overlay address alike — the tunnel is the
+// provisioning path (docs/Decisions.md §23), and binding the LAN address
+// only left nothing listening on wg0 (#315). Incus's wildcard check in
+// cluster bootstrap fires only when cluster.https_address is empty, and a
+// wildcard core.https_address that covers cluster.https_address shares its
+// one listener rather than opening a second (docs/Decisions.md §26).
+// Both keys go in Config, not left to incus-osd's own post-init fallback:
+// ApplyServerPreseed applies Config before it looks at Cluster, so they
+// must already be set by the time the Cluster block runs — incus-osd's
+// fallback runs only after the whole preseed call returns, too late.
 //
-// httpsAddress empty means no address is knowable at render time (a
-// DHCP-only Instance, see Render) — clustering is skipped entirely and the
-// node comes up as a bare daemon, exactly as before this existed.
-func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte, httpsAddress string) (incusseed.Incus, error) {
+// clusterAddress empty means no address is knowable at render time (a
+// DHCP-only Instance, see Render) — clustering is skipped entirely, no
+// Config is seeded, and the node comes up as a bare daemon, exactly as
+// before this existed.
+func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte, clusterAddress string) (incusseed.Incus, error) {
 	certs := []lxcapi.CertificatesPost{}
 
 	clientEntry, err := certEntry(certName, clientCertPEM)
@@ -324,8 +326,11 @@ func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte,
 		Profiles:     []lxcapi.InitProfileProjectPost{incusSocketProfile()},
 	}
 	var cluster *lxcapi.InitClusterPreseed
-	if httpsAddress != "" {
-		local.Config = lxcapi.ConfigMap{"core.https_address": httpsAddress}
+	if clusterAddress != "" {
+		local.Config = lxcapi.ConfigMap{
+			"core.https_address":    ":" + incusHTTPSPort,
+			"cluster.https_address": clusterAddress,
+		}
 		cluster = &lxcapi.InitClusterPreseed{
 			ClusterPut: lxcapi.ClusterPut{
 				Cluster: lxcapi.Cluster{
