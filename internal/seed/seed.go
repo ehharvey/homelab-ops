@@ -221,7 +221,7 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 	// clustering actually applies (docs/Decisions.md §26).
 	var clusterHTTPSAddress string
 	if inst.StaticIP.IsValid() {
-		clusterHTTPSAddress = fmt.Sprintf("%s:%s", inst.StaticIP, incusHTTPSPort)
+		clusterHTTPSAddress = fmt.Sprintf("%s:%s", inst.StaticIP, IncusHTTPSPort)
 	}
 
 	incusPreseed, err := renderIncusPreseed(inst.Name, clientCertPEM, bootstrapCertPEM, clusterHTTPSAddress)
@@ -237,10 +237,10 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 	}, nil
 }
 
-// incusHTTPSPort is the port Incus listens on inside every node — the same
+// IncusHTTPSPort is the port Incus listens on inside every node — the same
 // port every scripts/validate/*.sh script already dials
 // (https://<ip>:8443).
-const incusHTTPSPort = "8443"
+const IncusHTTPSPort = "8443"
 
 // IncusSocketProfile names the profile preseeded onto every node so that an
 // instance can reach its own host's Incus API — the app-manager agent's only
@@ -353,7 +353,7 @@ func renderIncusPreseed(certName string, clientCertPEM, bootstrapCertPEM []byte,
 	var cluster *lxcapi.InitClusterPreseed
 	if clusterAddress != "" {
 		local.Config = lxcapi.ConfigMap{
-			"core.https_address":    ":" + incusHTTPSPort,
+			"core.https_address":    ":" + IncusHTTPSPort,
 			"cluster.https_address": clusterAddress,
 		}
 		cluster = &lxcapi.InitClusterPreseed{

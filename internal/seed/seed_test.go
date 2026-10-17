@@ -226,8 +226,8 @@ func TestRenderIncusPreseedBootstrapsOneMemberCluster(t *testing.T) {
 	// Cluster, so they have to already be there by the time UpdateCluster
 	// runs. (docs/Decisions.md §26.)
 	for key, want := range map[string]string{
-		"core.https_address":    ":" + incusHTTPSPort,
-		"cluster.https_address": "192.168.1.201:" + incusHTTPSPort,
+		"core.https_address":    ":" + IncusHTTPSPort,
+		"cluster.https_address": "192.168.1.201:" + IncusHTTPSPort,
 	} {
 		if got := b.Incus.Preseed.Config[key]; got != want {
 			t.Errorf("Preseed.Config[%q] = %q, want %q", key, got, want)

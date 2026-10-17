@@ -115,6 +115,10 @@ type fakeTunnelSource struct {
 	endpoint  string
 	operators []wireguard.OperatorPeer
 
+	// dial, if set, serves DialContext — e.g. a nodeprovisiontest.Server's
+	// Dial, standing in for the tunnel to a node.
+	dial func(ctx context.Context, network, address string) (net.Conn, error)
+
 	upsertErr  error
 	upsertCall []struct {
 		pub      wireguard.PublicKey
@@ -135,7 +139,10 @@ func (f *fakeTunnelSource) UpsertPeer(pub wireguard.PublicKey, tunnelIP netip.Ad
 	return f.upsertErr
 }
 
-func (f *fakeTunnelSource) DialContext(context.Context, string, string) (net.Conn, error) {
+func (f *fakeTunnelSource) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if f.dial != nil {
+		return f.dial(ctx, network, address)
+	}
 	return nil, errors.New("fakeTunnelSource: DialContext not implemented")
 }
 

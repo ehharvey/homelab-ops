@@ -272,6 +272,126 @@ base_image_skip_reason() {
 }
 
 # ---------------------------------------------------------------------------
+# The agent image, built from this tree
+# ---------------------------------------------------------------------------
+#
+# CI publishes ghcr.io/ehharvey/homelab-ops/agent:latest from main only, so a
+# script that deploys :latest proves main's agent, not the branch under test.
+# #100 hit exactly that: its agent waits for incus-socket's late-created
+# socket, main's didn't, and both VM scripts failed on main's agent. These
+# helpers put the tree's agent into a node's own image store instead, and the
+# App names it by a local alias (no image.server), which Incus resolves there.
+
+# AGENT_IMAGE_ALIAS — the alias the helpers below import the image under.
+AGENT_IMAGE_ALIAS="homelab-ops-agent-validate"
+
+# build_agent_incus_image <root_dir> <out_dir> — builds Dockerfile.agent and
+# repacks it as the split image Incus's own OCI pull uploads (the incus
+# client's oci_images.go): <out_dir>/agent-meta.tar.gz holding metadata.yaml
+# and a runtime-spec config.json, and <out_dir>/agent-rootfs.tar.gz. Incus
+# reads only the spec's process args, env, cwd and user; the image property
+# type=oci, which import_agent_incus_image sets, is what makes it start an
+# application container (oci.entrypoint, volatile.container.oci).
+build_agent_incus_image() {
+	local root="$1" out="$2" tag="homelab-ops-agent:validate-$$" cid arch
+	mkdir -p "$out/agent-meta" || return 1
+	if ! docker build -q -f "$root/Dockerfile.agent" -t "$tag" "$root" >/dev/null 2>&1; then
+		fail_why "docker build" "Dockerfile.agent failed to build"
+		return 1
+	fi
+	# The image's USER isn't mapped: distroless/static runs as root, and a
+	# change there should fail here rather than run as the wrong user.
+	if ! docker image inspect "$tag" | jq -e '.[0].Config.User | . == "" or . == "0" or . == "root"' >/dev/null; then
+		fail_why "config.json" "image sets a non-root USER; map it into process.user"
+		return 1
+	fi
+	docker image inspect "$tag" | jq '.[0].Config | {
+		ociVersion: "1.0.2",
+		process: {
+			args: ((.Entrypoint // []) + (.Cmd // [])),
+			env: (.Env // []),
+			cwd: (if (.WorkingDir // "") == "" then "/" else .WorkingDir end),
+			user: {uid: 0, gid: 0}
+		},
+		root: {path: "rootfs"}
+	}' >"$out/agent-meta/config.json" || return 1
+	case "$(docker image inspect -f '{{.Architecture}}' "$tag")" in
+	amd64) arch=x86_64 ;;
+	arm64) arch=aarch64 ;;
+	*) arch="$(docker image inspect -f '{{.Architecture}}' "$tag")" ;;
+	esac
+	printf '{"architecture":"%s","creation_date":%s}\n' "$arch" "$(date +%s)" >"$out/agent-meta/metadata.yaml"
+	tar -czf "$out/agent-meta.tar.gz" -C "$out/agent-meta" config.json metadata.yaml || return 1
+	cid=$(docker create "$tag") || return 1
+	docker export "$cid" | gzip >"$out/agent-rootfs.tar.gz"
+	local rc=$?
+	docker rm "$cid" >/dev/null 2>&1
+	docker image rm "$tag" >/dev/null 2>&1
+	return "$rc"
+}
+
+# import_agent_incus_image <remote> <project> <probe> <node_ip> <dir> —
+# pushes build_agent_incus_image's tarballs into <probe>, an Alpine instance
+# on the node's LAN holding the break-glass cert at /root/client.{crt,key},
+# and from there imports them into the node as $AGENT_IMAGE_ALIAS, marked
+# type=oci. It goes through the incus CLI rather than a curl multipart POST
+# to /1.0/images: against a real Incus the latter's import never landed, with
+# no error the operation kept long enough to read (#100).
+import_agent_incus_image() {
+	local remote="$1" project="$2" probe="$3" ip="$4" dir="$5" f out
+	for f in agent-meta.tar.gz agent-rootfs.tar.gz; do
+		if ! incus file push --project "$project" "$dir/$f" "$remote:$probe/root/$f" >/dev/null 2>&1; then
+			fail_why "push" "$f into $probe"
+			return 1
+		fi
+	done
+	if ! out=$(incus exec --project "$project" "$remote:$probe" -- sh -c "
+		set -e
+		command -v incus >/dev/null || apk add --no-cache incus-client >/dev/null
+		mkdir -p /root/.config/incus
+		cp /root/client.crt /root/client.key /root/.config/incus/
+		incus remote list -f csv | grep -q '^agent-import' ||
+			incus remote add agent-import https://$ip:8443 --accept-certificate >/dev/null
+		incus image import /root/agent-meta.tar.gz /root/agent-rootfs.tar.gz agent-import: --alias $AGENT_IMAGE_ALIAS >/dev/null
+		incus image set-property agent-import:$AGENT_IMAGE_ALIAS type=oci
+	" 2>&1); then
+		fail_why "image import" "$out"
+		return 1
+	fi
+}
+
+# check_agent_registered <remote> <project> <probe> <node_ip> <instance> —
+# records whether the node's agent <instance> runs with the incus-socket
+# profile and the app tag deploy-agent set, and has published its
+# user.homelab-ops.agent.* registry keys. Running alone would pass with a
+# container whose agent never reached Incus; those keys can only come from
+# the agent itself, through incus-socket, after finding its own instance by
+# that tag. Read with the break-glass cert over the LAN from <probe>, as for
+# import_agent_incus_image, polling up to two minutes for the keys. On a
+# failure it attaches the agent's console tail, which is what says why an
+# agent stopped or never reached Incus; the instance JSON alone cannot.
+check_agent_registered() {
+	local remote="$1" project="$2" probe="$3" ip="$4" instance="$5" json="" console
+	local name="$instance runs with incus-socket and publishes its registry keys through it"
+	for _ in $(seq 1 24); do
+		json=$(incus exec --project "$project" "$remote:$probe" -- \
+			curl --cert /root/client.crt --key /root/client.key -k -s "https://$ip:8443/1.0/instances/$instance" 2>/dev/null)
+		if jq -e '[.metadata.config // {} | keys[] | select(startswith("user.homelab-ops.agent."))] | length > 0' <<<"$json" >/dev/null 2>&1; then
+			break
+		fi
+		sleep 5
+	done
+	if jq -e '.metadata.status == "Running" and (.metadata.profiles | index("incus-socket")) != null and .metadata.config["user.homelab-ops.app"] == "agent" and ([.metadata.config | keys[] | select(startswith("user.homelab-ops.agent."))] | length > 0)' <<<"$json" >/dev/null 2>&1; then
+		record_pass "$name"
+		return
+	fi
+	console=$(incus exec --project "$project" "$remote:$probe" -- \
+		curl --cert /root/client.crt --key /root/client.key -k -s "https://$ip:8443/1.0/instances/$instance/console" 2>/dev/null | tail -20)
+	record_fail "$name" \
+		"instance: $(jq -c '{status: .metadata.status, profiles: .metadata.profiles, config: .metadata.config}' <<<"$json" 2>/dev/null || echo "$json"); console tail: $(tr '\n' '|' <<<"$console")"
+}
+
+# ---------------------------------------------------------------------------
 # Arg parsing and summary
 # ---------------------------------------------------------------------------
 

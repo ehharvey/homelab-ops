@@ -119,9 +119,9 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     image without it would fail to start. Proven on a real booted node: a
     container there reaches the node's own Incus through the profile: DONE;
     see #99
-  - [ ] Deploy the agent's first instance — the web app route, plus the
+  - [x] Deploy the agent's first instance — the web app route, plus the
     `bootstrap deploy-agent` CLI path, which needs no web app and is the
-    recovery path if every agent is lost — see #100
+    recovery path if every agent is lost: DONE; see #100
   - [x] `cmd/agent` binary tying the `Elector` and the designation's git
     parsing to a loop; every node runs the same binary and the `Elector`
     decides which is active each tick. Its first loop is cluster membership
