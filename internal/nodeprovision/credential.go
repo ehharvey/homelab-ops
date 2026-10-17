@@ -1,13 +1,18 @@
 // Package nodeprovision provides the mechanism the web app uses to
 // authenticate directly against a node's Incus API over its WireGuard
-// tunnel and perform a one-time instance-creation call — the exact
-// mechanism #92's `bootstrap deploy-agent` will use for real to deploy the
-// app-manager agent; #91 only proves the mechanism against a throwaway
-// placeholder. It never uses the deployment's break-glass cert
+// tunnel and perform a one-time instance-creation call — how its
+// POST /instances/{name}/deploy-agent route puts the first app-manager
+// agent on a node (#100). It never uses the deployment's break-glass cert
 // (internal/seed's clientCertPEM), since the web app doesn't hold that
 // cert's private key (docs/Decisions.md §4) — instead it mints its own
-// narrow, one-shot credential per instance and revokes it immediately
-// after use.
+// narrow, one-shot credential per instance and CreateInstance revokes it
+// immediately after use.
+//
+// `bootstrap deploy-agent`, the recovery path that needs no web app
+// (§27), reuses the same calls over the LAN with the operator's
+// break-glass cert, through CreateInstanceNoRevoke: that cert is a standing
+// credential and must survive the call. InstanceNames is read-only, so
+// either caller can check for an existing agent before creating one.
 package nodeprovision
 
 import (

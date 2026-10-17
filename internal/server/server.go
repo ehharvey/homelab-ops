@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/configdiff"
 	"github.com/ehharvey/homelab-ops/internal/ipam"
@@ -89,7 +90,10 @@ type Service struct {
 	builder ImageBuilder
 	tunnels TunnelSource
 	creds   nodeprovision.CredentialStore
-	mu      sync.Mutex
+	// agentRepo is the config repo a deployed agent syncs from; see
+	// SetAgentRepo.
+	agentRepo agentdeploy.Repo
+	mu        sync.Mutex
 }
 
 // NewService builds a Service over syncer and store, either of which may be
@@ -99,6 +103,15 @@ type Service struct {
 // peer reconciliation in SyncOnce).
 func NewService(syncer Syncer, store Store, certs CertSource, builder ImageBuilder, tunnels TunnelSource, creds nodeprovision.CredentialStore) *Service {
 	return &Service{syncer: syncer, store: store, certs: certs, builder: builder, tunnels: tunnels, creds: creds}
+}
+
+// SetAgentRepo sets the config repo that agents deployed through
+// POST /instances/{name}/deploy-agent sync from — the same repo this web app
+// syncs from. That route reads it per request, so it may be set before or
+// after NewFromService, but before serving; left unset, the route reports
+// itself unconfigured.
+func (s *Service) SetAgentRepo(repo agentdeploy.Repo) {
+	s.agentRepo = repo
 }
 
 // Sync runs one serialized sync cycle at time now; see SyncOnce for the
@@ -165,6 +178,7 @@ func NewFromService(svc *Service) http.Handler {
 	mux.HandleFunc("GET /instances", handleInstances(svc.store))
 	mux.HandleFunc("POST /instances/{name}/seed", handleInstanceSeed(svc.store, svc.certs, svc.tunnels, svc.creds))
 	mux.HandleFunc("GET /instances/{name}/image", handleInstanceImage(svc.store, svc.certs, svc.builder, svc.tunnels, svc.creds))
+	mux.HandleFunc("POST /instances/{name}/deploy-agent", handleInstanceDeployAgent(svc.store, svc.tunnels, svc.creds, &svc.agentRepo))
 	return mux
 }
 
@@ -512,6 +526,11 @@ func handleInstances(store Store) http.HandlerFunc {
 // error can still produce a clean error response instead of a partially
 // written body followed by a superfluous WriteHeader call.
 func writeJSON(w http.ResponseWriter, v any) {
+	writeJSONStatus(w, http.StatusOK, v)
+}
+
+// writeJSONStatus is writeJSON with an explicit success status, e.g. 201.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
 		log.Printf("encode response: %v", err)
@@ -519,5 +538,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
 }

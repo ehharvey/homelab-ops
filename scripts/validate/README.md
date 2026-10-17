@@ -347,7 +347,7 @@ Two deliberate irregularities, both documented in the scripts themselves:
   run accumulate. It is also the only one that is opt-in
   (`VALIDATE_GITHUB_WRITES=1`), because it dispatches a workflow.
 - **`cmd/validate-tunnel-harness` is a Go program.** It runs *inside* a container
-  to drive create-instance from the node's side of the tunnel, which bash can't
+  to probe the node's Incus over a WireGuard tunnel of its own, which bash can't
   do from outside. It's a fixture the bash drives — the same category as
   `bootstrap` or `flasher-tool` — not a test. Go's layout requires it live under
   `cmd/`, so the suite is all-bash with one Go fixture binary.

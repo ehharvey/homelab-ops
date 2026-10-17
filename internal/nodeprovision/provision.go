@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"path"
 	"time"
 
 	lxcapi "github.com/lxc/incus/v7/shared/api"
@@ -41,16 +43,30 @@ type DialFunc func(ctx context.Context, network, address string) (net.Conn, erro
 // same "small subpackage, not the client's dependency tree" precedent
 // internal/seed already uses for incus.yaml.
 func CreateInstance(ctx context.Context, dial DialFunc, addr string, certPEM, keyPEM []byte, req lxcapi.InstancesPost) error {
+	return create(ctx, dial, addr, certPEM, keyPEM, req, true)
+}
+
+// CreateInstanceNoRevoke behaves like CreateInstance but never revokes
+// certPEM afterward — for callers authenticating with a standing
+// credential (the break-glass cert) rather than a one-shot minted one that
+// must not outlive a single call.
+func CreateInstanceNoRevoke(ctx context.Context, dial DialFunc, addr string, certPEM, keyPEM []byte, req lxcapi.InstancesPost) error {
+	return create(ctx, dial, addr, certPEM, keyPEM, req, false)
+}
+
+func create(ctx context.Context, dial DialFunc, addr string, certPEM, keyPEM []byte, req lxcapi.InstancesPost, revoke bool) error {
 	client, err := newHTTPClient(dial, certPEM, keyPEM)
 	if err != nil {
 		return fmt.Errorf("build client: %w", err)
 	}
 
-	fingerprint, err := cert.Fingerprint(certPEM)
-	if err != nil {
-		return fmt.Errorf("compute bootstrap cert fingerprint: %w", err)
+	if revoke {
+		fingerprint, err := cert.Fingerprint(certPEM)
+		if err != nil {
+			return fmt.Errorf("compute bootstrap cert fingerprint: %w", err)
+		}
+		defer revokeCert(ctx, client, addr, fingerprint)
 	}
-	defer revokeCert(ctx, client, addr, fingerprint)
 
 	op, err := createInstance(ctx, client, addr, req)
 	if err != nil {
@@ -60,6 +76,40 @@ func CreateInstance(ctx context.Context, dial DialFunc, addr string, certPEM, ke
 		return fmt.Errorf("wait for instance %q creation: %w", req.Name, err)
 	}
 	return nil
+}
+
+// ErrUntrusted reports that the node's Incus rejected the client cert
+// (HTTP 403): it was never trusted there, or — for a bootstrap cert — it
+// has already been spent by an earlier CreateInstance and revoked.
+var ErrUntrusted = errors.New("client certificate not trusted by node")
+
+// InstanceNames lists the names of the instances in the node's default
+// project. Read-only, and it never revokes certPEM, so a caller can check
+// for an existing instance before spending a one-shot credential on
+// CreateInstance. A rejected cert is reported as an error wrapping
+// ErrUntrusted.
+func InstanceNames(ctx context.Context, dial DialFunc, addr string, certPEM, keyPEM []byte) ([]string, error) {
+	client, err := newHTTPClient(dial, certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("build client: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/1.0/instances", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build list request: %w", err)
+	}
+	envelope, err := do(client, httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("list instances: %w", err)
+	}
+	var urls []string
+	if err := json.Unmarshal(envelope.Metadata, &urls); err != nil {
+		return nil, fmt.Errorf("decode instance list: %w", err)
+	}
+	names := make([]string, 0, len(urls))
+	for _, u := range urls {
+		names = append(names, path.Base(u))
+	}
+	return names, nil
 }
 
 func newHTTPClient(dial DialFunc, certPEM, keyPEM []byte) (*http.Client, error) {
@@ -164,6 +214,26 @@ func waitOperation(ctx context.Context, client *http.Client, addr, operationID s
 	return nil
 }
 
+// revokeTimeout bounds a revoke, which runs detached from its caller's
+// context: see revokeCert.
+const revokeTimeout = 30 * time.Second
+
+// RevokeCert removes certPEM from the node's trust store, for a caller
+// that used a one-shot credential without creating anything with it, e.g.
+// a deploy that found the agent already there. Unlike CreateInstance's
+// revoke, its failure is returned.
+func RevokeCert(ctx context.Context, dial DialFunc, addr string, certPEM, keyPEM []byte) error {
+	client, err := newHTTPClient(dial, certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("build client: %w", err)
+	}
+	fingerprint, err := cert.Fingerprint(certPEM)
+	if err != nil {
+		return fmt.Errorf("compute bootstrap cert fingerprint: %w", err)
+	}
+	return deleteCert(ctx, client, addr, fingerprint)
+}
+
 // revokeCert deletes the bootstrap cert identified by fingerprint from the
 // node's trust store. Best-effort and logged rather than returned: it runs
 // from a defer after the create call has already succeeded or failed, and
@@ -171,15 +241,27 @@ func waitOperation(ctx context.Context, client *http.Client, addr, operationID s
 // cert rotation/revocation infra yet (docs/Out of Scope.md), so a logged
 // failure here means the cert is left trusted and needs manual cleanup.
 func revokeCert(ctx context.Context, client *http.Client, addr, fingerprint string) {
+	if err := deleteCert(ctx, client, addr, fingerprint); err != nil {
+		log.Printf("nodeprovision: revoke bootstrap cert %s: %v", fingerprint, err)
+	}
+}
+
+// deleteCert issues DELETE /1.0/certificates/<fingerprint>. It keeps ctx's
+// values but not its cancellation, under its own revokeTimeout: a caller's
+// ctx is often a request's, cancelled when the client disconnects, and a
+// revoke cut short by that would leave the credential trusted.
+func deleteCert(ctx context.Context, client *http.Client, addr, fingerprint string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
+	defer cancel()
 	url := fmt.Sprintf("https://%s/1.0/certificates/%s", addr, fingerprint)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
-		log.Printf("nodeprovision: build revoke request for %s: %v", fingerprint, err)
-		return
+		return fmt.Errorf("build revoke request: %w", err)
 	}
 	if _, err := do(client, httpReq); err != nil {
-		log.Printf("nodeprovision: revoke bootstrap cert %s: %v", fingerprint, err)
+		return err
 	}
+	return nil
 }
 
 // do sends req and decodes Incus's standard response envelope, mapping an
@@ -197,6 +279,9 @@ func do(client *http.Client, req *http.Request) (*lxcapi.Response, error) {
 		return nil, fmt.Errorf("decode response (http %d): %w", resp.StatusCode, err)
 	}
 	if envelope.Type == lxcapi.ErrorResponse {
+		if envelope.Code == http.StatusForbidden {
+			return nil, fmt.Errorf("incus error: %s: %w", envelope.Error, ErrUntrusted)
+		}
 		return nil, fmt.Errorf("incus error: %s", envelope.Error)
 	}
 	return &envelope, nil

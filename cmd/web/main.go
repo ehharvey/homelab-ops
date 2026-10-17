@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/flasher"
 	"github.com/ehharvey/homelab-ops/internal/server"
@@ -76,6 +77,8 @@ func run() error {
 	// One Service shared between the HTTP handlers and the background poller
 	// so their syncs serialize through a single lock.
 	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder(), tunnelSrc, st)
+	// A deployed agent syncs from the same repo as this web app.
+	svc.SetAgentRepo(agentdeploy.Repo{URL: os.Getenv("CONFIG_REPO_URL"), Ref: os.Getenv("CONFIG_REPO_REF")})
 
 	// Nodes flashed before this restart must get a handshake reply now, not
 	// after the next sync (#269), and this also registers the operators.
