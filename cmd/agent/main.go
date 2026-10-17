@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -44,6 +45,10 @@ const (
 	defaultRepoDir          = "/var/lib/homelab-ops-agent/config-repo"
 	defaultTickInterval     = 30 * time.Second
 	defaultFailureThreshold = 10 // with the default tick, ~5 minutes: the project's RTO scale (#187)
+
+	// socketWait bounds how long startup waits for the Incus socket to
+	// appear; see dialWhenReady.
+	socketWait = time.Minute
 )
 
 func main() {
@@ -71,16 +76,19 @@ func run() error {
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds|log.LUTC)
 
-	client, err := incuslocal.Dial(s.socket)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	client, err := dialWhenReady(ctx, s.socket, socketWait, time.Second)
+	if errors.Is(err, context.Canceled) {
+		return nil // stopped before the socket appeared: a clean stop, not a failed start
+	}
 	if err != nil {
 		return err
 	}
 	clone := &configsync.Clone{RepoURL: s.repoURL, Ref: s.repoRef, Dir: s.repoDir, FailureThreshold: s.failureThreshold}
 	reg := &incusregistry.Registry{Client: client, Self: s.instance, Node: s.node, Generation: s.generation}
 	a := agent.New(s.instance, s.node, s.generation, clone, reg, logger)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()
@@ -93,6 +101,27 @@ func run() error {
 			cancel()
 			return nil
 		case <-ticker.C:
+		}
+	}
+}
+
+// dialWhenReady dials the Incus socket, waiting up to wait for it to exist.
+// The incus-socket profile's proxy is a post-start device: Incus creates the
+// socket inside the container only once the container is running, so a
+// freshly started agent can look before it is there (seen on a real node,
+// #100). Any error other than the socket being absent fails at once, and a
+// cancelled ctx returns ctx's error.
+func dialWhenReady(ctx context.Context, path string, wait, poll time.Duration) (*incuslocal.Client, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		client, err := incuslocal.Dial(path)
+		if err == nil || !errors.Is(err, fs.ErrNotExist) || time.Now().After(deadline) {
+			return client, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(poll):
 		}
 	}
 }

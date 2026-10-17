@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"io/fs"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,4 +106,63 @@ func TestLoadSettingsRejects(t *testing.T) {
 			t.Errorf("err = %v, want it to say the hostname is empty", err)
 		}
 	})
+}
+
+// shortSocketPath is a unix socket path under the ~108-byte limit, which
+// t.TempDir() can exceed with a long test name.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "s.sock")
+	if len(path) > 100 {
+		t.Fatalf("socket path too long for a unix socket (%d bytes): %s", len(path), path)
+	}
+	return path
+}
+
+func TestDialWhenReadyWaitsForTheSocket(t *testing.T) {
+	path := shortSocketPath(t)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			t.Errorf("listen: %v", err)
+			return
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+	}()
+
+	if _, err := dialWhenReady(context.Background(), path, 5*time.Second, 10*time.Millisecond); err != nil {
+		t.Fatalf("dialWhenReady with a socket that appears late = %v, want nil", err)
+	}
+}
+
+func TestDialWhenReadyGivesUp(t *testing.T) {
+	path := shortSocketPath(t)
+	_, err := dialWhenReady(context.Background(), path, 30*time.Millisecond, 10*time.Millisecond)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("dialWhenReady with no socket = %v, want fs.ErrNotExist after the wait", err)
+	}
+}
+
+func TestDialWhenReadyStopsOnCancel(t *testing.T) {
+	path := shortSocketPath(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := dialWhenReady(ctx, path, 5*time.Second, 10*time.Millisecond); !errors.Is(err, context.Canceled) {
+		t.Fatalf("dialWhenReady after a stop signal = %v, want context.Canceled, not the socket's stat error", err)
+	}
+}
+
+func TestDialWhenReadyFailsFastOnANonSocket(t *testing.T) {
+	path := shortSocketPath(t)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := dialWhenReady(context.Background(), path, 5*time.Second, 10*time.Millisecond); err == nil {
+		t.Fatal("dialWhenReady on a regular file = nil, want an error")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("dialWhenReady waited %v on a non-socket; only an absent socket should be waited for", waited)
+	}
 }

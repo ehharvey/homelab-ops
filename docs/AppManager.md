@@ -29,7 +29,7 @@ Every agent process asks the `Elector` every tick; exactly one is ever active as
 
 This is a deliberate departure from a leaderless, partitioned design (each agent reconciling only its own node's Apps): a single active reconciler avoids two agents racing to act on the same App, and — combined with agents already running on every node — gives the whole mechanism HA without needing Incus to relocate anything.
 
-**Once a leader exists, the fleet self-expands.** A newly-joined `Instance` with no agent yet is just another zero-match case in the reconcile algorithm below — the leader creates its generation-0 agent the same way it would any other missing instance, no separate discovery mechanism required. The web app's `deploy-agent` route (#100) matters mainly for bootstrapping the very first agent (there's no leader yet to self-expand) and for recovery/air-gapped scenarios, not as a per-node step an operator repeats forever.
+**Once a leader exists, the fleet self-expands.** A newly-joined `Instance` with no agent yet is just another zero-match case in the reconcile algorithm below — the leader creates its generation-0 agent the same way it would any other missing instance, no separate discovery mechanism required. The first agent comes from one of #100's two paths, both building the instance with `internal/agentdeploy`: the web app's `POST /instances/{name}/deploy-agent` route, over the node's WireGuard tunnel with its one-shot bootstrap credential, or `bootstrap deploy-agent`, over the LAN with the break-glass cert and no web app. They matter mainly for bootstrapping the very first agent (there's no leader yet to self-expand) and for recovery/air-gapped scenarios, not as a per-node step an operator repeats forever.
 
 ## `kind: App` schema
 

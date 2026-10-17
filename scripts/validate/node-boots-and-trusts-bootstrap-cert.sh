@@ -15,6 +15,11 @@
 #   5. (#178, #315) The node comes up as a one-member Incus cluster whose API
 #      listens on every address (core.https_address ":8443") and whose
 #      member advertises its static IP (cluster.https_address).
+#   6. (#100) `bootstrap deploy-agent`, run over the LAN with the
+#      break-glass cert, creates agent-node0-g0 on the node; the agent
+#      image, built from this tree, starts and publishes its own registry keys through
+#      incus-socket; a rerun reports it already deployed; and the
+#      break-glass cert is still trusted afterwards (never revoked).
 #
 # Intended to run INSIDE the devcontainer, against the existing
 # "homelab-host" remote / "default" project / "home-lan" network set up
@@ -51,10 +56,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib-incus.sh
 . "$ROOT_DIR/scripts/validate/lib-incus.sh"
 
-VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, comes up as a real one-member Incus cluster, and lets an instance reach its Incus through the preseeded incus-socket profile (#5, #178, #99, #315)"
+VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, comes up as a real one-member Incus cluster, lets an instance reach its Incus through the preseeded incus-socket profile, and takes its first agent from bootstrap deploy-agent (#5, #178, #99, #315, #100)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="incus go jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
-VALIDATE_DURATION="~9m"
+VALIDATE_NEEDS="incus go jq docker pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_DURATION="~10m"
 
 validate_parse_args "$@"
 default_incusos_base_image
@@ -130,7 +135,7 @@ echo "== 0. Hard prerequisites =="
 # require_flasher_tool exists because of #136: build-image shells out to it, and
 # without this the CLI's own perfectly clear error was swallowed by `check`,
 # producing five cascading failures that read like a provisioning regression.
-require_cmd incus go jq
+require_cmd incus go jq docker
 require_flasher_tool
 require_incus_remote "$REMOTE"
 require_incus_project "$REMOTE" "$PROJECT"
@@ -142,6 +147,12 @@ check_prereqs
 echo
 echo "== 1. Build the bootstrap CLI =="
 check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
+# deploy-agent runs inside the probe instance, the only thing on node0's LAN,
+# which is Alpine: static, like the tunnel harness.
+check "bootstrap CLI builds statically for the probe (CGO_ENABLED=0)" \
+  env CGO_ENABLED=0 go -C "$ROOT_DIR" build -o "$WORK_DIR/bootstrap-static" ./cmd/bootstrap
+# deploy-agent's agent, from this tree rather than GHCR's :latest (lib.sh).
+check "agent image builds from Dockerfile.agent" build_agent_incus_image "$ROOT_DIR" "$WORK_DIR/agent-image"
 
 if [ ! -x "$BOOTSTRAP_BIN" ]; then
   echo "ERROR: bootstrap CLI didn't build; nothing downstream can be meaningful" >&2
@@ -170,6 +181,16 @@ security:
   tpm: false
   secure_boot: true
 applications: [incus]
+---
+# For #100's deploy-agent: the agent image built from this tree, which
+# section 3 imports into node0's own image store, so no image.server.
+# render-seed ignores Apps; deploy-agent needs exactly this one.
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  alias: $AGENT_IMAGE_ALIAS
 EOF
 
 check "render-seed exits 0" "$BOOTSTRAP_BIN" render-seed \
@@ -191,7 +212,12 @@ if ! have_env_file INCUSOS_BASE_IMAGE; then
     "VM installs IncusOS from the seeded image" \
     "node trusts the bootstrap cert and is reachable over Incus API" \
     "node has the incus-socket profile preseeded" \
-    "a container on the node reaches the node's own Incus through incus-socket"; do
+    "a container on the node reaches the node's own Incus through incus-socket" \
+    "the tree's agent image is imported into node0 as $AGENT_IMAGE_ALIAS" \
+    "bootstrap deploy-agent creates agent-node0-g0 over the LAN" \
+    "agent-node0-g0 runs with incus-socket and publishes its registry keys through it" \
+    "a second bootstrap deploy-agent reports the agent already deployed" \
+    "the break-glass cert is still trusted after deploy-agent"; do
     skip_check "$_desc" base-image "$_why"
   done
 else
@@ -336,6 +362,42 @@ else
     " 2>&1)
     check_json "a container on the node reaches the node's own Incus through incus-socket" "$sock_response" \
       '.metadata.auth == "trusted" and .metadata.environment.server_name == "node0"'
+
+    # #100: the CLI deploy path, as an operator recovering with no web app
+    # would run it — over the LAN, with the break-glass cert. The config
+    # repo URL is a placeholder: the agent logs and retries a failed sync,
+    # and its heartbeat writes the registry keys asserted below whether or
+    # not a sync succeeded.
+    deploy_agent() {
+      incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
+        /root/bootstrap deploy-agent --file /root/fleet.yaml \
+          --cert /root/client.crt --key /root/client.key \
+          --addr "$STATIC_IP:8443" \
+          --config-repo-url https://example.invalid/fleet.git 2>&1
+    }
+    check "the tree's agent image is imported into node0 as $AGENT_IMAGE_ALIAS" \
+      import_agent_incus_image "$REMOTE" "$PROJECT" "$PROBE_NAME" "$STATIC_IP" "$WORK_DIR/agent-image"
+    incus file push --project "$PROJECT" "$WORK_DIR/bootstrap-static" "$REMOTE:$PROBE_NAME/root/bootstrap" --mode=0755 >/dev/null 2>&1
+    incus file push --project "$PROJECT" "$WORK_DIR/fleet.yaml" "$REMOTE:$PROBE_NAME/root/fleet.yaml" >/dev/null 2>&1
+    deploy_out=$(deploy_agent)
+    if grep -qF "deployed agent-node0-g0 on node0" <<<"$deploy_out"; then
+      record_pass "bootstrap deploy-agent creates agent-node0-g0 over the LAN"
+    else
+      record_fail "bootstrap deploy-agent creates agent-node0-g0 over the LAN" "$deploy_out"
+    fi
+
+    check_agent_registered "$REMOTE" "$PROJECT" "$PROBE_NAME" "$STATIC_IP" agent-node0-g0
+
+    rerun_out=$(deploy_agent)
+    if grep -qF "already deployed: agent-node0-g0" <<<"$rerun_out"; then
+      record_pass "a second bootstrap deploy-agent reports the agent already deployed"
+    else
+      record_fail "a second bootstrap deploy-agent reports the agent already deployed" "$rerun_out"
+    fi
+
+    after=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
+      curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0" 2>/dev/null)
+    check_json "the break-glass cert is still trusted after deploy-agent" "$after" '.metadata.auth == "trusted"'
   else
     record_fail "node trusts the bootstrap cert and is reachable over Incus API (node never became reachable)"
     record_fail "node reports itself as a clustered member (node never became reachable)"
@@ -344,6 +406,11 @@ else
     record_fail "the member advertises https://$STATIC_IP:8443 as its url (node never became reachable)"
     record_fail "node has the incus-socket profile preseeded (node never became reachable)"
     record_fail "a container on the node reaches the node's own Incus through incus-socket (node never became reachable)"
+    record_fail "the tree's agent image is imported into node0 as $AGENT_IMAGE_ALIAS (node never became reachable)"
+    record_fail "bootstrap deploy-agent creates agent-node0-g0 over the LAN (node never became reachable)"
+    record_fail "agent-node0-g0 runs with incus-socket and publishes its registry keys through it (node never became reachable)"
+    record_fail "a second bootstrap deploy-agent reports the agent already deployed (node never became reachable)"
+    record_fail "the break-glass cert is still trusted after deploy-agent (node never became reachable)"
   fi
 fi
 

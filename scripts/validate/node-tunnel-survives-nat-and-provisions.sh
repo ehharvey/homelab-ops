@@ -9,9 +9,11 @@
 #      simulated-NAT topology, not just configured.
 #   2. The node's Incus API is reachable *through the tunnel specifically*
 #      (not just "same LAN"), from the real web app process.
-#   3. The temp-cert -> dial-over-tunnel -> create-instance -> revoke
-#      mechanism (internal/nodeprovision) works against a real node — the
-#      exact mechanism #92's `bootstrap deploy-agent` will reuse for real.
+#   3. (#100) The real web app's POST /instances/node0/deploy-agent puts
+#      the first agent on node0 over its own tunnel: minted one-shot
+#      credential -> dial-over-tunnel -> create agent-node0-g0 -> revoke.
+#      The agent image, built from this tree, starts and publishes its registry keys, and a
+#      repeat call gets 409, because node0 no longer trusts that credential.
 #
 # Runs against the "homelab-host" remote's DEFAULT project. An earlier
 # "homelab-dev" project got stuck with features.networks=true while this
@@ -26,8 +28,9 @@
 # (#296); export the variable to use another. The node-boot-dependent sections
 # are skipped with a clear message if no image is usable.
 #
-# The last two checks (Incus reachable over the tunnel, and create-instance
-# over it) are the ones that prove this file's headline claim, and both were
+# The tunnel checks (Incus reachable over the tunnel, and creating an
+# instance over it — since #100, the deploy-agent route's) are the ones that
+# prove this file's headline claim, and both were
 # KNOWN RED from #137 until #157: a node's seeded wg0 got a /32 address, so the
 # kernel installed no route covering 10.100.0.0/24 and the node completed a
 # WireGuard handshake it could not carry IP traffic over. #157 widened the
@@ -44,6 +47,9 @@
 # Fixed in #161. Like #157 before it, that check had never once passed, so a
 # wrong pool name sat behind a network failure from #91 onward — until an
 # assertion actually passes, nothing downstream of it has been exercised.
+# #100 retired that harness mode: the web app's deploy-agent route now
+# creates the instance, through the web app's own tunnel, and the agent's
+# root disk comes from node0's default profile.
 #
 # #288: wan-sim was only ever IPv4-isolated. Incus gave it a default fd42::/64
 # with ipv6.nat=true, and the webapp container's `apk add git` went out over
@@ -98,11 +104,12 @@
 # - node0's only change versus #5's topology: one extra static route to
 #   wan-sim via the gateway's home-lan address, appended onto the rendered
 #   seed after the real seed.Render call (not a production Render feature).
-# - The harness (cmd/validate-tunnel-harness) drives the create-instance
-#   mechanism from a third container on home-lan, with its own throwaway
-#   WireGuard identity appended as a second test-only peer on node0's seed
-#   — proving the mechanism over *a* tunnel, not re-proving NAT traversal
-#   (already covered by the webapp<->node0 tunnel check).
+# - The harness (cmd/validate-tunnel-harness) probes node0's Incus from a
+#   third container on home-lan, with its own throwaway WireGuard identity
+#   appended as a second test-only peer on node0's seed — proving
+#   reachability over *a* tunnel, not re-proving NAT traversal (already
+#   covered by the webapp<->node0 tunnel check). Creating an instance goes
+#   through the real web app's own tunnel instead, via deploy-agent (#100).
 
 set -uo pipefail
 
@@ -112,9 +119,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib-incus.sh
 . "$ROOT_DIR/scripts/validate/lib-incus.sh"
 
-VALIDATE_PROVES="a node's WireGuard tunnel survives a NAT hop and carries provisioning (#91)"
+VALIDATE_PROVES="a node's WireGuard tunnel survives a NAT hop and carries provisioning: the web app deploys the first agent over it (#91, #100)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="incus go git python3 jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
+VALIDATE_NEEDS="incus go git python3 jq docker pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~13m"
 
 validate_parse_args "$@"
@@ -226,7 +233,7 @@ echo "== 0. Hard prerequisites =="
 # Preconditions, not assertions — this script's subject is the tunnel, and
 # require_flasher_tool in particular is #136: build-image's dependency used to
 # fail here as four cascading failures with no diagnostic.
-require_cmd incus go git python3 jq
+require_cmd incus go git python3 jq docker
 require_flasher_tool
 require_incus_remote "$REMOTE"
 require_incus_network "$REMOTE" "$PROJECT" "$LAN_NETWORK"
@@ -266,6 +273,8 @@ check "web app builds (CGO_ENABLED=0, matching the real Docker image)" \
 # That is why both harness assertions had never passed (#137).
 check "validate-tunnel-harness builds (CGO_ENABLED=0, it runs inside Alpine)" \
   bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$HARNESS_BIN' ./cmd/validate-tunnel-harness"
+# deploy-agent's agent, from this tree rather than GHCR's :latest (lib.sh).
+check "agent image builds from Dockerfile.agent" build_agent_incus_image "$ROOT_DIR" "$WORK_DIR/agent-image"
 
 if [ ! -x "$BOOTSTRAP_BIN" ] || [ ! -x "$WEB_BIN" ] || [ ! -x "$HARNESS_BIN" ]; then
   echo "ERROR: a required binary didn't build; nothing downstream can be meaningful" >&2
@@ -360,6 +369,16 @@ security:
   tpm: false
   secure_boot: true
 applications: [incus]
+---
+# For the web app's deploy-agent route (#100): the agent image built from
+# this tree, which section 7 imports into node0's own image store, so no
+# image.server. render-seed ignores Apps.
+kind: App
+name: agent
+type: agent
+replicas: per-node
+image:
+  alias: $AGENT_IMAGE_ALIAS
 EOF
 
 # No WireGuard config yet via the bootstrap CLI — see internal/seed.go and
@@ -569,9 +588,10 @@ _vm_checks=(
   "harness container launched on $LAN_NETWORK"
   "harness binary + key pushed"
   "node0's Incus API reachable through a real WireGuard tunnel (10.100.0.0/24), not just the LAN"
-  "webapp store pulled and node0's real bootstrap credential extracted"
-  "bootstrap cert/key pushed to harness"
-  "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
+  "the tree's agent image is imported into node0 as $AGENT_IMAGE_ALIAS"
+  "POST /instances/node0/deploy-agent creates agent-node0-g0 over the web app's tunnel (201)"
+  "agent-node0-g0 runs with incus-socket and publishes its registry keys through it"
+  "a repeat deploy-agent gets 409: node0 no longer trusts the spent bootstrap credential"
 )
 if ! have_env_file INCUSOS_BASE_IMAGE; then
   # Base image absent: says nothing about the tunnel.
@@ -770,12 +790,13 @@ PYEOF
   fi
 
   echo
-  echo "== 6. Prove the mechanism via the harness: reachability + create-instance =="
+  echo "== 6. Prove reachability over a tunnel via the harness =="
   # The tunnel is a userspace network stack with no host-level route to it
   # — nothing outside the process that owns it can dial through it, and
-  # there's deliberately no HTTP route exposing the real webapp's own
-  # tunnel (see docs/Roadmap.md #91's scope decision). So both checks below
-  # run from the harness's own, separate tunnel instead — registered as a
+  # there's deliberately no general HTTP route exposing the real webapp's
+  # own tunnel (see docs/Roadmap.md #91's scope decision; section 7's
+  # deploy-agent does one specific thing over it). So the reachability check
+  # below runs from the harness's own, separate tunnel instead — registered as a
   # second trusted peer on node0's seed back in step 5. This still proves
   # "Incus reachable over a real WireGuard tunnel to node0", the mechanism
   # in question; NAT survival specifically was already proven by the
@@ -840,39 +861,45 @@ PYEOF
       "$(tail -5 "$WORK_DIR/harness-probe.log" 2>/dev/null | tr '\n' '|') node0's view of the harness peer: $(node_net_state | jq -c --arg k "$HARNESS_PUBLIC_KEY" '.metadata.state.interfaces.wg0.wireguard.peers[]? | select(.public_key == $k)' 2>/dev/null); $(seeded_wg0_address)"
   fi
 
-  # Pull the webapp's store and extract node0's real bootstrap credential
-  # (minted by the live SyncOnce reconcile loop's EnsureCredential call in
-  # step 4) — an offline file read, not a new HTTP route: the credential is
-  # secret material that must never become reachable through the running
-  # web app's API (see docs/Roadmap.md #91's security invariant). Reading
-  # STORE_PATH directly is the same access an operator with real
-  # filesystem access to that file already has.
-  check "webapp store pulled and node0's real bootstrap credential extracted" bash -c "
-    incus file pull --project '$PROJECT' '$REMOTE:$WEBAPP_NAME/root/store.db' '$WORK_DIR/store.db' &&
-    '$HARNESS_BIN' -mode=extract-credential -store-path='$WORK_DIR/store.db' -instance-name=node0 \
-      -out-cert='$WORK_DIR/bootstrap.crt' -out-key='$WORK_DIR/bootstrap.key'
-  "
-  check "bootstrap cert/key pushed to harness" bash -c "
-    incus file push --project '$PROJECT' '$WORK_DIR/bootstrap.crt' '$REMOTE:$HARNESS_NAME/root/bootstrap.crt' &&
-    incus file push --project '$PROJECT' '$WORK_DIR/bootstrap.key' '$REMOTE:$HARNESS_NAME/root/bootstrap.key'
-  "
+  echo
+  echo "== 7. Deploy the first agent through the real web app's route (#100) =="
+  # The route mints nothing new: node0's bootstrap credential was minted by
+  # the live SyncOnce loop in step 4 and seeded into node0. It dials node0
+  # through the web app's own tunnel, the pair proven above to cross the
+  # NAT, and CreateInstance revokes the credential afterwards. The call
+  # blocks while node0 creates the agent from its image, hence -T.
+  #
+  # CONFIG_REPO_URL is the web app's local bare-repo path, which the agent
+  # can't clone; it logs and retries, and its heartbeat writes the registry
+  # keys asserted below either way.
+  # The image goes in over the LAN, from section 5's probe with the
+  # break-glass cert: the web app's credential is the thing under test, and
+  # spending it on an import would leave nothing for the route.
+  check "the tree's agent image is imported into node0 as $AGENT_IMAGE_ALIAS" \
+    import_agent_incus_image "$REMOTE" "$PROJECT" "$PROBE_NAME" "$STATIC_IP" "$WORK_DIR/agent-image"
 
-  echo "Running the harness's create-instance mode against node0 ($NODE_TUNNEL_IP:8443) ..."
-  if incus exec --project "$PROJECT" "$REMOTE:$HARNESS_NAME" -- \
-    /harness -mode=create-instance \
-      -private-key-file=/harness.key \
-      -local-addr=10.100.0.254 \
-      -peer-public-key="$NODE_WG_PUBKEY" \
-      -peer-tunnel-ip="$NODE_TUNNEL_IP" \
-      -peer-endpoint="$STATIC_IP:$NODE_WG_PORT" \
-      -node-addr="$NODE_TUNNEL_IP:8443" \
-      -bootstrap-cert=/root/bootstrap.crt \
-      -bootstrap-key=/root/bootstrap.key \
-      -timeout=60s >"$WORK_DIR/harness-create.log" 2>&1; then
-    record_pass "temp-cert create-instance + revoke mechanism succeeds over the tunnel"
+  deploy_agent_route() {
+    incus exec --project "$PROJECT" "$REMOTE:$WEBAPP_NAME" -- \
+      wget -S -T 600 -qO- --post-data='' http://127.0.0.1:8080/instances/node0/deploy-agent 2>&1
+  }
+  deploy_resp=$(deploy_agent_route)
+  if grep -q 'HTTP/1.1 201' <<<"$deploy_resp" && grep -qF '"instance":"agent-node0-g0"' <<<"$deploy_resp"; then
+    record_pass "POST /instances/node0/deploy-agent creates agent-node0-g0 over the web app's tunnel (201)"
   else
-    record_fail "temp-cert create-instance + revoke mechanism succeeds over the tunnel" \
-      "$(tail -5 "$WORK_DIR/harness-create.log" 2>/dev/null | tr '\n' '|')"
+    record_fail "POST /instances/node0/deploy-agent creates agent-node0-g0 over the web app's tunnel (201)" \
+      "$(tr '\n' '|' <<<"$deploy_resp") webapp log tail: $(tail -5 "$WORK_DIR/webapp.log" 2>/dev/null | tr '\n' '|')"
+  fi
+
+  check_agent_registered "$REMOTE" "$PROJECT" "$PROBE_NAME" "$STATIC_IP" agent-node0-g0
+
+  # The route lists node0's instances before creating, with the same
+  # credential; node0 answering 403 to that list is what proves the revoke.
+  repeat_resp=$(deploy_agent_route)
+  if grep -q 'HTTP/1.1 409' <<<"$repeat_resp"; then
+    record_pass "a repeat deploy-agent gets 409: node0 no longer trusts the spent bootstrap credential"
+  else
+    record_fail "a repeat deploy-agent gets 409: node0 no longer trusts the spent bootstrap credential" \
+      "$(tr '\n' '|' <<<"$repeat_resp")"
   fi
 fi
 

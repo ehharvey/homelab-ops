@@ -5,11 +5,12 @@
 // mode) — it is NOT an operator-facing command like
 // cmd/bootstrap or cmd/web, and ships no stability promise. It exists
 // because the validate script needs to drive internal/wireguard's
-// userspace tunnel and internal/nodeprovision's create-instance mechanism
-// from outside a Go process, which isn't expressible from bash/curl: the
-// tunnel terminates entirely in-process (a gVisor virtual network stack,
-// no host TUN device), so nothing outside the process that owns it can
-// dial through it.
+// userspace tunnel from outside a Go process, which isn't expressible from
+// bash/curl: the tunnel terminates entirely in-process (a gVisor virtual
+// network stack, no host TUN device), so nothing outside the process that
+// owns it can dial through it. Creating an instance over a tunnel is the
+// real web app's job now (POST /instances/{name}/deploy-agent, #100), so
+// the validate script drives that route instead.
 package main
 
 import (
@@ -24,14 +25,11 @@ import (
 	"os"
 	"time"
 
-	lxcapi "github.com/lxc/incus/v7/shared/api"
 	"gopkg.in/yaml.v3"
 
 	incusapi "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api"
 	incusseed "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api/seed"
 
-	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
-	"github.com/ehharvey/homelab-ops/internal/store"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -43,14 +41,14 @@ func main() {
 }
 
 func run() error {
-	mode := flag.String("mode", "", "genkey | probe | create-instance | extract-credential | patch-seed | http")
-	privateKeyFile := flag.String("private-key-file", "", "path to this harness's own WireGuard private key (base64); genkey writes it, probe/create-instance read it")
+	mode := flag.String("mode", "", "genkey | probe | patch-seed | http")
+	privateKeyFile := flag.String("private-key-file", "", "path to this harness's own WireGuard private key (base64); genkey writes it, probe and http read it")
 	// The default, .254, lies inside wireguard.OperatorCIDR (.240-.254,
 	// #195). AssignTunnelIPs never hands an instance an address there, so it
-	// can't collide with a real instance's tunnel_ip on node0, where probe and
-	// create-instance register the harness as a second peer beside the web
-	// app (patch-seed's -add-peer-allowed-ip). Being an operator address is
-	// harmless in those modes: the harness talks only to node0, and no
+	// can't collide with a real instance's tunnel_ip on node0, where probe
+	// registers the harness as a second peer beside the web app (patch-seed's
+	// -add-peer-allowed-ip). Being an operator address is harmless there: the
+	// harness talks only to node0, and no
 	// validate script's web app lists .254 in WIREGUARD_OPERATOR_PEERS. A
 	// mode that talks to a web app (http) must not lean on this default: pass
 	// the address the harness's key is registered under in that web app's
@@ -62,19 +60,7 @@ func run() error {
 	peerEndpoint := flag.String("peer-endpoint", "", "host:port of the peer's WireGuard UDP listener, e.g. 192.168.1.202:32926 — required to initiate a handshake, since neither this harness nor the node's seeded peer entry carries an endpoint for the other (see internal/wireguard.UpsertPeerWithEndpoint)")
 	listenPort := flag.Int("listen-port", 0, "UDP port to bind (0 = OS picks a free port)")
 	nodeAddr := flag.String("node-addr", "", "host:port of the node's Incus API to dial through the tunnel, e.g. 10.100.0.5:8443")
-	timeout := flag.Duration("timeout", 60*time.Second, "how long to wait for the tunnel/dial/create to succeed")
-	bootstrapCert := flag.String("bootstrap-cert", "", "path to the bootstrap client cert PEM (create-instance mode)")
-	bootstrapKey := flag.String("bootstrap-key", "", "path to the bootstrap client key PEM (create-instance mode)")
-	instanceName := flag.String("instance-name", "validate-91-placeholder", "name for the throwaway instance create-instance mode creates, or the instance whose credential to extract (extract-credential mode)")
-	// "local" is what IncusOS names its only pool — it creates one zpool from
-	// the "local-data" partition and Incus's applyDefaults registers it under
-	// that name. "default" is the Incus convention and was wrong here from the
-	// day this flag landed (#161); it went unnoticed because the check using it
-	// had never once passed, failing at the network layer until #157.
-	storagePool := flag.String("storage-pool", "local", "storage pool name to attach the throwaway instance's root disk to (IncusOS names its pool \"local\")")
-	storePath := flag.String("store-path", "", "path to a pulled copy of the web app's sqlite store (extract-credential mode)")
-	outCert := flag.String("out-cert", "", "path to write the extracted bootstrap cert PEM to (extract-credential mode)")
-	outKey := flag.String("out-key", "", "path to write the extracted bootstrap key PEM to (extract-credential mode)")
+	timeout := flag.Duration("timeout", 60*time.Second, "how long to wait for the tunnel/dial to succeed")
 	networkYAMLPath := flag.String("network-yaml", "", "path to a rendered network.yaml to patch in place (patch-seed mode)")
 	addRouteTo := flag.String("add-route-to", "", "CIDR to append a route for, via -add-route-via (patch-seed mode)")
 	addRouteVia := flag.String("add-route-via", "", "gateway address for the route added by -add-route-to (patch-seed mode)")
@@ -89,16 +75,12 @@ func run() error {
 		return runGenKey(*privateKeyFile)
 	case "probe":
 		return runProbe(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *nodeAddr, *timeout)
-	case "create-instance":
-		return runCreateInstance(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *nodeAddr, *timeout, *bootstrapCert, *bootstrapKey, *instanceName, *storagePool)
-	case "extract-credential":
-		return runExtractCredential(*storePath, *instanceName, *outCert, *outKey)
 	case "patch-seed":
 		return runPatchSeed(*networkYAMLPath, *addRouteTo, *addRouteVia, *addPeerPublicKey, *addPeerAllowedIP)
 	case "http":
 		return runHTTP(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *method, *path, *timeout)
 	default:
-		return fmt.Errorf("unknown -mode %q (want genkey, probe, create-instance, extract-credential, patch-seed, or http)", *mode)
+		return fmt.Errorf("unknown -mode %q (want genkey, probe, patch-seed, or http)", *mode)
 	}
 }
 
@@ -159,42 +141,6 @@ func runPatchSeed(networkYAMLPath, routeTo, routeVia, peerPublicKeyB64, peerAllo
 	return nil
 }
 
-// runExtractCredential reads name's nodeprovision.Credential straight out of
-// a pulled copy of the web app's sqlite store and writes its bootstrap
-// cert/key PEM to outCertPath/outKeyPath. This is deliberately an offline
-// file read, not a new HTTP route: internal/nodeprovision.Credential is
-// secret material that must never become reachable through the web app's
-// running API (see docs/Roadmap.md #91's security invariant) — reading the
-// store file directly, the same way an operator with real filesystem
-// access to STORE_PATH already could, doesn't add a new attack surface the
-// way a route would.
-func runExtractCredential(storePath, name, outCertPath, outKeyPath string) error {
-	if storePath == "" || outCertPath == "" || outKeyPath == "" {
-		return fmt.Errorf("-store-path, -out-cert, and -out-key are all required")
-	}
-	ctx := context.Background()
-	st, err := store.Open(ctx, storePath)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer st.Close() //nolint:errcheck // read-only use, nothing to flush
-
-	cred, ok, err := st.InstanceCredential(ctx, name)
-	if err != nil {
-		return fmt.Errorf("read credential for %q: %w", name, err)
-	}
-	if !ok {
-		return fmt.Errorf("no credential minted for %q yet", name)
-	}
-	if err := os.WriteFile(outCertPath, cred.BootstrapCertPEM, 0o600); err != nil {
-		return fmt.Errorf("write cert: %w", err)
-	}
-	if err := os.WriteFile(outKeyPath, cred.BootstrapKeyPEM, 0o600); err != nil {
-		return fmt.Errorf("write key: %w", err)
-	}
-	return nil
-}
-
 // runGenKey generates a fresh WireGuard keypair, writes the private half to
 // privateKeyFile (base64, so scripts/validate-issue-91.sh can embed it as
 // this harness's own persistent identity across separate invocations), and
@@ -217,7 +163,7 @@ func runGenKey(privateKeyFile string) error {
 
 // buildTunnel loads privateKeyFile, starts a Tunnel on listenPort, and
 // registers peerPublicKeyB64/peerTunnelIPStr as a trusted peer reachable at
-// peerEndpointStr — the common setup probe and create-instance both need.
+// peerEndpointStr — the common setup probe and http both need.
 // The peer here is the *node*, so peerPublicKeyB64 is the node's own wg0 key
 // (read off its IncusOS API), not the web app's.
 func buildTunnel(privateKeyFile, localAddrStr, peerPublicKeyB64, peerTunnelIPStr, peerEndpointStr string, listenPort int) (*wireguard.Tunnel, error) {
@@ -332,51 +278,6 @@ func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoi
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("node never became reachable over the tunnel within %s: %w", timeout, lastErr)
-}
-
-// runCreateInstance brings the tunnel up and exercises
-// nodeprovision.CreateInstance against a throwaway placeholder instance —
-// proving the temp-cert-mint -> dial-over-tunnel -> create -> revoke
-// mechanism #92's bootstrap deploy-agent will reuse for the real
-// app-manager agent.
-func runCreateInstance(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint string, listenPort int, nodeAddr string, timeout time.Duration, bootstrapCertPath, bootstrapKeyPath, instanceName, storagePool string) error {
-	if nodeAddr == "" || bootstrapCertPath == "" || bootstrapKeyPath == "" {
-		return fmt.Errorf("-node-addr, -bootstrap-cert, and -bootstrap-key are all required")
-	}
-	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint, listenPort)
-	if err != nil {
-		return err
-	}
-	defer tun.Close() //nolint:errcheck // best-effort cleanup on exit
-
-	certPEM, err := os.ReadFile(bootstrapCertPath) //nolint:gosec // path is operator-supplied via --bootstrap-cert, not untrusted input
-	if err != nil {
-		return fmt.Errorf("read bootstrap cert: %w", err)
-	}
-	keyPEM, err := os.ReadFile(bootstrapKeyPath) //nolint:gosec // path is operator-supplied via --bootstrap-key, not untrusted input
-	if err != nil {
-		return fmt.Errorf("read bootstrap key: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	req := lxcapi.InstancesPost{
-		Name: instanceName,
-		Type: lxcapi.InstanceTypeContainer,
-		InstancePut: lxcapi.InstancePut{
-			Devices: map[string]map[string]string{
-				"root": {"type": "disk", "pool": storagePool, "path": "/"},
-			},
-		},
-		Source: lxcapi.InstanceSource{Type: "none"},
-	}
-
-	if err := nodeprovision.CreateInstance(ctx, tun.DialContext, nodeAddr, certPEM, keyPEM, req); err != nil {
-		return fmt.Errorf("create instance: %w", err)
-	}
-	fmt.Printf("created placeholder instance %q via one-time bootstrap credential (now revoked)\n", instanceName)
-	return nil
 }
 
 // runHTTP joins the web app's tunnel as a peer (an operator device, or a node
