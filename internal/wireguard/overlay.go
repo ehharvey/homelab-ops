@@ -16,7 +16,8 @@ import (
 // last-synced snapshot) across re-syncs so it stays stable, or drawing the
 // next free address from OverlayCIDR otherwise. Mirrors ipam.Assign's
 // reuse-then-fill semantics, but against one fixed, app-wide pool rather
-// than a pool per config.Network.
+// than a pool per config.Network. Addresses in OperatorCIDR are never
+// assigned, and a prior assignment inside it is not reused (#195).
 func AssignTunnelIPs(instances []config.Instance, prior []config.Instance) error {
 	priorByName := make(map[string]netip.Addr, len(prior))
 	for _, inst := range prior {
@@ -56,12 +57,18 @@ func AssignTunnelIPs(instances []config.Instance, prior []config.Instance) error
 }
 
 func inRange(ip, network, broadcast netip.Addr) bool {
-	return OverlayCIDR.Contains(ip) && ip != network && ip != broadcast && ip != WebAppAddr
+	return OverlayCIDR.Contains(ip) && ip != network && ip != broadcast && !reserved(ip)
+}
+
+// reserved reports whether ip belongs to the web app (WebAppAddr) or to the
+// operator peers (OperatorCIDR) rather than to the instance pool.
+func reserved(ip netip.Addr) bool {
+	return ip == WebAppAddr || OperatorCIDR.Contains(ip)
 }
 
 func nextFree(taken map[netip.Addr]bool, network, broadcast netip.Addr) (netip.Addr, error) {
 	for ip := network.Next(); ip.IsValid() && ip.Compare(broadcast) < 0; ip = ip.Next() {
-		if ip == WebAppAddr || taken[ip] {
+		if reserved(ip) || taken[ip] {
 			continue
 		}
 		return ip, nil
