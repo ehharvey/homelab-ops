@@ -12,6 +12,9 @@
 #   4. (#99) The node carries the preseeded incus-socket profile, and a
 #      container on the node given that profile reaches the node's own Incus
 #      through it — the route the app-manager agent depends on.
+#   5. (#178, #315) The node comes up as a one-member Incus cluster whose API
+#      listens on every address (core.https_address ":8443") and whose
+#      member advertises its static IP (cluster.https_address).
 #
 # Intended to run INSIDE the devcontainer, against the existing
 # "homelab-host" remote / "default" project / "home-lan" network set up
@@ -48,7 +51,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib-incus.sh
 . "$ROOT_DIR/scripts/validate/lib-incus.sh"
 
-VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, comes up as a real one-member Incus cluster, and lets an instance reach its Incus through the preseeded incus-socket profile (#5, #178, #99)"
+VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the bootstrap cert, comes up as a real one-member Incus cluster, and lets an instance reach its Incus through the preseeded incus-socket profile (#5, #178, #99, #315)"
 VALIDATE_GROUP="incus-vm"
 VALIDATE_NEEDS="incus go jq pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~9m"
@@ -287,15 +290,22 @@ else
     # docs/AppManager.md's leader-election design has assumed since #92 but
     # that was never actually built. A real boot is what catches a silently
     # dropped seed field (CLAUDE.md, issue #5); the source-level spike in
-    # §26 established the mechanism, not that it survives a real install —
-    # a real boot is in fact what caught core.https_address needing to be
-    # the node's own concrete address rather than a wildcard bind, which the
-    # spike's source-reading missed.
+    # §26 established the mechanism, not that it survives a real install.
     check_json "node reports itself as a clustered member" "$response" '.metadata.environment.server_clustered == true'
 
+    # #315 (§26): the API listens on every address (so wg0's overlay address
+    # answers too), while the member address advertised to future members
+    # is the node's own static IP. Both keys must survive the install as
+    # seeded, and the member must advertise the concrete address, not the
+    # wildcard.
+    check_json "node's config has core.https_address \":8443\" and cluster.https_address \"$STATIC_IP:8443\" as seeded" "$response" \
+      ".metadata.config[\"core.https_address\"] == \":8443\" and .metadata.config[\"cluster.https_address\"] == \"$STATIC_IP:8443\""
+
     members=$(incus exec --project "$PROJECT" "$REMOTE:$PROBE_NAME" -- \
-      curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0/cluster/members" 2>/dev/null)
+      curl --cert /root/client.crt --key /root/client.key -k -s "https://$STATIC_IP:8443/1.0/cluster/members?recursion=1" 2>/dev/null)
     check_json "node is the cluster's only member" "$members" '(.metadata | length) == 1'
+    check_json "the member advertises https://$STATIC_IP:8443 as its url" "$members" \
+      ".metadata[0].url == \"https://$STATIC_IP:8443\""
 
     # #99: every node is preseeded with the incus-socket profile, the
     # agent's only route to its own host's Incus.
@@ -329,7 +339,9 @@ else
   else
     record_fail "node trusts the bootstrap cert and is reachable over Incus API (node never became reachable)"
     record_fail "node reports itself as a clustered member (node never became reachable)"
+    record_fail "node's config has core.https_address and cluster.https_address as seeded (node never became reachable)"
     record_fail "node is the cluster's only member (node never became reachable)"
+    record_fail "the member advertises https://$STATIC_IP:8443 as its url (node never became reachable)"
     record_fail "node has the incus-socket profile preseeded (node never became reachable)"
     record_fail "a container on the node reaches the node's own Incus through incus-socket (node never became reachable)"
   fi
