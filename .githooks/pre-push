@@ -3,8 +3,8 @@
 # fails in a second instead of after a push, a PR open, and a CI round trip.
 #
 # CI is still the authority — this is a convenience, and `git push --no-verify`
-# bypasses it (which scripts/validate-issue-119.sh relies on to get a
-# deliberately-malformed branch to the server).
+# bypasses it (which scripts/validate/multi-commit-pr-cannot-reach-main.sh
+# relies on to get a deliberately-malformed branch to the server).
 #
 # Deliberately does not run make test/lint: `make lint` pulls a ~200MB Docker
 # image and is documented as slow, and CI gates those as required checks now.
