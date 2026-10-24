@@ -47,8 +47,10 @@ long multi-issue sessions were ~77% of the cost.
   `go mod why -m <module>` (is it built today?). For Incus behaviour, check the
   module-cache source or run a real probe. Otherwise, label the claim unverified.
 - **One issue per session.** After a PR ships, don't roll into the next issue
-  in the same context. Post anything not yet captured (findings, open
-  questions) as an issue comment, then suggest a fresh session. The one
+  in the same context. Record findings outside the issue with
+  `scripts/finding.sh add --kind <bug|drift|follow-up> --where <path:line> "<why>"`
+  (a log shared by all worktrees; `/file-findings` files it), post open
+  questions as an issue comment, then suggest a fresh session. The one
   sanctioned exception is **`/run-chain`**, which the operator invokes. Its
   root session implements nothing; it collects briefs and hand-back reports
   while `issue-worker`s do the work, so its context stays small across issues. Operator
@@ -145,7 +147,7 @@ and `background-poll-warns-on-config-diff` are visibly a pair proving the same
 behaviour on two code paths.
 
 `scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`, `worktree.sh`,
-`vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `lgtm.sh`, `auto-rebase.sh`.
+`finding.sh`, `vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `lgtm.sh`, `auto-rebase.sh`.
 
 They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
 prerequisite is a **SKIP with exit 3**, never a FAIL — "you didn't install a
@@ -189,6 +191,7 @@ The recurring loops, so a session runs them rather than re-deriving them:
 - **`/file-task`**: file an issue in `roadmap_task.yml`'s shape, with labels.
   Dependencies are native blocked-by links (`--blocked-by` / `--blocking`),
   which are all `/next` reads.
+- **`/file-findings`** (#314): file `scripts/finding.sh`'s unfiled findings as `proposed` issues.
 - **`/refine-issue <n>`** (#274): take an existing stub toward `Ready`:
   classify and retitle it, set blockers, ask the operator the open design
   questions, rewrite the body in template shape, and report every change with
