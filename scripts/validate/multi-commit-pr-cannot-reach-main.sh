@@ -17,7 +17,9 @@
 # merge-updating them (see docs/Development Conventions.md "Linting & CI").
 #
 # The throwaway PR is always closed, never merged. Its branch is prefixed
-# `validate-119/` so a leaked one is obvious.
+# `validate-119/` so a leaked one is obvious. All work happens in a temporary
+# worktree, so the caller's checkout is never switched (#280); the last check
+# asserts that its branch, HEAD and status are unchanged.
 #
 # BASE_REF selects what the throwaway branch forks from; it must be a ref that
 # already carries .github/workflows/pr-shape.yml, since for pull_request events
@@ -41,6 +43,8 @@ BASE_REF="${BASE_REF:-origin/main}"
 BRANCH="validate-119/$(date +%s)"
 RULESET_ID=17956515
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+WORK_DIR=$(mktemp -d)
+WT="$WORK_DIR/branch" # the throwaway branch's worktree; steps 1-4 run here
 
 # This script is deliberately fail-fast, unlike the rest of the suite: it drives
 # one real PR through GitHub and every step depends on the last (open the PR →
@@ -60,15 +64,22 @@ cleanup() {
 		echo "--- teardown: closing PR and deleting $BRANCH"
 		gh pr close "$BRANCH" --delete-branch >/dev/null 2>&1
 	fi
-	git checkout -q "$ORIG_BRANCH" 2>/dev/null
+	cd "$ROOT_DIR" || return
+	git push -q --no-verify origin --delete "$BRANCH" >/dev/null 2>&1
+	git worktree remove -f "$WT" 2>/dev/null
 	git branch -qD "$BRANCH" 2>/dev/null
-	git push -q origin --delete "$BRANCH" >/dev/null 2>&1
+	rm -rf "$WORK_DIR"
 }
-
-ORIG_BRANCH=$(git branch --show-current)
 trap cleanup EXIT
 
-[ -z "$(git status --porcelain)" ] || fail "working tree is dirty; this script switches branches"
+# The caller's checkout as it was. Nothing here touches it, and the last check
+# proves that. A dirty tree is fine, since no branch is switched under it.
+caller_state() {
+	git -C "$ROOT_DIR" symbolic-ref -q HEAD || echo "detached"
+	git -C "$ROOT_DIR" rev-parse HEAD
+	git -C "$ROOT_DIR" status --porcelain
+}
+CALLER_BEFORE=$(caller_state)
 
 # --- Preconditions ---------------------------------------------------------
 # Read the ruleset BEFORE opening anything. If required_status_checks isn't
@@ -101,19 +112,24 @@ echo "$rules" | jq -e '.rules[] | select(.type=="pull_request")
 	|| fail "allowed_merge_methods is not exactly [rebase]"
 pass "linear history required; rebase is the only merge method"
 
+# Step 1 needs the real pre-push hook. core.hooksPath may be relative
+# (`make hooks`) or absolute; ask git where the hook it will run lives rather
+# than matching the setting's spelling.
+pre_push=$(git rev-parse --path-format=absolute --git-path hooks/pre-push)
+[ "$(basename "$(dirname "$pre_push")")" = ".githooks" ] && [ -x "$pre_push" ] \
+	|| fail "pre-push hook is $pre_push, not .githooks/pre-push — run 'make hooks' first"
+
 # --- 1. pre-push hook refuses 2 commits ------------------------------------
-echo "=== building a deliberately 2-commit branch off $BASE_REF"
+echo "=== building a deliberately 2-commit branch off $BASE_REF in a temporary worktree"
 git fetch -q origin
-git checkout -q -b "$BRANCH" "$BASE_REF"
+git worktree add -q --no-track -b "$BRANCH" "$WT" "$BASE_REF"
+cd "$WT" # the rest of the script, step 4's reset included, runs in $WT
 
 for n in 1 2; do
 	echo "validate-119 commit $n" >> .validate-119-scratch
 	git add .validate-119-scratch
 	git commit -qm "chore: validate-119 throwaway commit $n"
 done
-
-[ "$(git config core.hooksPath)" = ".githooks" ] \
-	|| fail "core.hooksPath is not .githooks — run 'make hooks' first"
 
 if git push -q -u origin "$BRANCH" 2>/dev/null; then
 	fail "pre-push hook allowed a 2-commit push"
@@ -175,6 +191,10 @@ git push -q --force-with-lease origin "$BRANCH"
 
 await_check "$(git rev-parse HEAD)" success
 pass "one-commit went green after the squash"
+
+[ "$(caller_state)" = "$CALLER_BEFORE" ] \
+	|| fail "the caller's checkout changed: branch, HEAD or status differ from before the run"
+pass "the caller's checkout is unchanged (branch, HEAD, status)"
 
 echo
 echo "#119's enforcement is real end to end."
