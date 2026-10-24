@@ -41,9 +41,15 @@ endif
 lint-docs:
 	./scripts/lint-mermaid.sh
 
+# goimports gets files, not `.`: it recurses into every directory, so `.` from
+# the main checkout would rewrite the files of each worktree under
+# .claude/worktrees/ and of the upstream submodule in third_party/. Pruning dot
+# directories and third_party/ matches what `go fmt ./...` covers. The pinned
+# goimports comes from .devcontainer/scripts/3-install-goimports.sh (#262).
 fmt:
 	$(GO) fmt ./...
-	goimports -w .
+	@command -v goimports >/dev/null || { echo "make fmt: goimports not found; run .devcontainer/scripts/3-install-goimports.sh" >&2; exit 127; }
+	find . -path './third_party' -prune -o -path '*/.*' -prune -o -name '*.go' -print | xargs -r goimports -w
 
 tidy:
 	$(GO) mod tidy
