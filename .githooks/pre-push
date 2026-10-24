@@ -34,10 +34,12 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
 		cat >&2 <<-EOF
 			pre-push: $remote_ref is $ahead commits ahead of main; it must be 1.
 
-			    git reset --soft FETCH_HEAD
-			    git commit -c HEAD@{1}
+			    git fetch origin main
+			    git reset --soft "\$(git merge-base FETCH_HEAD HEAD)"
+			    git commit -C "\$(git rev-list --reverse FETCH_HEAD..HEAD@{1} | head -1)"
 
-			Then push again. To push anyway: git push --no-verify
+			Then push again, or let \`make ship\` squash (and rebase) it for you.
+			To push anyway: git push --no-verify
 		EOF
 		exit 1
 	fi
