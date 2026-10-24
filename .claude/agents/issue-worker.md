@@ -95,5 +95,12 @@ open questions: <for the operator> | none
 **Noticed** lists what you found outside this issue's scope while working:
 bugs, docs or comments that drifted from the code, follow-ups. Give each a
 location and a one-line why, or write `none`. **Never file issues, comment on
-issues or PRs, or fix them in this commit yourself.** The caller removes
-duplicates and files them as `proposed` for the operator to triage.
+issues or PRs, or fix them in this commit yourself.** When you stop, the
+`SubagentStop` hook (`.claude/hooks/finding-noticed.sh`, #314) parses this
+section into the findings log (`scripts/finding.sh`), one record per bullet;
+`/file-findings` later files them as `proposed` for the operator to triage.
+So keep each bullet exactly in the form above,
+`- <path>:<line> — <one line> (bug | drift | follow-up)`, or the single word
+`none`. The hook also reads the `## Hand-back #<n>` and `branch:` lines for the
+origin issue. Changing this format needs a matching change to the hook and
+its validate script (`scripts/validate/finding-hook-records-noticed-bullets.sh`).

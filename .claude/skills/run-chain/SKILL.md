@@ -27,11 +27,16 @@ audit.
   send the question back to the worker or park the issue.
 - Bound every command (`--jq`, `sed -n`, `head`), as `CLAUDE.md` says.
 - Keep a ledger at `<scratchpad>/run-chain.md`: one line per issue (state, PR,
-  branch, worktree), plus a list of Noticed items and open questions. Update
-  it as you go and write the summary from it, not from memory, since a long
-  run may be compacted.
+  branch, worktree), plus open questions. Update it as you go and write the
+  summary from it, not from memory, since a long run may be compacted.
+- Workers' Noticed items aren't held in context or in the ledger. The
+  `SubagentStop` hook records each `issue-worker` Noticed bullet in the
+  findings log (`scripts/finding.sh`, #314), which is the source of truth.
+  If a hand-back lists Noticed bullets that `scripts/finding.sh list --unfiled`
+  doesn't show, the hook failed (its stderr says why): add them with
+  `scripts/finding.sh add`.
 - Once a hand-back is in the ledger, don't quote it again. Only its
-  essentials go forward: PR, branch, verdict, open questions, Noticed.
+  essentials go forward: PR, branch, verdict, open questions.
 
 ## 1. Queue
 
@@ -106,16 +111,12 @@ merges.
 
 ## 5. File Noticed items as `proposed`
 
-After the last worker hands back, take the Noticed items from every worker
-together:
-
-- Drop duplicates across workers, and any that an open issue already covers:
-  `gh issue list --state open --search "<keywords>" --limit 5 --json number,title`.
-- File the rest with `/file-task`'s shape and labels, adding `proposed`, and
-  **never `Ready`**. The body says `Noticed while working on #<n>.` (that's
-  what `/next` reads) and gives the `path:line`.
-- An item too thin to fill in "Done when" honestly goes under open questions
-  in the summary instead, as a candidate for `/refine-issue`.
+After the last worker hands back, run `/file-findings`
+(`.claude/skills/file-findings/SKILL.md`) and follow its steps as written, so
+the two can't drift. It files the log's unfiled findings, every worker's
+together, as `proposed` (never `Ready`), drops the ones an open issue already
+covers, and marks each record. The findings it leaves unfiled as too thin go
+under open questions in the summary, as candidates for `/refine-issue`.
 
 ## 6. Run summary
 

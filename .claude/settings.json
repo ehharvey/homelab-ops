@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/finding.sh *)"
+    ]
+  },
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "issue-worker",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/finding-noticed.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/finding-count.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
