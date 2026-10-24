@@ -277,7 +277,7 @@ absence causes a skip rather than a failure.
 
 | group | what it needs | belongs in CI |
 |---|---|---|
-| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network) | yes |
+| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), and `finding-hook-records-noticed-bullets.sh` needs `jq`, `flock`, `git` | yes |
 | `compose` | Docker, `docker compose` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
