@@ -49,9 +49,11 @@ jobs:
           Squash the branch and force-push:
 
               git fetch origin main
-              git reset --soft origin/main
-              git commit -c HEAD@{1}
+              git reset --soft "\$(git merge-base FETCH_HEAD HEAD)"
+              git commit -C "\$(git rev-list --reverse FETCH_HEAD..HEAD@{1} | head -1)"
               git push --force-with-lease
+
+          Or run \`make ship\`, which squashes, rebases and re-ships for you.
 
           Keep the ## Plan and ## Test plan sections in the commit message body
           — \`gh pr create --fill\` copies them into the PR description.

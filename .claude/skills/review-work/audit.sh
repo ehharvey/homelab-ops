@@ -159,7 +159,7 @@ if [[ $count -eq 1 ]]; then
 else
 	gap "$count commits beyond origin/$base_ref; it takes exactly 1"
 	if [[ $count -gt 1 ]]; then
-		echo "        squash: git fetch origin $base_ref && git reset --soft FETCH_HEAD && git commit -c HEAD@{1}"
+		echo "        squash: git fetch origin $base_ref && git reset --soft \"\$(git merge-base FETCH_HEAD HEAD)\" && git commit -C \"\$(git rev-list --reverse FETCH_HEAD..HEAD@{1} | head -1)\""
 	fi
 fi
 
