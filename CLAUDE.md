@@ -202,6 +202,7 @@ The recurring loops, so a session runs them rather than re-deriving them:
 - **`/address-feedback [<pr>]`**: review threads or failing checks on an open
   PR; amend, re-verify, `make ship`, sync the PR, reply. It never runs
   `make lgtm`.
+- **`/resume <n>`** (#289, operator-invoked only): pick up one issue or PR.
 - **`/run-chain [<n> …]`** (#253, operator-invoked only): a root session works
   through the `Ready` queue (`queue.sh`: run / park / skip). Each issue gets
   a `decisions-scout` brief, an `issue-worker`, a Done-when audit and
