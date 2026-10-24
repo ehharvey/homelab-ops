@@ -38,7 +38,7 @@ Sections written before this convention may still end in addenda. The newest one
 
 Landing finished work is two steps (`scripts/ship.sh`, `scripts/lgtm.sh`):
 
-- **`make ship`** — pushes and opens the PR with `gh pr create --fill`. Stops there. CI runs while you read the diff. Run it again after amending the commit (e.g. for review feedback) to re-ship to the open PR (#273): it force-pushes with a lease on the PR's head SHA, so it refuses to overwrite anything pushed since it read the PR, and it leaves the PR's title and body alone (`/address-feedback` syncs them from the commit). It refuses a closed or merged PR.
+- **`make ship`** — pushes and opens the PR with `gh pr create --fill`. Stops there. CI runs while you read the diff. First it makes the branch shippable (#319): a branch of several commits is squashed into one that keeps the *first* commit's message (where the Plan, Test plan and `Closes #<n>` were written; it prints the commits it folded in), and a branch behind `main` is rebased onto it, never merged. It refuses, and pushes nothing, when a rebase is already in progress (finish with `git rebase --continue`, then `make ship`), when its own rebase stops on a conflict (the rebase is left stopped for you to resolve), or when the branch is stacked, meaning another local or `origin` branch contains some of its commits: squashing or rebasing would rewrite them under that branch, so rebase onto `main` after it lands (or `make restack` once #254 provides it). A stale local branch can trip that refusal falsely; `make wt-gc` clears those. A branch already one commit ahead of current `main` ships unchanged. Squashing and rebasing live in `ship` rather than a git hook because `pre-push` can't change what it pushes and `post-commit` also fires mid-rebase. Until #281, a branch pushed earlier with no PR open that `ship` then squashes or rebases is refused as non-fast-forward. Run it again after amending the commit (e.g. for review feedback) to re-ship to the open PR (#273): it force-pushes with a lease on the PR's head SHA, so it refuses to overwrite anything pushed since it read the PR, and it leaves the PR's title and body alone (`/address-feedback` syncs them from the commit). It refuses a closed or merged PR.
 - **`make lgtm`** — enables auto-merge on the current branch's PR, so it merges once the required checks pass. `make lgtm PR=<n>` for a PR opened another way.
 
 Splitting them (see #125) is what keeps a PR from merging before anyone has looked at it. It's a speed bump, not an enforced control: a real approval gate isn't available to a solo dev, since GitHub won't let you approve your own PR and requiring one review would deadlock every PR. `required_approving_review_count` is therefore 0 and `make lgtm` is the honour-system stand-in.
@@ -51,14 +51,15 @@ Three things enforce the one-commit shape, in order of how fast they tell you:
 2. The `one-commit` job in `.github/workflows/pr-shape.yml` fails the PR.
 3. `one-commit` is a required status check on `main`, so a failing PR can't merge.
 
-To squash a branch that got away from you:
+`make ship` squashes for you; the hook and the check refuse and print the manual form, which is:
 
 ```sh
 git fetch origin main
-git reset --soft FETCH_HEAD
-git commit -c HEAD@{1}
-make ship
+git reset --soft "$(git merge-base FETCH_HEAD HEAD)"
+git commit -C "$(git rev-list --reverse FETCH_HEAD..HEAD@{1} | head -1)"
 ```
+
+It resets to the merge-base rather than to `FETCH_HEAD`, because on a branch behind `main` a soft reset to `FETCH_HEAD` keeps the branch's older tree and silently reverts whatever landed on `main` since. It reuses the first commit's message rather than the last's (`HEAD@{1}`), because the first is where the Plan and Test plan were written. And it takes that message verbatim with `-C`, not `-c`: an edited message goes through git's default `strip` cleanup, which deletes every line starting with `#`, `## Plan` and `## Test plan` included. Amend the message afterwards if it needs changing.
 
 Why one commit rather than squash-merging: squash-vs-rebase was a per-PR judgment call with no right answer (#119), and rebase-only removes the decision while keeping history linear. The cost is moving the squash upstream, to the branch, where a force-push is still cheap and the commit message is still editable.
 
