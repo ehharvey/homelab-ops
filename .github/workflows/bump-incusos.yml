@@ -11,11 +11,20 @@ name: Bump incus-os submodule
 # branch and PR, runs whether or not there is a new tag, and never touches the
 # submodule PR's diff.
 #
-# Both PRs are opened with GITHUB_TOKEN, and a GITHUB_TOKEN push triggers no
-# workflows: they arrive without the required checks (build-test, lint,
-# docker-smoke, one-commit) and stay blocked until the operator pushes to the
-# branch. For the pin that wait is accepted: refreshing a pinned image is meant
-# to be a conscious act (docs/Decisions.md §21). See scripts/validate/README.md.
+# The submodule PR is opened with ISSUE264_REBASE_BOT_PAT (#287), so its push
+# triggers the required checks (build-test, lint, docker-smoke, one-commit).
+# scripts/incusos-bump-is-trivial.sh then decides whether the bump is
+# provenance-only: the submodule pointer plus the `// Vendored from ... @ <sha>`
+# stamps and nothing else. Only then does the job enable auto-merge, with the
+# same PAT, so the merge is attributed to a real user and push-triggered
+# workflows on main (ci.yml, sync-wiki.yml) still fire. Every other bump waits
+# for a human `make lgtm`, and its PR body lists what changed beyond the stamps.
+#
+# The pin PR is opened with GITHUB_TOKEN, and a GITHUB_TOKEN push triggers no
+# workflows: it arrives without the required checks and stays blocked until the
+# operator pushes to the branch. That wait is accepted: refreshing a pinned
+# image is meant to be a conscious act (docs/Decisions.md §21). See
+# scripts/validate/README.md.
 #
 # Dispatching this from a branch other than main rebuilds the bump branches on
 # top of THAT branch: both jobs commit onto whatever ref was checked out, so the
@@ -89,10 +98,36 @@ jobs:
           go build ./...
           go test ./...
 
+      # Reads the uncommitted working tree, which is exactly what
+      # create-pull-request is about to commit. Exit 0 = provenance-only,
+      # 1 = needs review; anything else fails the job.
+      - name: Classify the bump
+        id: classify
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          rc=0
+          ./scripts/incusos-bump-is-trivial.sh > "$RUNNER_TEMP/classify.md" || rc=$?
+          case "$rc" in
+            0) trivial=true ;;
+            1) trivial=false ;;
+            *) exit "$rc" ;;
+          esac
+          cat "$RUNNER_TEMP/classify.md"
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            echo "trivial=$trivial"
+            echo "report<<$delim"
+            cat "$RUNNER_TEMP/classify.md"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      # The PAT, not GITHUB_TOKEN: a GITHUB_TOKEN push triggers no workflows,
+      # so the required checks would never start and auto-merge would hang.
       - uses: peter-evans/create-pull-request@v8.1.1
+        id: cpr
         if: steps.check.outputs.up_to_date == 'false'
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ISSUE264_REBASE_BOT_PAT }}
           branch: chore/bump-incus-os
           delete-branch: true
           title: "Bump lxc/incus-os to ${{ steps.check.outputs.latest_tag }}"
@@ -102,11 +137,32 @@ jobs:
             `${{ steps.check.outputs.latest_tag }}` and re-vendors
             `internal/third_party/incusos` via `scripts/vendor-incusos.sh`.
 
-            Review the diff in `internal/third_party/incusos/` for any struct changes
-            before merging — `go build`/`go test` passed in this workflow,
-            but that only catches breakage, not silent field-mapping drift
-            in `internal/seed`.
+            ${{ steps.classify.outputs.report }}
+
+            The path was chosen by `scripts/incusos-bump-is-trivial.sh`
+            (Development Conventions § Vendoring upstream IncusOS seed structs).
           labels: dependencies
+
+      # Auto-merge is enabled with the PAT too, so the merge is attributed to
+      # its user rather than github-actions[bot] and the push to main triggers
+      # ci.yml and sync-wiki.yml. On the review path it is switched off, in
+      # case an earlier provenance-only run left it on for this same PR.
+      - name: Set auto-merge from the classification
+        if: steps.cpr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.ISSUE264_REBASE_BOT_PAT }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+          TRIVIAL: ${{ steps.classify.outputs.trivial }}
+        run: |
+          if [ "$TRIVIAL" = true ]; then
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --rebase --delete-branch
+            echo "Provenance-only: auto-merge enabled on #$PR"
+          elif [ "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto
+            echo "Needs review: auto-merge disabled on #$PR"
+          else
+            echo "Needs review: auto-merge stays off on #$PR"
+          fi
 
   bump-base-pin:
     runs-on: ubuntu-latest
