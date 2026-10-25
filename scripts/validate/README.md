@@ -278,7 +278,7 @@ absence causes a skip rather than a failure.
 | group | what it needs | belongs in CI |
 |---|---|---|
 | `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), and `finding-hook-records-noticed-bullets.sh` needs `jq`, `flock`, `git` | yes |
-| `compose` | Docker, `docker compose` | yes |
+| `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
 | `github` | authenticated `gh` with repo admin; `bump-workflow-opens-pin-only-pr.sh` also needs `VALIDATE_GITHUB_WRITES=1` | no — opens real PRs, would recurse |
@@ -300,8 +300,11 @@ client and server share a major version.
 ## Parallelism
 
 `run.sh --jobs N` runs scripts concurrently. **The `compose` group cannot use it
-yet**: those scripts share host ports 8080/8081/3000/3100/9090 and a single Compose
-project name, so two at once fight over both. The `incus-vm` group likewise
+yet**: those scripts share the host ports listed in `COMPOSE_HOST_PORTS` (in
+`lib-compose.sh`, the one list of them) and a single Compose project name, so
+two at once fight over both. `compose up` refuses to start a stack that
+publishes a host port the list doesn't name, so a script whose override adds
+one fails a check until it's listed (#271). The `incus-vm` group likewise
 shares the `home-lan` bridge, and `app-produces-working-installer-e2e.sh`'s
 header warns against running it concurrently with
 `node-boots-and-trusts-bootstrap-cert.sh` for that reason.
@@ -323,8 +326,8 @@ an older or CI-provided Compose where `down` returns early (#153).
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `skip_check`, the prereq DSL, `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
-| `lib-compose.sh` | `compose()`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
+| `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose + jq), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 
 `lib.sh`'s prereq DSL includes `require_incus_image`, which asserts the pinned

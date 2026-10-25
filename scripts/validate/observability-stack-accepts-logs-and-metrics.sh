@@ -28,6 +28,8 @@ VALIDATE_NEEDS="docker-compose curl jq"
 VALIDATE_DURATION="~1m"
 
 validate_parse_args "$@"
+require_compose
+check_prereqs
 cd "$ROOT_DIR"
 
 check_json() {

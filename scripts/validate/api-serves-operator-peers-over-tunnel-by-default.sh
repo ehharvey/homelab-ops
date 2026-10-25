@@ -41,7 +41,7 @@ VALIDATE_NEEDS="docker-compose jq go curl"
 VALIDATE_DURATION="~60s"
 
 validate_parse_args "$@"
-require_docker_compose
+require_compose
 require_cmd jq go curl
 check_prereqs
 cd "$ROOT_DIR"
