@@ -1369,8 +1369,8 @@ eth0 addresses: [...]            routes: [default via …, 10.200.0.0/24 via …
 
 So node0 has no route covering `10.100.0.0/24` and cannot originate or reply
 to overlay traffic — the TCP SYN-ACK has nowhere to go. Incus's bind was not
-the cause here: at the time it listened on every address, and `wg0` carries
-the `management` role. (#178 later narrowed that bind to the LAN IP, which did
+the cause here: at the time it listened on every address, `wg0`'s included.
+(#178 later narrowed that bind to the LAN IP, which did
 break tunnel reachability until #315; §26 holds the current rule.)
 
 `internal/seed` renders the peer's `AllowedIPs` but nothing on
