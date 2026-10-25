@@ -16,8 +16,12 @@ REPO_ROOT=$(dirname "$(dirname "$DEVCONTAINER_FILE")")
 
 # Relative on purpose: core.hooksPath lives in the shared repo config, and a
 # relative value resolves against each worktree's own root — so this one call
-# also covers every checkout under .claude/worktrees/. An absolute path would
-# aim them all at the main checkout's hooks.
+# also covers every checkout under .claude/worktrees/. It doesn't stay relative:
+# Claude Code's worktree setup rewrites it to the main checkout's absolute
+# .githooks (#279), which aims every worktree at main's hooks until the next
+# container start resets it here. .githooks/run-own-copy.sh covers that, as long
+# as the main checkout's copy of the hook has it, by handing off to the
+# worktree's own copy.
 git -C "$REPO_ROOT" config core.hooksPath .githooks
 
 # The default `strip` cleanup deletes every `#`-leading line of a message git

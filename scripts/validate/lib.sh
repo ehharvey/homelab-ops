@@ -502,6 +502,52 @@ check_agent_registered() {
 }
 
 # ---------------------------------------------------------------------------
+# Git fixtures, for scripts that drive git in throwaway repos. Callers also
+# export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1, so the operator's
+# own config (aliases, signing, hooks) can't change what the repos do.
+# ---------------------------------------------------------------------------
+
+# git_fixture_config <repo>: an identity, and no signing (CI has no key).
+git_fixture_config() {
+	git -C "$1" config user.name validate
+	git -C "$1" config user.email validate@example.invalid
+	git -C "$1" config commit.gpgsign false
+}
+
+# git_fixture_repos <origin> <work>: a bare origin on main, and a configured
+# work repo on main with it as "origin". Nothing is committed or pushed.
+git_fixture_repos() {
+	git init -q --bare -b main "$1"
+	git init -q -b main "$2"
+	git_fixture_config "$2"
+	git -C "$2" remote add origin "$1"
+}
+
+# commit_file <repo> <file> <content> [message]
+commit_file() {
+	echo "$3" >"$1/$2"
+	git -C "$1" add "$2"
+	git -C "$1" commit -q -m "${4:-touch $2}"
+}
+
+# pre_push_under_test: the path of the pre-push hook that checks a push from
+# the current checkout. git starts the copy core.hooksPath resolves to; when
+# that copy sources .githooks/run-own-copy.sh (#279) on an uncommented line,
+# and the helper sits beside it, it hands off to this checkout's own
+# executable copy, which is then the one under test.
+pre_push_under_test() {
+	local started own
+	started=$(git rev-parse --path-format=absolute --git-path hooks/pre-push) || return
+	own="$(git rev-parse --show-toplevel)/.githooks/pre-push"
+	if [ -x "$own" ] && [ -f "${started%/*}/run-own-copy.sh" ] &&
+		grep -v '^[[:space:]]*#' "$started" 2>/dev/null | grep -q '\. .*run-own-copy\.sh'; then
+		echo "$own"
+	else
+		echo "$started"
+	fi
+}
+
+# ---------------------------------------------------------------------------
 # Arg parsing and summary
 # ---------------------------------------------------------------------------
 
