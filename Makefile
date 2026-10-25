@@ -24,6 +24,10 @@ test:
 # though a SIGKILLed `docker run` leaves its container running to the end.
 # The first, non-blocking try exits 75 only when the lock is held, so the wait
 # gets announced. No flock (macOS) or no git checkout: run unlocked.
+# -o closes the lock fd before running the command (#301), so only flock holds
+# the lock: a child that outlives the lint (a hung docker credential helper,
+# #300) can't keep it held. The tradeoff: the lock lives only as long as the
+# flock process, so killing flock alone frees it while docker may still run.
 LINT_CMD := docker run --rm -v $(CURDIR):/app -w /app $(LINT_IMAGE) golangci-lint run ./...
 LINT_LOCK := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/lint.lock
 LINT_LOCKED := $(and $(shell command -v flock 2>/dev/null),$(filter-out /lint.lock,$(LINT_LOCK)))
@@ -32,10 +36,10 @@ lint:
 ifeq ($(LINT_LOCKED),)
 	$(LINT_CMD)
 else
-	@echo 'flock $(LINT_LOCK) $(LINT_CMD)'
-	@flock -n -E 75 "$(LINT_LOCK)" $(LINT_CMD); rc=$$?; [ $$rc -eq 75 ] || exit $$rc; \
+	@echo 'flock -o $(LINT_LOCK) $(LINT_CMD)'
+	@flock -n -E 75 -o "$(LINT_LOCK)" $(LINT_CMD); rc=$$?; [ $$rc -eq 75 ] || exit $$rc; \
 	echo "make lint: waiting for another make lint to release $(LINT_LOCK)"; \
-	flock "$(LINT_LOCK)" $(LINT_CMD)
+	flock -o "$(LINT_LOCK)" $(LINT_CMD)
 endif
 
 # Proves docs/'s mermaid diagrams actually parse — a broken one renders as an
