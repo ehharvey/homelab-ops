@@ -35,9 +35,12 @@ Stop at the first failing step and fix it (or report it) before going on.
 2. **Work in the issue's worktree**, never the main checkout (`CLAUDE.md` §
    Worktrees). `git worktree list` shows whether `eharvey/#<n>` already has
    one. If not, `make wt N=<n>` and work from the printed path.
-3. **Change, then amend.** Make the changes, then `git commit --amend`, never a
-   fixup commit: the branch stays exactly one commit. Update `## Plan` if the
-   approach changed, and `## Test plan` to list what actually re-ran. If
+3. **Change, then amend.** Make the changes and `git add` them, then amend,
+   never a fixup commit: the branch stays exactly one commit. Update `## Plan`
+   if the approach changed, and `## Test plan` to list what actually re-ran:
+   `git log -1 --format=%B > <scratchpad>/msg`, edit that file, then
+   `git commit --amend -F <scratchpad>/msg` (Development Conventions § PR body
+   format; anything else that opens the message strips the `## ` lines). If
    `origin/main` has moved, `git fetch -q origin main && git rebase FETCH_HEAD`.
 4. **Re-verify** with `/ship-issue`'s **Checks**, **Validate** (through
    `validate-runner`) and **Fold fixes in** steps (5–7 as of #273; go by the

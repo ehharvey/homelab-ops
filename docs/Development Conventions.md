@@ -49,7 +49,7 @@ One kind of PR skips `make lgtm` (#287): a **provenance-only** incus-os submodul
 
 Three things enforce the one-commit shape, in order of how fast they tell you:
 
-1. `.githooks/pre-push` refuses a multi-commit push locally. Install once with `make hooks` (the devcontainer does it on start via `.devcontainer/scripts/4-install-git-hooks.sh`).
+1. `.githooks/pre-push` refuses a multi-commit push locally. Install once with `make hooks` (the devcontainer does it on start via `.devcontainer/scripts/4-install-git-hooks.sh`). Both also set `commit.cleanup=scissors`; see § PR body format.
 2. The `one-commit` job in `.github/workflows/pr-shape.yml` fails the PR.
 3. `one-commit` is a required status check on `main`, so a failing PR can't merge.
 
@@ -61,7 +61,7 @@ git reset --soft "$(git merge-base FETCH_HEAD HEAD)"
 git commit -C "$(git rev-list --reverse FETCH_HEAD..HEAD@{1} | head -1)"
 ```
 
-It resets to the merge-base rather than to `FETCH_HEAD`, because on a branch behind `main` a soft reset to `FETCH_HEAD` keeps the branch's older tree and silently reverts whatever landed on `main` since. It reuses the first commit's message rather than the last's (`HEAD@{1}`), because the first is where the Plan and Test plan were written. And it takes that message verbatim with `-C`, not `-c`: an edited message goes through git's default `strip` cleanup, which deletes every line starting with `#`, `## Plan` and `## Test plan` included. Amend the message afterwards if it needs changing.
+It resets to the merge-base rather than to `FETCH_HEAD`, because on a branch behind `main` a soft reset to `FETCH_HEAD` keeps the branch's older tree and silently reverts whatever landed on `main` since. It reuses the first commit's message rather than the last's (`HEAD@{1}`), because the first is where the Plan and Test plan were written. And it takes that message verbatim with `-C`, not `-c`: an edited message goes through git's default `strip` cleanup, which deletes every line starting with `#`, `## Plan` and `## Test plan` included. Amend the message afterwards if it needs changing, the way § PR body format says.
 
 Why one commit rather than squash-merging: squash-vs-rebase was a per-PR judgment call with no right answer (#119), and rebase-only removes the decision while keeping history linear. The cost is moving the squash upstream, to the branch, where a force-push is still cheap and the commit message is still editable.
 
@@ -85,6 +85,21 @@ was chosen, what alternatives were ruled out and why.>
 ```
 
 Keep the "why" in the commit message, not in code comments — code comments should only explain non-obvious *invariants*, not the history of how a feature came to be.
+
+### Amending keeps the sections (#334)
+
+`## Plan` and `## Test plan` start with `#`, so git's default `strip` cleanup deletes them whenever git opens the message for editing. `GIT_EDITOR=true` doesn't prevent it: git still counts the message as edited and strips it. Amend one of two ways:
+
+- **Message unchanged:** `git commit --amend --no-edit`.
+- **Message changed:** write the message to a file, edit the file, and commit from it. A message given with `-F` isn't edited, so it gets `whitespace` cleanup and keeps every line:
+
+  ```sh
+  git log -1 --format=%B > "$SCRATCH/msg"   # a session scratchpad, not /tmp
+  # edit "$SCRATCH/msg"
+  git commit --amend -F "$SCRATCH/msg"
+  ```
+
+Never use a bare `git commit --amend` or `git commit -c`. The squash recipe in § Branching & issues uses `-C` for the same reason. As a backstop, `make hooks` and the devcontainer set `commit.cleanup=scissors` in the shared repo config, which covers every worktree. Scissors keeps `#` lines, and in a real editor it still drops git's own commented help text, because git writes that text below a scissors line. `whitespace` would keep the help text in the message.
 
 ## Roadmap checklist convention
 
