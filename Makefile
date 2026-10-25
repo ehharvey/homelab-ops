@@ -20,26 +20,39 @@ test:
 # One lint at a time across every worktree of this repo (#282): each run is a
 # fresh container that re-downloads modules and peaks near 3 GiB, so N runs at
 # once each take ~N times as long and push the host into swap. The lock lives
-# in the shared git dir, beside validate.lock. A killed make frees it at once,
-# though a SIGKILLed `docker run` leaves its container running to the end.
+# in the shared git dir, beside validate.lock. A killed make frees it at once.
 # The first, non-blocking try exits 75 only when the lock is held, so the wait
-# gets announced. No flock (macOS) or no git checkout: run unlocked.
+# gets announced. No flock (macOS) or no git checkout: run unlocked, unlabelled.
 # -o closes the lock fd before running the command (#301), so only flock holds
 # the lock: a child that outlives the lint (a hung docker credential helper,
 # #300) can't keep it held. The tradeoff: the lock lives only as long as the
 # flock process, so killing flock alone frees it while docker may still run.
+# A SIGKILLed `docker run` client likewise leaves its container running. So the
+# locked run labels its container $(LINT_LABEL)=<the lock path> and, under the
+# lock and before starting its own, removes every running container carrying
+# that label (#292): with the lock held, any such container is an orphan.
+# Worktrees share the lock path, so they reap each other's orphans; a separate
+# clone has its own lock and label value, and is never touched. LINT_LOCKED_CMD
+# takes the lock path as $1 and the checkout as $2, so spaces survive.
 LINT_CMD := docker run --rm -v $(CURDIR):/app -w /app $(LINT_IMAGE) golangci-lint run ./...
 LINT_LOCK := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/lint.lock
 LINT_LOCKED := $(and $(shell command -v flock 2>/dev/null),$(filter-out /lint.lock,$(LINT_LOCK)))
+LINT_LABEL := homelab.lint.lock
+LINT_LOCKED_CMD := sh -c 'docker ps -q --filter "label=$(LINT_LABEL)=$$1" | while read -r id; do \
+	  echo "make lint: reaping orphaned lint container $$(docker inspect -f "{{.Name}}" "$$id" | tr -d /) ($$id), labelled $(LINT_LABEL)=$$1"; \
+	  docker rm -f "$$id" >/dev/null; \
+	done; \
+	exec docker run --rm --label "$(LINT_LABEL)=$$1" -v "$$2":/app -w /app $(LINT_IMAGE) golangci-lint run ./...' \
+	make-lint "$(LINT_LOCK)" "$(CURDIR)"
 
 lint:
 ifeq ($(LINT_LOCKED),)
 	$(LINT_CMD)
 else
-	@echo 'flock -o $(LINT_LOCK) $(LINT_CMD)'
-	@flock -n -E 75 -o "$(LINT_LOCK)" $(LINT_CMD); rc=$$?; [ $$rc -eq 75 ] || exit $$rc; \
+	@echo 'flock -o $(LINT_LOCK) docker run --label $(LINT_LABEL)=$(LINT_LOCK) ... golangci-lint run ./... (after reaping that label)'
+	@flock -n -E 75 -o "$(LINT_LOCK)" $(LINT_LOCKED_CMD); rc=$$?; [ $$rc -eq 75 ] || exit $$rc; \
 	echo "make lint: waiting for another make lint to release $(LINT_LOCK)"; \
-	flock -o "$(LINT_LOCK)" $(LINT_CMD)
+	flock -o "$(LINT_LOCK)" $(LINT_LOCKED_CMD)
 endif
 
 # Proves docs/'s mermaid diagrams actually parse — a broken one renders as an
