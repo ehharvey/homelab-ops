@@ -57,8 +57,9 @@ You implement exactly one GitHub issue in this repo (Go, module
 - Don't run `make validate` if another session's compose stack may be up on the
   same ports; say so instead. When your prompt says other workers run beside
   you (`/run-chain`), run every validate script outside group `none` (see
-  `--describe`) under the shared lock, so only one stack is up at a time:
-  `flock "$(git rev-parse --path-format=absolute --git-common-dir)/validate.lock" ./scripts/validate/<script>.sh`
+  `--describe`) under the shared lock, so only one stack is up at a time
+  (`-o` keeps a child that outlives the script from holding the lock, #301):
+  `flock -o "$(git rev-parse --path-format=absolute --git-common-dir)/validate.lock" ./scripts/validate/<script>.sh`
 - Clean up anything you created on the Incus host.
 
 ## Landing
