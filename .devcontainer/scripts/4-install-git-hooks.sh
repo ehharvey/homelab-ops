@@ -1,6 +1,7 @@
 #! /bin/bash
 # Points the repo at .githooks/ so the pre-push one-commit check (#119) is
-# active in a fresh devcontainer without anyone remembering to run `make hooks`.
+# active in a fresh devcontainer without anyone remembering to run `make hooks`,
+# and sets commit.cleanup=scissors as `make hooks` does (#334).
 set -euo pipefail
 
 DEVCONTAINER_FILE=$(find /workspaces/ -name "devcontainer.json" -type f -print -quit)
@@ -19,4 +20,10 @@ REPO_ROOT=$(dirname "$(dirname "$DEVCONTAINER_FILE")")
 # aim them all at the main checkout's hooks.
 git -C "$REPO_ROOT" config core.hooksPath .githooks
 
-echo "core.hooksPath set to .githooks in $REPO_ROOT"
+# The default `strip` cleanup deletes every `#`-leading line of a message git
+# opens for editing, `## Plan` and `## Test plan` included (#334). Scissors
+# keeps them and still cuts git's own help text. Shared config again, so every
+# worktree gets it.
+git -C "$REPO_ROOT" config commit.cleanup scissors
+
+echo "core.hooksPath set to .githooks and commit.cleanup to scissors in $REPO_ROOT"
