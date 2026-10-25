@@ -49,7 +49,7 @@ One kind of PR skips `make lgtm` (#287): a **provenance-only** incus-os submodul
 
 Three things enforce the one-commit shape, in order of how fast they tell you:
 
-1. `.githooks/pre-push` refuses a multi-commit push locally. Install once with `make hooks` (the devcontainer does it on start via `.devcontainer/scripts/4-install-git-hooks.sh`). Both also set `commit.cleanup=scissors`; see § PR body format.
+1. `.githooks/pre-push` refuses a multi-commit push locally. Install once with `make hooks` (the devcontainer does it on start via `.devcontainer/scripts/4-install-git-hooks.sh`). Both also set `commit.cleanup=scissors`; see § PR body format. Both set `core.hooksPath` to the relative `.githooks`, but Claude Code's worktree setup rewrites the shared value to the main checkout's absolute `.githooks` (#279). The hook therefore first sources `.githooks/run-own-copy.sh`, which hands off to the pushing checkout's own `.githooks/pre-push` when that is a different file, so a worktree's branch is checked by its own copy. That holds only when the copy git starts has the hand-off: a main checkout on a branch from before #279, or with that line edited out, checks every worktree's push with its own copy. Any hook added to `.githooks` starts with the same `.` line.
 2. The `one-commit` job in `.github/workflows/pr-shape.yml` fails the PR.
 3. `one-commit` is a required status check on `main`, so a failing PR can't merge.
 

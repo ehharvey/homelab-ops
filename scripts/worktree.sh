@@ -14,8 +14,13 @@
 # Locked worktrees (Claude Code locks a subagent's while it runs) and the one
 # you're standing in are never touched.
 #
-# No per-worktree setup is needed: core.hooksPath is the relative `.githooks`
-# (see `make hooks`), so every worktree runs its own copy of the hooks.
+# No per-worktree setup is needed for hooks. `make hooks` sets core.hooksPath
+# to the relative `.githooks`, but Claude Code's worktree setup rewrites the
+# shared config to the main checkout's absolute .githooks (#279). Then git
+# starts the main checkout's copy of a hook, which hands off to the pushing
+# worktree's own (.githooks/run-own-copy.sh). That holds only while the main
+# checkout's copy has the hand-off: on a branch from before #279, it checks
+# every worktree's push itself.
 set -euo pipefail
 
 # The main checkout, even when run from inside a worktree, so `new` never
