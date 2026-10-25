@@ -161,11 +161,36 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 			// docs/Decisions.md §24.
 			Addresses:  []string{fmt.Sprintf("%s/%d", inst.TunnelIP, wireguard.OverlayCIDR.Bits())},
 			PrivateKey: wg.NodePrivateKey.Base64(),
-			// Tagging wg0 "management" mirrors eth0's role above, on the
-			// (unverified against IncusOS's own docs — confirmed only by a
-			// real-VM boot, see
-			// scripts/validate/node-tunnel-survives-nat-and-provisions.sh)
-			// assumption that this is what makes Incus's API listen on it.
+			// Tagging wg0 "management" mirrors eth0's role above. It is not
+			// what makes Incus's API reachable over the tunnel: Incus has
+			// one listener, on core.https_address, which is the wildcard
+			// ":8443" (renderIncusPreseed; §26, #315), and Incus knows
+			// nothing of IncusOS interface roles. Nor does the role open
+			// IncusOS's firewall: ApplyInputFilters
+			// (incus-osd/internal/nftables/nft.go) builds rules from each
+			// interface's FirewallRules and never reads Roles.
+			//
+			// What the role does do is add wg0 to IncusOS's "management"
+			// and "cluster" role lookups. Paths below are in
+			// third_party/incus-os at db9e8027, the commit
+			// internal/third_party/incusos is vendored from:
+			//   - If no interface has "cluster", every "management"
+			//     interface also gets it (incus-osd/internal/network/
+			//     networkd.go:412-430; doc/reference/system/network.md
+			//     § Roles). eth0 is already "management", so this tag
+			//     doesn't change whether that fallback fires.
+			//   - SystemNetworkState.GetInterfaceAddressByRole
+			//     (incus-osd/api/system_network.go:230) ranges over a map
+			//     and returns the first address it finds (IPv6 preferred),
+			//     so with eth0 and wg0 both tagged its answer is not
+			//     deterministic.
+			//   - Its consumers are Operations Center, Migration Manager
+			//     and the Operations Center provider ("management"), and
+			//     the OVN service ("cluster"). 0.x runs none of them
+			//     (supportedApplications is incus only; no provider or OVN
+			//     is seeded), so the tag has no observable effect today.
+			// Dropping it would change that lookup, so it is a separate
+			// question from this comment.
 			Roles: []string{incusapi.SystemNetworkInterfaceRoleManagement},
 			Peers: []incusapi.SystemNetworkWireguardPeer{{
 				PublicKey: wg.AppPublicKey.Base64(),
