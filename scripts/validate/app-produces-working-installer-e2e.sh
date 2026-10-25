@@ -106,10 +106,10 @@ check() {
 
 check_json() {
   local desc="$1" json="$2" filter="$3"
-  if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
+  if json_matches "$json" "$filter"; then
     record_pass "$desc"
   else
-    record_fail "$desc (got: $json)"
+    record_fail "$desc (got: $(json_shown "$json"))"
   fi
 }
 

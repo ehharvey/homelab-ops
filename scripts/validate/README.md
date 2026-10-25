@@ -360,7 +360,7 @@ an older or CI-provided Compose where `down` returns early (#153).
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
 | `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose, jq, the credential-helper probe), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 
