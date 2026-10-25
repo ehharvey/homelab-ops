@@ -20,6 +20,9 @@ name: Bump incus-os submodule
 # workflows on main (ci.yml, sync-wiki.yml) still fire. Every other bump waits
 # for a human `make lgtm`, and its PR body lists what changed beyond the stamps.
 #
+# GITHUB_TOKEN is read-only by default (#332); only bump-base-pin is granted
+# write, since check-and-bump writes through the PAT alone.
+#
 # The pin PR is opened with GITHUB_TOKEN, and a GITHUB_TOKEN push triggers no
 # workflows: it arrives without the required checks and stays blocked until the
 # operator pushes to the branch. That wait is accepted: refreshing a pinned
@@ -45,8 +48,7 @@ on:
         default: false
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   check-and-bump:
@@ -166,6 +168,9 @@ jobs:
 
   bump-base-pin:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
