@@ -4,7 +4,10 @@ GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
 WEB_BIN := bin/web
 AGENT_BIN := bin/agent
-LINT_IMAGE := golangci/golangci-lint:v2.12.2
+# The golangci-lint version lives only in .golangci-lint-version (#329): this
+# image tag, and so `make lint` and `make fmt`, and CI's lint job (through
+# golangci-lint-action's version-file) all read it. To bump, edit that file.
+LINT_IMAGE := golangci/golangci-lint:$(shell cat .golangci-lint-version)
 
 build:
 	$(GO) build -o $(BOOTSTRAP_BIN) ./cmd/bootstrap
@@ -41,15 +44,14 @@ endif
 lint-docs:
 	./scripts/lint-mermaid.sh
 
-# goimports gets files, not `.`: it recurses into every directory, so `.` from
-# the main checkout would rewrite the files of each worktree under
-# .claude/worktrees/ and of the upstream submodule in third_party/. Pruning dot
-# directories and third_party/ matches what `go fmt ./...` covers. The pinned
-# goimports comes from .devcontainer/scripts/3-install-goimports.sh (#262).
+# Formats with the same golangci-lint, and so the same gofmt and goimports, that
+# `make lint` checks against (#329): the formatters enabled in .golangci.yml.
+# `golangci-lint fmt` walks the tree from here, skipping dot directories (so
+# the worktrees under .claude/worktrees/) by itself; .golangci.yml excludes the
+# upstream submodule in third_party/. It doesn't take lint.lock: it loads no
+# packages or modules, so it is cheap beside a running lint.
 fmt:
-	$(GO) fmt ./...
-	@command -v goimports >/dev/null || { echo "make fmt: goimports not found; run .devcontainer/scripts/3-install-goimports.sh" >&2; exit 127; }
-	find . -path './third_party' -prune -o -path '*/.*' -prune -o -name '*.go' -print | xargs -r goimports -w
+	docker run --rm -v $(CURDIR):/app -w /app $(LINT_IMAGE) golangci-lint fmt
 
 tidy:
 	$(GO) mod tidy
