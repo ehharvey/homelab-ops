@@ -773,6 +773,84 @@ push the agent image needs to add an App type — i.e. multi-user
 (`docs/Out of Scope.md`), or a published/shared distribution of this project.
 Until then the fixed list has a cost of roughly zero.
 
+### Deferred: how a class-3/5 `Promote` keeps its place (#339)
+
+Classes 3 and 5 are the only ones whose `Promote` is a sequence of ordered
+steps that can't all be blindly repeated: confirm the candidate caught up,
+switch over, retire the old writer; or add a member, wait, remove one. The
+leader can change in the middle (§25), and so can the agent's own version
+(a blue-green upgrade). Something has to tell the next run where the last
+one got to. Two candidates; neither is built, and the choice is made when the
+first class-3 or class-5 renderer is designed.
+
+**Common to both:**
+
+- **The app's own state is authoritative, not the record of progress.** The
+  app manager never owns a class-3 write-leader election (§19). A resumed
+  handover asks the app (e.g. Postgres's `pg_is_in_recovery()`) who is
+  writing before it acts; a checkpoint or marker only says how far it got.
+- **Steps must still be safe to re-run.** A crash after a step but before its
+  record is written repeats the step under either option. DBOS steps are
+  at-least-once too.
+- **Classes 1, 2, 4 and 6 need neither.** Their `Promote` is a no-op, a drain
+  or a destructive in-place update, and where it stopped is legible from
+  `incus list` alone (`docs/AppManager.md`).
+
+**(a) A durable-execution engine inside `Promote`** (DBOS, or Temporal per
+§25 option 7), adopted per renderer, never by the reconcile loop.
+
+- *Gains:* transactional per-step checkpoints; arbitration between two
+  callers, which Incus can't offer (DBOS dedupes a workflow started twice
+  under one ID; from its docs, not tried here); retries, timers and long
+  waits come built in.
+- *Costs:* the store must outlive a leader change, so it has to be shared,
+  meaning Postgres. A SQLite file local to the leader is lost on blue-green
+  replacement and invisible to a new primary. Streaming it to followers
+  (Litestream, LiteFS) is asynchronous, so the new leader checks live state
+  anyway; synchronous replication is option 4 in §25, rejected. DBOS resumes
+  a workflow only under the application version that started it (a code
+  hash by default), so an agent upgrade strands in-flight handovers unless
+  upgrades wait for them. Resuming another process's workflows needs DBOS's
+  recovery admin call or its Conductor. Module weight not measured.
+
+**(b) Step markers in Incus `user.*` keys**, extending what the agent already
+writes (`user.homelab-ops.*`, `internal/incusregistry`).
+
+- *Gains:* no new dependency or store; replicated by Incus's own dqlite and
+  fenced by its quorum (§25); visible in `incus list`; survives leader
+  changes and agent upgrades untouched; consistent with "the runtime is the
+  source of truth" (`docs/AppManager.md`).
+- *Costs:* no arbitration. Incus `If-Match` is a lost-update guard, not a
+  compare-and-swap (#160), so a single writer has to come from the Elector.
+  That widens `incuslocal.SetUserKeys`'s safety premise from "an agent writes
+  only its own instance" to "only the acting leader writes markers", and
+  the new premise must be stated where markers are written. The marker format
+  becomes a compatibility contract: new agent code must read old markers,
+  the opposite of DBOS refusing to resume under different code. Retries and
+  timeouts are the renderer's own code. Markers on an instance go when it's
+  deleted, so a handover keeps them on whichever instance outlives it, or on
+  a coordination-project object.
+
+**Leaning, not decided: (b) first.** A class-3 handover is a handful of steps,
+all of them Incus calls or checks against the app itself, and (b) adds
+nothing to the dependency graph or the tier-0 set. Move a renderer to (a) if
+its choreography grows long waits and timers, or steps outside Incus, which
+need their own fence anyway (§25).
+
+**Rejected: a workflow engine for every class except the agent.**
+
+- Wrong axis. Alloy is class 2, the same as the agent; the line that matters
+  is whether cutover hands over authoritative state (classes 3 and 5), above.
+- It splits the reconcile loop. The agent's self-upgrade is the same
+  per-member state machine as every other App (`docs/AppManager.md`); with an
+  engine driving the rest, the `incus list`-derived path would be exercised
+  by one App.
+- The engine's Postgres, run in the fleet, is one of the Apps the engine
+  manages, so it would choreograph its own database's switchover. Hosting it
+  outside the fleet (beside the web app, §29) makes it tier-0 for every App.
+- With DBOS, the version gating in (a) stalls every agent upgrade behind every
+  in-flight handover in the fleet.
+
 ## 19. Stateful app support (databases, Kubernetes) — direction, not yet built
 
 Raised while checking whether the App Manager design is *tolerant* of the
@@ -1510,7 +1588,7 @@ Requirement: **at most one agent performs leader-only writes at a time.** Idle p
 4. **Embedded `hashicorp/raft` in the agent.** *Rejected.* It makes the agent stateful (a log and stable store that must survive blue-green replacement, and two instances can't share one identity), makes it a class-5 quorum member (whose upgrades need `max_parallel: 1`, contradicting fleet-wide concurrent agent upgrades), turns every upgrade into a Raft membership change run by the reconcile loop, and adds a peer network. Incus is already a dqlite/Raft cluster, so this duplicates a consensus group that exists. Gains nothing in 0.x, which has one node.
 5. **`hashicorp/memberlist` (SWIM gossip).** *Rejected.* It provides membership and failure detection, not election, so a rule (highest rank) is still needed. Its failure detector runs over a different path than the actions: agents that can't gossip but can all reach Incus each see the others as dead and elect themselves, producing extra leaders. Heartbeating *through Incus* makes liveness and the ability to act one channel.
 6. **Kubernetes leases / leaderless deterministic apply.** *Deferred, and not a substitute.* Workloads inside a cluster can be applied by several managers as no-ops (server-side apply, pure rendering, a recorded applied revision to stop flip-flop between managers on different git commits, ownership-labelled pruning), or better handed to an in-cluster controller that uses Kubernetes Leases. But the cluster's own lifecycle (bootstrap, control-plane join, drain, upgrade, etcd membership) is choreographed and single-actor, and it can't use the cluster's leases to decide who builds the cluster. Kubernetes would sit above election, not replace it. See §19.
-7. **Temporal.** *Deferred.* It removes the leader entirely — a fixed workflow ID allows one reconcile per App, workers compete for tasks, a Schedule with overlap policy `SKIP` replaces the tick — moving the single point of coordination to the Temporal server. Hosting it needs a database (a stateful App the manager can't safely upgrade with itself) or a cloud VM. `Renderer.Promote` is the seam: the first class-3 renderer can start a workflow there without Temporal becoming a tier-0 dependency of everything. If Temporal is adopted, this section's election machinery is moot.
+7. **Temporal.** *Deferred.* It removes the leader entirely — a fixed workflow ID allows one reconcile per App, workers compete for tasks, a Schedule with overlap policy `SKIP` replaces the tick — moving the single point of coordination to the Temporal server. Hosting it needs a database (a stateful App the manager can't safely upgrade with itself) or a cloud VM. `Renderer.Promote` is the seam: the first class-3 renderer can start a workflow there without Temporal becoming a tier-0 dependency of everything. If Temporal is adopted, this section's election machinery is moot. §18's "Deferred: how a class-3/5 `Promote` keeps its place" compares a workflow engine there (Temporal or DBOS) against step markers in Incus `user.*` keys.
 8. **Web app as arbiter** (grants leases from a cloud VM). *Rejected by the operator.* It would make the web app a hard availability dependency for management.
 9. **Ranked election over Incus heartbeats.** *Specified below; deferred.*
 10. **Operator-designated primary, fenced by git commits, with an acting handoff.** ***Chosen for 0.x.*** (It was first chosen with an operator-raised epoch as the fence; see History.)
