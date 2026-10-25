@@ -37,6 +37,7 @@ type Store interface {
 	LastSync(ctx context.Context) (commit string, syncedAt time.Time, ok bool, err error)
 	Networks(ctx context.Context) ([]config.Network, error)
 	Instances(ctx context.Context) ([]config.Instance, error)
+	InstanceTunnelIPs(ctx context.Context) ([]config.Instance, error)
 	Apps(ctx context.Context) ([]config.App, error)
 	Network(ctx context.Context, name string) (config.Network, bool, error)
 	Instance(ctx context.Context, name string) (config.Instance, bool, error)
@@ -106,6 +107,42 @@ func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return SyncOnce(ctx, s.syncer, s.store, s.tunnels, s.creds, now)
+}
+
+// RestoreTunnelPeers registers the peers of every instance already in the
+// store, then the operator peers, on the live tunnel (#269). cmd/web calls it
+// once at startup, before it serves or polls, and it is the only thing that
+// registers the operators there. The peer table lives only in the in-process
+// tunnel and SyncOnce is the only other thing that fills it, so without this
+// a restarted web app answers no node's handshake until the next sync, which
+// with CONFIG_SYNC_INTERVAL unset waits on an operator's POST /sync. Nodes
+// have no enrollment step that could re-register them (docs/Decisions.md
+// §11).
+//
+// It reads the stored snapshot, not the fleet repo, so it needs no syncer
+// and makes no network call. A nil tunnel or store makes it a no-op; an
+// empty store registers only the operators. Instances are best-effort, as
+// in SyncOnce: one whose stored tunnel address won't parse, or whose
+// credential can't be read, is logged and skipped. A failure to read the
+// store at all, or to register an operator peer, is returned, and cmd/web
+// treats it as fatal: nothing else would retry before the next sync.
+func (s *Service) RestoreTunnelPeers(ctx context.Context) error {
+	if s.tunnels == nil || s.store == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	instances, err := s.store.InstanceTunnelIPs(ctx)
+	if err != nil {
+		return fmt.Errorf("read stored instances: %w", err)
+	}
+	nInst, nOps := reconcileTunnelPeers(ctx, s.tunnels, s.creds, instances)
+	ops := len(s.tunnels.OperatorPeers())
+	log.Printf("wireguard: registered %d/%d stored instance peers and %d/%d operator peers", nInst, len(instances), nOps, ops)
+	if nOps < ops {
+		return fmt.Errorf("registered %d of %d operator peers", nOps, ops)
+	}
+	return nil
 }
 
 // New builds the web app's HTTP handler. syncer, store, certs, builder,
@@ -280,17 +317,6 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 	return SyncResult{Commit: sha, Config: cfg, Diff: diff}, nil
 }
 
-// reconcileTunnelPeers registers every instance in instances as a trusted
-// peer on tunnels, minting each one's nodeprovision.Credential on first
-// sight, and then re-registers the operator peers (#195), so the peer table
-// is always instances plus operators, never instances alone. Operators go
-// last so that, should an instance ever hold an operator's address, the
-// operator's key keeps it; AssignTunnelIPs keeps instances out of
-// wireguard.OperatorCIDR, so that is a backstop. Each upsert replaces the
-// peer's allowed IPs, which unmaps its address for the instant between
-// wireguard-go's remove and insert; a packet arriving then is dropped and
-// resent by TCP, for operators as for instances. Best-effort/logged — see
-// SyncOnce's doc comment.
 // logMovedTunnelIPs logs each instance whose tunnel address AssignTunnelIPs
 // changed from the prior snapshot's. AssignTunnelIPs reuses a prior address
 // unless it now falls outside the instance pool (for one, inside
@@ -312,8 +338,32 @@ func logMovedTunnelIPs(instances, prior []config.Instance) {
 	}
 }
 
-func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) {
+// reconcileTunnelPeers registers every instance in instances as a trusted
+// peer on tunnels, minting each one's nodeprovision.Credential on first
+// sight, and then re-registers the operator peers (#195), so the peer table
+// is always instances plus operators, never instances alone. Its callers are
+// SyncOnce, after each stored sync, and Service.RestoreTunnelPeers, at
+// startup (#269). Operators go last so that, should an instance ever hold an
+// operator's address, the operator's key keeps it; AssignTunnelIPs keeps
+// instances out of wireguard.OperatorCIDR, so that is a backstop. An
+// instance with no tunnel address is skipped and logged rather than handed
+// to UpsertPeer, which can't express one, and with a nil creds no instance
+// is registered, since none has a key. Each upsert replaces the peer's
+// allowed IPs, which unmaps its address for the instant between
+// wireguard-go's remove and insert; a packet arriving then is dropped and
+// resent by TCP, for operators as for instances. Best-effort/logged — see
+// SyncOnce's doc comment. It returns how many instance and operator peers
+// it registered.
+func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) (nInst, nOps int) {
+	if creds == nil && len(instances) > 0 {
+		log.Printf("wireguard: no credential store, so no instance peers registered")
+		instances = nil
+	}
 	for _, inst := range instances {
+		if !inst.TunnelIP.IsValid() || inst.TunnelIP.IsUnspecified() {
+			log.Printf("wireguard: skip peer for %q: no tunnel address assigned", inst.Name)
+			continue
+		}
 		cred, err := nodeprovision.EnsureCredential(ctx, creds, inst.Name)
 		if err != nil {
 			log.Printf("wireguard: mint credential for %q: %v", inst.Name, err)
@@ -322,13 +372,18 @@ func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodep
 		pub := wireguard.PublicKeyOf(cred.WireGuardPrivateKey)
 		if err := tunnels.UpsertPeer(pub, inst.TunnelIP); err != nil {
 			log.Printf("wireguard: register peer for %q: %v", inst.Name, err)
+			continue
 		}
+		nInst++
 	}
 	for _, op := range tunnels.OperatorPeers() {
 		if err := tunnels.UpsertPeer(op.PublicKey, op.Addr); err != nil {
 			log.Printf("wireguard: register operator peer %s: %v", op.Addr, err)
+			continue
 		}
+		nOps++
 	}
+	return nInst, nOps
 }
 
 func handleSync(svc *Service) http.HandlerFunc {

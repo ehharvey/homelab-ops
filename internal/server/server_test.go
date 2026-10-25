@@ -84,6 +84,10 @@ func (f *fakeStore) Instances(context.Context) ([]config.Instance, error) {
 	return f.instances, f.instErr
 }
 
+func (f *fakeStore) InstanceTunnelIPs(context.Context) ([]config.Instance, error) {
+	return f.instances, f.instErr
+}
+
 func (f *fakeStore) Apps(context.Context) ([]config.App, error) {
 	return f.apps, f.appsErr
 }
@@ -679,6 +683,62 @@ func TestReconcileTunnelPeersContinuesPastCredentialError(t *testing.T) {
 	}
 	if tunnels.upsertCall[0].tunnelIP != addr("10.100.0.3") {
 		t.Errorf("upsertCall[0].tunnelIP = %s, want node-b's 10.100.0.3", tunnels.upsertCall[0].tunnelIP)
+	}
+}
+
+// TestReconcileTunnelPeersSkipsInstancesWithoutTunnelIP: an instance with no
+// tunnel address, or 0.0.0.0, is skipped before a credential is minted, and
+// the rest are still registered and counted. A stored row can come back that
+// way (Store.InstanceTunnelIPs), and UpsertPeer can't express it.
+func TestReconcileTunnelPeersSkipsInstancesWithoutTunnelIP(t *testing.T) {
+	tunnels := &fakeTunnelSource{}
+	creds := &fakeCredentialStore{}
+	instances := []config.Instance{
+		{Name: "node-a"},
+		{Name: "node-b", TunnelIP: addr("0.0.0.0")},
+		{Name: "node-c", TunnelIP: addr("10.100.0.4")},
+	}
+
+	nInst, _ := reconcileTunnelPeers(context.Background(), tunnels, creds, instances)
+
+	if nInst != 1 || len(tunnels.upsertCall) != 1 || tunnels.upsertCall[0].tunnelIP != addr("10.100.0.4") {
+		t.Errorf("registered %d, upsertCall = %+v, want only node-c at 10.100.0.4", nInst, tunnels.upsertCall)
+	}
+	for _, name := range []string{"node-a", "node-b"} {
+		if _, ok, _ := creds.InstanceCredential(context.Background(), name); ok {
+			t.Errorf("credential minted for %q, which has no tunnel address to register", name)
+		}
+	}
+}
+
+// TestReconcileTunnelPeersCountsRegistrations: the counts are of upserts that
+// succeeded, not of peers attempted, so a caller's log can't overstate them.
+func TestReconcileTunnelPeersCountsRegistrations(t *testing.T) {
+	tunnels := &fakeTunnelSource{
+		operators: []wireguard.OperatorPeer{{Addr: addr("10.100.0.240")}},
+		upsertErr: errors.New("device busy"),
+	}
+	instances := []config.Instance{{Name: "node-a", TunnelIP: addr("10.100.0.2")}}
+
+	nInst, nOps := reconcileTunnelPeers(context.Background(), tunnels, &fakeCredentialStore{}, instances)
+
+	if nInst != 0 || nOps != 0 {
+		t.Errorf("registered %d instances and %d operators with every upsert failing, want 0 and 0", nInst, nOps)
+	}
+}
+
+// TestReconcileTunnelPeersNilCredentials: a nil credential store registers
+// no instance, rather than panicking in EnsureCredential, and still
+// registers the operators.
+func TestReconcileTunnelPeersNilCredentials(t *testing.T) {
+	op := wireguard.OperatorPeer{Addr: addr("10.100.0.240")}
+	tunnels := &fakeTunnelSource{operators: []wireguard.OperatorPeer{op}}
+	instances := []config.Instance{{Name: "node-a", TunnelIP: addr("10.100.0.2")}}
+
+	nInst, nOps := reconcileTunnelPeers(context.Background(), tunnels, nil, instances)
+
+	if nInst != 0 || nOps != 1 || len(tunnels.upsertCall) != 1 || tunnels.upsertCall[0].tunnelIP != op.Addr {
+		t.Errorf("registered %d/%d, upsertCall = %+v, want only the operator", nInst, nOps, tunnels.upsertCall)
 	}
 }
 

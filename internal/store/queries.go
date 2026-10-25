@@ -49,6 +49,10 @@ SELECT name, cidr, gateway, dhcp_excluded_range, dns FROM networks WHERE name = 
 const listInstancesSQL = `
 SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances ORDER BY name`
 
+// -- name: ListInstanceTunnelIPs :many
+const listInstanceTunnelIPsSQL = `
+SELECT name, tunnel_ip FROM instances ORDER BY name`
+
 // -- name: GetInstance :one
 const getInstanceSQL = `
 SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances WHERE name = ?`
