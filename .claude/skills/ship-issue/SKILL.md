@@ -21,8 +21,10 @@ result in its output:
 Exit 0 means steps 1–4 have no mechanical gap. Rerun it after any fix.
 
 1. **Branch.** Its branch and clean-tree lines. `<n>` comes from the branch.
-   Changes left in the tree either belong in this commit (`git commit --amend`
-   them in) or don't belong on this branch.
+   Changes left in the tree either belong in this commit (`git add` them, then
+   `git commit --amend --no-edit`) or don't belong on this branch. Amend only
+   as Development Conventions § PR body format says, or the `## ` sections are
+   stripped from the message.
 2. **One commit.** Its commit-count line, counted against the base: the PR's
    base if one is open, else `origin/main`. If it's more than one, squash with
    the recipe it prints (Development Conventions § Branching & issues), keeping
@@ -44,9 +46,12 @@ Exit 0 means steps 1–4 have no mechanical gap. Rerun it after any fix.
    through `validate-runner`. SKIP (exit 3) is not a pass: report what
    skipped and why. If no script proves it, say so. Don't claim coverage the
    suite doesn't have.
-7. **Fold fixes in.** Anything steps 5–6 changed goes into the same commit with
-   `git commit --amend`, and the Test plan is updated to match what actually
-   ran.
+7. **Fold fixes in.** Anything steps 5–6 changed goes into the same commit, and
+   the Test plan is updated to match what actually ran. `git add` the changes,
+   write the message to your scratchpad with
+   `git log -1 --format=%B > <scratchpad>/msg`, edit that file, then
+   `git commit --amend -F <scratchpad>/msg` (Development Conventions § PR body
+   format). If the message doesn't change, `git commit --amend --no-edit`.
 8. **Ship.** `make ship`. It re-checks the branch, cleanliness and commit
    count, pushes, and opens the PR with `--fill`. Report the PR URL.
 

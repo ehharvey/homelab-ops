@@ -60,8 +60,11 @@ clean:
 	rm -rf bin/ bootstrap-output/
 
 # Relative path on purpose — see .devcontainer/scripts/4-install-git-hooks.sh.
+# commit.cleanup=scissors keeps `## Plan` / `## Test plan` through an amend
+# (Development Conventions § PR body format, #334).
 hooks:
 	git config core.hooksPath .githooks
+	git config commit.cleanup scissors
 
 ship:
 	./scripts/ship.sh
