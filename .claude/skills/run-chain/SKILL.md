@@ -26,9 +26,11 @@ audit.
   `make build/test/lint` yourself. If you need any of those to make a call,
   send the question back to the worker or park the issue.
 - Bound every command (`--jq`, `sed -n`, `head`), as `CLAUDE.md` says.
-- Keep a ledger at `<scratchpad>/run-chain.md`: one line per issue (state, PR,
-  branch, worktree), plus open questions. Update it as you go and write the
-  summary from it, not from memory, since a long run may be compacted.
+- Keep a ledger at `<scratchpad>/run-chain.md`: a first line naming this root
+  (`.claude/skills/run-chain/root-alive.sh --self` prints it, for § 0), one
+  line per issue (state, PR, branch, worktree), plus open questions. Update it
+  as you go and write the summary from it, not from memory, since a long run
+  may be compacted.
 - Workers' Noticed items aren't held in context or in the ledger. The
   `SubagentStop` hook records each `issue-worker` Noticed bullet in the
   findings log (`scripts/finding.sh`, #314), which is the source of truth.
@@ -37,6 +39,35 @@ audit.
   `scripts/finding.sh add`.
 - Once a hand-back is in the ledger, don't quote it again. Only its
   essentials go forward: PR, branch, verdict, open questions.
+
+## 0. After a root restart: check the old root is gone
+
+Only when this root is a new Claude Code process continuing a run from the
+ledger (the session ended or crashed, or the harness says a worker "didn't
+finish before the previous session ended"). Run it before any "Resume"
+`SendMessage` to a ledger worker with no hand-back yet. It doesn't gate
+§ 3's sends, which go to workers this process started.
+
+The old process may still be driving the worker. A new root can't stop another
+process's agent, the worker's hand-back goes to the old root, and two drivers
+on one worker kill each other's shells (`Exit code 137`, 49482e4). A worker
+runs inside its root's process, so check that process, using the ledger's
+`root:` line:
+
+    .claude/skills/run-chain/root-alive.sh <pid> <start>   # from the ledger
+
+It exits 0 (`gone`) when no process has that PID and start time, and 1
+(`live`) when one does: however quiet the worker looks (a long tool call, a
+permission prompt, an API retry), the old root may still drive it. It also
+exits 0 with `self` if the PID is this process's, which means this isn't a
+restart. A ledger with no `root:` line counts as `live`.
+
+On `live`, send the worker **nothing**, and don't start another worker on that
+issue: never run a second driver. Park the issue in the ledger ("live in
+another process") and ask the operator with `AskUserQuestion`: end the old
+session, or wait. Resume it only after a re-run of `root-alive.sh` says
+`gone`; if it still says `live`, ask again. On `gone`, resume the worker as
+usual, and replace the ledger's `root:` line with this root's.
 
 ## 1. Queue
 
@@ -82,8 +113,8 @@ only if the operator says so):
    End with the hand-back block from your agent file, Noticed section included.
    ```
 
-Note each worker's agent ID and lane in the ledger; step 3 needs the ID to
-send work back.
+Note each worker's agent ID, lane and worktree in the ledger; step 3 needs
+the ID to send work back.
 When a worker finishes, start the next queued issue before auditing, so the
 slot doesn't sit idle.
 
