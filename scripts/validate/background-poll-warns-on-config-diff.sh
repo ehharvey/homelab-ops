@@ -25,10 +25,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="the background config-sync poller surfaces diff warnings without any POST /sync"
 VALIDATE_GROUP="compose"
-VALIDATE_NEEDS="docker-compose curl"
+VALIDATE_NEEDS="docker-compose curl jq"
 VALIDATE_DURATION="~17s"
 
 validate_parse_args "$@"
+require_compose
+check_prereqs
 cd "$ROOT_DIR"
 
 # A short poll interval keeps the test fast; the waits below tolerate clone

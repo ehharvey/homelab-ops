@@ -94,13 +94,29 @@ skip_check() {
 # #136 hid a perfectly clear CLI error ("flasher-tool not found: install via
 # go install ..."). Prefer check_eq or an explicit stderr match when the *reason*
 # for failure is what the assertion is really about.
+#
+# A helper that cmd calls can say why it failed, through fail_why: the reason
+# lands on check's FAIL line instead of in the discarded output.
 check() {
-	local desc="$1"
+	local desc="$1" _VALIDATE_IN_CHECK=1 _VALIDATE_REASON=
 	shift
 	if "$@" >/dev/null 2>&1; then
 		record_pass "$desc"
 	else
-		record_fail "$desc"
+		record_fail "$desc" "$_VALIDATE_REASON"
+	fi
+}
+
+# fail_why <desc> <why> — for a helper that refuses to go on. Under check, it
+# appends "<desc>: <why>" to the FAIL line check records, so the failure is
+# counted once and its reason isn't discarded; anywhere else it records the
+# failure itself. It reaches check through check's locals, so call it from
+# the shell check runs in, not from a subshell.
+fail_why() {
+	if [ -n "${_VALIDATE_IN_CHECK:-}" ]; then
+		_VALIDATE_REASON="${_VALIDATE_REASON:+$_VALIDATE_REASON; }$1: $2"
+	else
+		record_fail "$1" "$2"
 	fi
 }
 

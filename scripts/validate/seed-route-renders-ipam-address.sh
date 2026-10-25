@@ -36,6 +36,8 @@ VALIDATE_NEEDS="docker-compose jq go"
 VALIDATE_DURATION="~15s"
 
 validate_parse_args "$@"
+require_compose
+check_prereqs
 cd "$ROOT_DIR"
 
 WORK_DIR="$(mktemp -d)"

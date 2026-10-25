@@ -26,6 +26,8 @@ VALIDATE_NEEDS="docker-compose jq curl"
 VALIDATE_DURATION="~15s"
 
 validate_parse_args "$@"
+require_compose
+check_prereqs
 cd "$ROOT_DIR"
 
 cleanup() {
@@ -34,7 +36,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== 1. Bring up the real stack (web + dev git fixture) =="
-check "docker compose up --build succeeds" docker compose up --build -d
+check "docker compose up --build succeeds" compose up --build -d
 check "web container has no shell (still distroless)" bash -c '! docker compose exec -T web sh -c "true" 2>/dev/null'
 
 base_url="http://localhost:8080"
