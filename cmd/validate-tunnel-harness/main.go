@@ -1,6 +1,8 @@
 // Command validate-tunnel-harness is test-only scaffolding for
-// scripts/validate/node-tunnel-survives-nat-and-provisions.sh and
-// scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh — it is NOT an operator-facing command like
+// scripts/validate/node-tunnel-survives-nat-and-provisions.sh,
+// scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh and
+// scripts/validate/web-restart-restores-node-peers-without-sync.sh (http
+// mode) — it is NOT an operator-facing command like
 // cmd/bootstrap or cmd/web, and ships no stability promise. It exists
 // because the validate script needs to drive internal/wireguard's
 // userspace tunnel and internal/nodeprovision's create-instance mechanism

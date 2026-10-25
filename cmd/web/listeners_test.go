@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
@@ -121,8 +122,9 @@ func TestListenRejectsABadHostAddress(t *testing.T) {
 
 // TestListenTunnelAdmitsOperatorsAndRefusesNodes drives the default posture
 // through real tunnels: the web app's tunnel (newTunnelSource, with one
-// operator peer) serves the API on WebAppAddr, an operator peer reaches it,
-// and a node peer, registered the way a sync registers instances, is refused.
+// operator peer that startup's RestoreTunnelPeers registers) serves the API
+// on WebAppAddr, an operator peer reaches it, and a node peer, registered
+// the way a sync registers instances, is refused.
 func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 	t.Setenv("HEALTH_LISTEN_ADDR", "127.0.0.1:0")
 	t.Setenv("WIREGUARD_PORT", "0")
@@ -146,6 +148,9 @@ func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 		t.Fatalf("newTunnelSource: %v", err)
 	}
 	defer ts.Close() //nolint:errcheck // test cleanup
+	if err := server.NewService(nil, st, nil, nil, ts, st).RestoreTunnelPeers(context.Background()); err != nil {
+		t.Fatalf("RestoreTunnelPeers: %v", err)
+	}
 	appPort, err := ts.tun.ListenPort()
 	if err != nil {
 		t.Fatalf("ListenPort: %v", err)

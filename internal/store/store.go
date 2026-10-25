@@ -246,6 +246,33 @@ func (s *Store) Instances(ctx context.Context) ([]config.Instance, error) {
 	return out, rows.Err()
 }
 
+// InstanceTunnelIPs returns every stored Instance, ordered by name, with only
+// Name and TunnelIP set: what the web app needs to re-register node peers on
+// its tunnel at startup (#269). Unlike Instances, one bad row doesn't fail the
+// read: a tunnel_ip that won't parse is logged and comes back unset, so only
+// that instance goes unregistered.
+func (s *Store) InstanceTunnelIPs(ctx context.Context) ([]config.Instance, error) {
+	rows, err := s.db.QueryContext(ctx, listInstanceTunnelIPsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("query instance tunnel ips: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only query, nothing to flush
+
+	var out []config.Instance
+	for rows.Next() {
+		var i config.Instance
+		var tunnelIP string
+		if err := rows.Scan(&i.Name, &tunnelIP); err != nil {
+			return nil, fmt.Errorf("scan instance tunnel ip: %w", err)
+		}
+		if err := i.TunnelIP.UnmarshalText([]byte(tunnelIP)); err != nil {
+			log.Printf("store: parse tunnel_ip for %q: %v", i.Name, err)
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
 // row is the subset of *sql.Row/*sql.Rows that scanNetwork/scanInstance need.
 type row interface {
 	Scan(dest ...any) error

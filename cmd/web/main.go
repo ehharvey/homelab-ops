@@ -77,6 +77,14 @@ func run() error {
 	// so their syncs serialize through a single lock.
 	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder(), tunnelSrc, st)
 
+	// Nodes flashed before this restart must get a handshake reply now, not
+	// after the next sync (#269), and this also registers the operators.
+	// Fatal, like starting the tunnel: with CONFIG_SYNC_INTERVAL unset nothing
+	// would retry it before an operator's POST /sync.
+	if err := svc.RestoreTunnelPeers(ctx); err != nil {
+		return fmt.Errorf("restore wireguard peers: %w", err)
+	}
+
 	listeners, err := listen(server.NewFromService(svc), tun, operators, hostAddr)
 	if err != nil {
 		return err
@@ -354,8 +362,9 @@ func (b flasherBuilder) Build(ctx context.Context, seedDir, outputPath string, l
 // newTunnelSource builds the web app's in-process WireGuard tunnel, bound
 // to endpoint (the operator-supplied host:port nodes dial to reach this
 // deployment — see run()'s WIREGUARD_ENDPOINT check, which only calls this
-// when it's set), and registers operators as peers straight away, so the
-// operator can reach the tunnel API before the first sync. Always returns
+// when it's set). It registers no peers: run()'s RestoreTunnelPeers call
+// adds the stored instances and then operators, in SyncOnce's order, so the
+// operators reach the tunnel API before the first sync. Always returns
 // either a usable source or a non-nil error — unlike newCertSource/
 // newImageBuilder's nil-means-unconfigured convention, "unconfigured" is
 // decided by the caller before this runs, since a *set* WIREGUARD_ENDPOINT
@@ -372,12 +381,6 @@ func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, oper
 	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: wireguardPort(), LocalAddr: wireguard.WebAppAddr})
 	if err != nil {
 		return wireguardTunnelSource{}, fmt.Errorf("start tunnel: %w", err)
-	}
-	for _, op := range operators {
-		if err := tun.UpsertPeer(op.PublicKey, op.Addr); err != nil {
-			_ = tun.Close()
-			return wireguardTunnelSource{}, fmt.Errorf("register operator peer %s: %w", op.Addr, err)
-		}
 	}
 	// Operators need this key for their own peer entry, and in the default
 	// tunnel-only posture no API route can hand it to them. It is public.
@@ -407,7 +410,7 @@ func wireguardPort() int {
 // *wireguard.Tunnel plus the operator-supplied endpoint nodes dial to
 // reach it (the tunnel itself has no way to learn its own externally
 // reachable address, e.g. behind NAT), and the operator peers from
-// WIREGUARD_OPERATOR_PEERS that every sync keeps registered (#195).
+// WIREGUARD_OPERATOR_PEERS that startup and every sync register (#195, #269).
 type wireguardTunnelSource struct {
 	tun       *wireguard.Tunnel
 	endpoint  string
