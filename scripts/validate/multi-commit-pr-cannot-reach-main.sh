@@ -26,6 +26,10 @@
 # GitHub runs the workflow as defined on the PR *head*. Defaults to
 # origin/main, i.e. run this after #119 lands. To validate before merging, set
 # BASE_REF to the #119 branch itself.
+#
+# The ruleset is found by name (RULESET_NAME), not by a hard-coded id, so a
+# recreated ruleset or a fork doesn't 404 (#330). A missing gh, jq or git is a
+# SKIP (exit 3) reported before anything contacts GitHub (#330).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,14 +38,26 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="a multi-commit PR cannot reach main: hook, check, and ruleset all hold (#119)"
 VALIDATE_GROUP="github"
-VALIDATE_NEEDS="gh authenticated with repo admin (reads rulesets, opens/closes real PRs)"
+VALIDATE_NEEDS="gh authenticated with repo admin (reads rulesets, opens/closes real PRs); jq; git"
 VALIDATE_DURATION="~3m"
 
 validate_parse_args "$@"
 
+# A missing tool means the check can't run, not that enforcement is broken, so
+# it's a SKIP naming the tool (exit 3), never a FAIL. This runs before the first
+# gh call and before the EXIT trap, so nothing contacts GitHub (#330).
+missing_tool=""
+for tool in gh jq git; do
+	if ! have_cmd "$tool"; then
+		skip_check "a multi-commit PR cannot reach main" "$tool" "$tool not installed"
+		missing_tool=1
+	fi
+done
+[ -z "$missing_tool" ] || summary
+
 BASE_REF="${BASE_REF:-origin/main}"
 BRANCH="validate-119/$(date +%s)"
-RULESET_ID=17956515
+RULESET_NAME="main" # the ruleset guarding main; resolved to an id below
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 WORK_DIR=$(mktemp -d)
 WT="$WORK_DIR/branch" # the throwaway branch's worktree; steps 1-4 run here
@@ -85,7 +101,16 @@ CALLER_BEFORE=$(caller_state)
 # Read the ruleset BEFORE opening anything. If required_status_checks isn't
 # configured, step 3's `gh pr merge` would succeed and land a junk commit on
 # main — so refuse to run at all rather than risk it.
-echo "=== checking ruleset $RULESET_ID"
+echo "=== looking up ruleset '$RULESET_NAME'"
+rulesets=$(gh api "repos/$REPO/rulesets?per_page=100")
+matches=$(echo "$rulesets" | jq -r --arg n "$RULESET_NAME" '.[] | select(.name == $n) | .id')
+if [ "$(echo "$matches" | grep -c .)" -ne 1 ]; then
+	found=$(echo "$rulesets" | jq -r '[.[] | "\"\(.name)\""] | join(", ")')
+	fail "want exactly one ruleset named \"$RULESET_NAME\" on $REPO; found: ${found:-none}"
+fi
+RULESET_ID=$matches
+
+echo "=== checking ruleset '$RULESET_NAME' ($RULESET_ID)"
 rules=$(gh api "repos/$REPO/rulesets/$RULESET_ID")
 
 echo "$rules" | jq -e '.rules[] | select(.type=="required_status_checks")' >/dev/null \
