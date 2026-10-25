@@ -2,9 +2,11 @@ package store
 
 import (
 	"net/netip"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
@@ -157,5 +159,34 @@ func TestReplaceRoundTripsTunnelIP(t *testing.T) {
 	}
 	if got.TunnelIP != cfg.Instances[0].TunnelIP {
 		t.Errorf("TunnelIP = %s, want %s", got.TunnelIP, cfg.Instances[0].TunnelIP)
+	}
+}
+
+// TestInstanceTunnelIPsSkipsUnparsableRow: a stored tunnel_ip that won't
+// parse comes back unset for that instance only, where Instances fails the
+// whole read (#269).
+func TestInstanceTunnelIPsSkipsUnparsableRow(t *testing.T) {
+	s, ctx := openTestStore(t)
+	cfg := sampleConfig()
+	cfg.Instances = append(cfg.Instances, cfg.Instances[0])
+	cfg.Instances[0].Name, cfg.Instances[0].TunnelIP = "node-a", netip.MustParseAddr("10.100.0.2")
+	cfg.Instances[1].Name, cfg.Instances[1].TunnelIP = "node-b", netip.MustParseAddr("10.100.0.3")
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE instances SET tunnel_ip = 'garbage' WHERE name = 'node-a'`); err != nil {
+		t.Fatalf("corrupt node-a's tunnel_ip: %v", err)
+	}
+	if _, err := s.Instances(ctx); err == nil {
+		t.Fatal("Instances with an unparsable tunnel_ip: err = nil, want the parse error this test relies on")
+	}
+
+	got, err := s.InstanceTunnelIPs(ctx)
+	if err != nil {
+		t.Fatalf("InstanceTunnelIPs: %v", err)
+	}
+	want := []config.Instance{{Name: "node-a"}, {Name: "node-b", TunnelIP: netip.MustParseAddr("10.100.0.3")}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("InstanceTunnelIPs = %+v, want %+v", got, want)
 	}
 }
