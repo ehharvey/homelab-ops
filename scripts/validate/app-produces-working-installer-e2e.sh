@@ -46,7 +46,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="the app produces a working installer end-to-end, without the bootstrap CLI (#40)"
 VALIDATE_GROUP="incus-vm"
-VALIDATE_NEEDS="docker-compose incus go openssl pinned-base-images INCUSOS_BASE_IMAGE"
+VALIDATE_NEEDS="docker-compose jq incus go openssl pinned-base-images INCUSOS_BASE_IMAGE"
 VALIDATE_DURATION="~10m"
 
 validate_parse_args "$@"
@@ -138,7 +138,7 @@ echo "== 0. Hard prerequisites (hard-fail, no skip-as-fail) =="
 # (require_incus_image). Same semantics as before: accumulate every miss, report
 # them all, then exit 2 once, before doing any work.
 require_cmd docker curl jq go openssl incus
-require_docker_compose
+require_compose
 require_incus_remote "$REMOTE"
 require_incus_project "$REMOTE" "$PROJECT"
 require_incus_network "$REMOTE" "$PROJECT" "$NETWORK"
