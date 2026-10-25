@@ -264,19 +264,20 @@ wait_http() {
 
 # wait_json <desc> <url> <jq-filter> [tries] — retry until the response
 # satisfies the filter. Reports the last body seen on failure, which is what
-# makes a timeout here diagnosable rather than just "didn't happen".
+# makes a timeout here diagnosable rather than just "didn't happen". An empty
+# body (nothing listening yet) is a miss like any other (json_matches, #302).
 wait_json() {
 	local desc="$1" url="$2" filter="$3" tries="${4:-30}"
 	local body="" _
 	for _ in $(seq 1 "$tries"); do
 		body=$(curl -s "$url")
-		if echo "$body" | jq -e "$filter" >/dev/null 2>&1; then
+		if json_matches "$body" "$filter"; then
 			record_pass "$desc"
 			return 0
 		fi
 		sleep 1
 	done
-	record_fail "$desc" "condition not met after ${tries}s; last response: $body"
+	record_fail "$desc" "condition not met after ${tries}s; last response: $(json_shown "$body")"
 	return 1
 }
 
