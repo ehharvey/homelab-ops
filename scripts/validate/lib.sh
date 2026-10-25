@@ -167,6 +167,96 @@ require_docker_compose() {
 		_prereq_missing "'docker compose' not available"
 }
 
+# require_docker_credential_helper — keep a hung docker credential helper from
+# hanging every pull and build (#300). In the devcontainer, credsStore names
+# VS Code's dev-containers helper, which forwards each lookup to the attached
+# VS Code client; with no client attached (a headless session, an
+# issue-worker) it never answers, and `docker pull` / `compose up --build`
+# fail with DeadlineExceeded, which reads as the thing under test being broken.
+#
+# It asks the helper what a pull from Docker Hub asks it, under a short
+# timeout. If the helper answers at all, found or not, nothing changes. If it
+# doesn't, it exports DOCKER_CONFIG as a scratch copy of the config dir minus
+# credsStore (Docker then pulls anonymously, as it does with a client attached
+# and nothing stored) and says so in one NOTE line. If it can't build that
+# copy, that's a hard prerequisite naming the helper: a registry the script
+# can't pull from is not a skip.
+#
+# The user's own config is never edited, so forwarding still works whenever a
+# client is attached. The scratch dir holds symlinks to everything else in the
+# config dir (cli-plugins, contexts, buildx state), so only credsStore
+# changes. It's removed by a watcher that outlives the script by at most a
+# second, not an EXIT trap, so it can't clobber the script's own trap; and it
+# goes even if the script alone is killed (a kill of the whole process tree
+# takes the watcher too, leaving a small dir in $TMPDIR). Only credsStore is
+# probed: per-registry
+# credHelpers are left as they are.
+#
+# require_compose calls it, so it runs before any compose script pulls or
+# builds. Call it after validate_parse_args, in the shell that later runs
+# docker. An attached client answers in about a second; the probe's timeout,
+# in seconds, is VALIDATE_CREDENTIAL_HELPER_TIMEOUT (the validate script for
+# this sets 1 to stay fast).
+VALIDATE_CREDENTIAL_HELPER_TIMEOUT="${VALIDATE_CREDENTIAL_HELPER_TIMEOUT:-5}"
+
+require_docker_credential_helper() {
+	local src="${DOCKER_CONFIG:-$HOME/.docker}" cfg store helper rc dir e why
+	cfg="$src/config.json"
+	[ -f "$cfg" ] || return 0
+	# Without jq there's nothing to read credsStore with; require_cmd jq
+	# reports that already.
+	command -v jq >/dev/null 2>&1 || return 0
+	store=$(jq -r '.credsStore // empty' "$cfg" 2>/dev/null) || return 0
+	[ -n "$store" ] || return 0
+	helper="docker-credential-$store"
+	if ! command -v timeout >/dev/null 2>&1; then
+		_prereq_missing "required command not found: timeout (to probe $helper, credsStore in $cfg)"
+		return
+	fi
+	# A helper that isn't installed fails at once, and Docker reports that
+	# itself; only one that doesn't answer is bypassed. The answer goes to
+	# /dev/null: this asks only whether the helper responds. timeout signals
+	# the whole process group, so a shim's grandchild (the dev-containers
+	# helper's node) goes too.
+	printf '%s\n' https://index.docker.io/v1/ |
+		timeout -k 1 "$VALIDATE_CREDENTIAL_HELPER_TIMEOUT" "$helper" get >/dev/null 2>&1
+	rc=$?
+	[ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || return 0
+
+	why=
+	if ! dir=$(mktemp -d "${TMPDIR:-/tmp}/validate-docker-config.XXXXXX" 2>&1); then
+		why="mktemp: $dir"
+	else
+		for e in "$src"/* "$src"/.[!.]*; do
+			[ -e "$e" ] || [ -L "$e" ] || continue
+			[ "$(basename "$e")" = config.json ] && continue
+			ln -s "$e" "$dir/" 2>/dev/null || {
+				why="could not link $e into $dir"
+				break
+			}
+		done
+		if [ -z "$why" ] &&
+			! (umask 077 && jq 'del(.credsStore)' "$cfg" >"$dir/config.json") 2>/dev/null; then
+			why="could not write $dir/config.json from $cfg"
+		fi
+		if [ -n "$why" ]; then
+			rm -rf "$dir"
+		fi
+	fi
+	if [ -n "$why" ]; then
+		_prereq_missing "docker credential helper $helper (credsStore in $cfg) did not answer within ${VALIDATE_CREDENTIAL_HELPER_TIMEOUT}s, and a scratch DOCKER_CONFIG without it could not be built: $why — attach a VS Code client, or export DOCKER_CONFIG naming a config without credsStore"
+		return
+	fi
+	# $$ is the script's PID even here in the subshell.
+	(
+		while kill -0 "$$" 2>/dev/null; do sleep 1; done
+		rm -rf "$dir"
+	) </dev/null >/dev/null 2>&1 &
+	disown 2>/dev/null || true
+	export DOCKER_CONFIG="$dir"
+	echo "NOTE: docker credential helper $helper did not answer within ${VALIDATE_CREDENTIAL_HELPER_TIMEOUT}s (no VS Code client attached?) — bypassing it with a scratch DOCKER_CONFIG without credsStore: $dir"
+}
+
 require_incus_remote() {
 	incus info "$1:" >/dev/null 2>&1 ||
 		_prereq_missing "incus remote '$1' not reachable"
