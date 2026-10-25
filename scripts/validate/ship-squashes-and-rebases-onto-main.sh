@@ -69,10 +69,8 @@ new_world() {
 	W="$d/work"
 	UP="$d/up"
 	export GH_LOG="$d/gh.log"
-	git init -q --bare -b main "$O"
-	git init -q -b main "$W"
-	repo_config "$W"
-	git -C "$W" remote add origin "$O"
+	git_fixture_repos "$O" "$W"
+	git -C "$W" config core.hooksPath "$ROOT_DIR/.githooks"
 	echo a >"$W/A"
 	git -C "$W" add A
 	git -C "$W" commit -q -m "main: A"
@@ -81,18 +79,10 @@ new_world() {
 	repo_config "$UP"
 }
 
+# repo_config <repo>: the fixture config, plus this checkout's hooks.
 repo_config() {
-	git -C "$1" config user.name validate
-	git -C "$1" config user.email validate@example.invalid
-	git -C "$1" config commit.gpgsign false
+	git_fixture_config "$1"
 	git -C "$1" config core.hooksPath "$ROOT_DIR/.githooks"
-}
-
-# commit_file <repo> <file> <content> [message]
-commit_file() {
-	echo "$3" >"$1/$2"
-	git -C "$1" add "$2"
-	git -C "$1" commit -q -m "${4:-touch $2}"
 }
 
 # advance_main <file> <content>: land a commit on origin's main from UP.

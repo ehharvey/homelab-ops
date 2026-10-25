@@ -78,7 +78,8 @@ trap cleanup EXIT
 gh auth status >/dev/null 2>&1 || fail "gh is not authenticated"
 # Ship's pushes must pass the real pre-push hook, so it has to be installed.
 # core.hooksPath may be relative (`make hooks`) or absolute; ask git where the
-# hook it will run lives rather than matching the setting's spelling.
+# hook it starts lives rather than matching the setting's spelling. Which copy
+# that hook checks the push with is settled once the worktree exists, below.
 pre_push=$(git rev-parse --path-format=absolute --git-path hooks/pre-push)
 [ "$(basename "$(dirname "$pre_push")")" = ".githooks" ] && [ -x "$pre_push" ] \
 	|| fail "pre-push hook is $pre_push, not .githooks/pre-push — run 'make hooks' first"
@@ -101,6 +102,15 @@ echo "=== building a 1-commit branch off $BASE_REF in a temporary worktree"
 git fetch -q origin
 git worktree add -q --no-track -b "$BRANCH" "$WT" "$BASE_REF"
 cd "$WT"
+
+# The hook that checks this worktree's pushes is normally $BASE_REF's copy, not
+# this checkout's: git starts it directly under a relative hooksPath, or the
+# copy git starts hands off to it (#279). Only a started copy from before the
+# hand-off checks the push itself. Either way an uncommitted or unmerged hook
+# change here may not be under test, so say so rather than PASS on another hook.
+hook=$(pre_push_under_test)
+cmp -s "$hook" "$ROOT_DIR/.githooks/pre-push" \
+	|| echo "NOTE: the pre-push under test is $hook, which differs from this checkout's .githooks/pre-push; to test this checkout's, commit it and set BASE_REF to that commit"
 
 echo "validate-273 v1" >.validate-273-scratch
 git add .validate-273-scratch

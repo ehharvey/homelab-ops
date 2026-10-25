@@ -10,6 +10,12 @@
 # image and is documented as slow, and CI gates those as required checks now.
 set -euo pipefail
 
+# Under an absolute core.hooksPath, git may have started the main checkout's
+# copy for a worktree's push; hand off to the pushing checkout's own (#279).
+# Without the helper beside it, this copy checks the push itself.
+# shellcheck source=.githooks/run-own-copy.sh
+[ ! -f "${0%/*}/run-own-copy.sh" ] || . "${0%/*}/run-own-copy.sh"
+
 ZERO="0000000000000000000000000000000000000000"
 
 # git feeds one line per ref being pushed:

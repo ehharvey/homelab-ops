@@ -277,7 +277,7 @@ absence causes a skip rather than a failure.
 
 | group | what it needs | belongs in CI |
 |---|---|---|
-| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), and `ready-queue-skips-done-when-without-proof.sh` needs `jq`, `git` (a stub `gh`) | yes |
+| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` needs `jq`, `git` (a stub `gh`), and `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos) | yes |
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |

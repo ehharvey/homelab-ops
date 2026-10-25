@@ -114,9 +114,15 @@ long multi-issue sessions were ~77% of the cost.
   where the session started, so in a worktree it resolves imports to main's
   `internal/` (verified, #252). There, check with `go build ./...` / `go vet`
   and read the worktree's files; a session *started* in a worktree is fine.
-- Hooks need no setup (`core.hooksPath` is relative). Validate scripts that
-  bring up compose stacks share host ports, so only one worktree runs them at
-  a time.
+- Hooks need no setup. The repo sets `core.hooksPath` to the relative
+  `.githooks`, but Claude Code's worktree setup rewrites the shared config to
+  the absolute `/workspaces/infra/.githooks` (#279), so git starts the main
+  checkout's `pre-push`. That copy hands off to the pushing worktree's own
+  (`.githooks/run-own-copy.sh`), so each worktree runs its own, *provided* the
+  main checkout's working copy of the hook has the hand-off. If it's on a
+  branch from before #279, or that file is edited, its copy checks every
+  worktree's push. Validate scripts that bring up compose stacks share host
+  ports, so only one worktree runs them at a time.
 
 ## Validating changes for real
 
