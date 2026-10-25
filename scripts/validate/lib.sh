@@ -120,12 +120,32 @@ fail_why() {
 	fi
 }
 
+# json_matches <json> <jq-filter> — true when <json> holds a value and the
+# filter is truthy on it. A blank body never matches: jq -e exits 0 on empty
+# or whitespace-only input (there's no value, so nothing was false), and
+# curl -s against a service that isn't up prints exactly that, so without
+# this guard a down stack passed every JSON check (#302).
+json_matches() {
+	[[ $1 =~ [^[:space:]] ]] || return 1
+	printf '%s\n' "$1" | jq -e "$2" >/dev/null 2>&1
+}
+
+# json_shown <json> — <json> for a failure message, or "<empty>" when it's
+# blank, so an empty body reads as one rather than as a dangling "got: ".
+json_shown() {
+	if [[ $1 =~ [^[:space:]] ]]; then
+		printf '%s' "$1"
+	else
+		printf '<empty>'
+	fi
+}
+
 check_json() {
 	local desc="$1" json="$2" filter="$3"
-	if echo "$json" | jq -e "$filter" >/dev/null 2>&1; then
+	if json_matches "$json" "$filter"; then
 		record_pass "$desc"
 	else
-		record_fail "$desc" "got: $json"
+		record_fail "$desc" "got: $(json_shown "$json")"
 	fi
 }
 
