@@ -70,7 +70,7 @@ Run `./bin/bootstrap build-image --help` for all flags.
     make build           # build the bootstrap binary
     make test            # run unit tests (-race -cover)
     make lint            # run golangci-lint (via Docker)
-    make fmt             # gofmt + goimports
+    make fmt             # gofmt + goimports, via golangci-lint fmt (Docker)
     make tidy            # go mod tidy
     make vendor-incusos  # regenerate internal/third_party/incusos after bumping the submodule
     make clean           # remove bin/ and bootstrap-output/

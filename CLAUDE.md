@@ -65,7 +65,7 @@ long multi-issue sessions were ~77% of the cost.
     make build   # builds bin/bootstrap (CLI), bin/web (web app) and bin/agent (app-manager agent)
     make test    # go test ./... -race -cover
     make lint    # golangci-lint via Docker — slow; run before declaring done
-    make fmt     # gofmt + goimports
+    make fmt     # gofmt + goimports via golangci-lint fmt in Docker, same version as make lint
 
     make wt N=<n>  # worktree for issue #n on eharvey/#<n>; prints its path
     make wt-gc     # remove worktrees whose PR merged (make wt-list: dry run)

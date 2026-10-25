@@ -23,3 +23,10 @@ formatters:
   enable:
     - gofmt
     - goimports
+  # `make fmt` runs `golangci-lint fmt` (#329), which walks the tree from the
+  # repo root rather than a package list. It already skips dot directories
+  # (so .claude/worktrees/), but not the upstream submodule, which carries its
+  # own .golangci.yml and must never be rewritten here.
+  exclusions:
+    paths:
+      - ^third_party/

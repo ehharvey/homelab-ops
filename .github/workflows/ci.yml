@@ -29,7 +29,11 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+      # The same golangci-lint as `make lint`: both read .golangci-lint-version
+      # (#329), so CI doesn't float on the action's default of latest.
       - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version-file: .golangci-lint-version
 
   # Builds the web image on every PR and push, proves it works, and publishes
   # it to GHCR from main only (#240): tagged with the commit SHA, plus latest.
