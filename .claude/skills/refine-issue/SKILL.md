@@ -29,7 +29,10 @@ Read the comments: a prerequisite is often settled there and nowhere else.
 Classify it as a task (`roadmap_task.yml`), a decision (`design_decision.yml`),
 a bug (`bug_report.yml`), or an umbrella of separately shippable tasks. Retitle
 with the template's prefix (`[Task]: `, `[Decision]: `, `[Bug]: `) if it lacks
-one; GitHub's timeline keeps the old title.
+one; GitHub's timeline keeps the old title. A `[Feature]: ` / `enhancement`
+issue is always one of these four too, never left a feature, so it is always
+retitled (`/file-task` says why). A `[Phase]: ` issue is the operator's; don't
+refine one.
 
 ## 2. Constraints
 
@@ -74,8 +77,9 @@ for a reshape.
 ## 7. Labels
 
 `/file-task` § Labels and milestone, which also says what the issues you file
-get. Add the classification's label, drop the ones it contradicts
-(`enhancement` once it's a `task`), and keep the rest (`later`, `phase-<n>`).
+get. Add the classification's label, drop the ones it contradicts, and keep
+the rest (`later`, `phase-<n>`). `enhancement` always goes once step 1 has
+reclassified the issue, whether to a task, a decision or a bug.
 
 ## 8. Report
 
