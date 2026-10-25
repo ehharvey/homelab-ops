@@ -43,7 +43,18 @@ func main() {
 func run() error {
 	mode := flag.String("mode", "", "genkey | probe | create-instance | extract-credential | patch-seed | http")
 	privateKeyFile := flag.String("private-key-file", "", "path to this harness's own WireGuard private key (base64); genkey writes it, probe/create-instance read it")
-	localAddr := flag.String("local-addr", "10.100.0.254", "this harness's own tunnel-overlay address — deliberately far from the normal instance-assignable range (internal/wireguard.OverlayCIDR, assigned from .2 up) to avoid colliding with a real instance's tunnel_ip, since the harness registers as a second, independent test peer on node0 alongside the real web app")
+	// The default, .254, lies inside wireguard.OperatorCIDR (.240-.254,
+	// #195). AssignTunnelIPs never hands an instance an address there, so it
+	// can't collide with a real instance's tunnel_ip on node0, where probe and
+	// create-instance register the harness as a second peer beside the web
+	// app (patch-seed's -add-peer-allowed-ip). Being an operator address is
+	// harmless in those modes: the harness talks only to node0, and no
+	// validate script's web app lists .254 in WIREGUARD_OPERATOR_PEERS. A
+	// mode that talks to a web app (http) must not lean on this default: pass
+	// the address the harness's key is registered under in that web app's
+	// operator list, as api-serves-operator-peers-over-tunnel-by-default.sh
+	// does with .240.
+	localAddr := flag.String("local-addr", "10.100.0.254", "this harness's own tunnel-overlay address; the default lies in internal/wireguard.OperatorCIDR, outside the instance-assignable range, and suits only peering with a node. In http mode, pass the address the harness's key has on the web app's operator list (WIREGUARD_OPERATOR_PEERS)")
 	peerPublicKey := flag.String("peer-public-key", "", "base64 WireGuard public key of the peer (node) to trust")
 	peerTunnelIP := flag.String("peer-tunnel-ip", "", "the peer's tunnel-overlay address, e.g. 10.100.0.5")
 	peerEndpoint := flag.String("peer-endpoint", "", "host:port of the peer's WireGuard UDP listener, e.g. 192.168.1.202:32926 — required to initiate a handshake, since neither this harness nor the node's seeded peer entry carries an endpoint for the other (see internal/wireguard.UpsertPeerWithEndpoint)")
@@ -66,7 +77,7 @@ func run() error {
 	addRouteTo := flag.String("add-route-to", "", "CIDR to append a route for, via -add-route-via (patch-seed mode)")
 	addRouteVia := flag.String("add-route-via", "", "gateway address for the route added by -add-route-to (patch-seed mode)")
 	addPeerPublicKey := flag.String("add-peer-public-key", "", "base64 public key of a second WireGuard peer to append (patch-seed mode)")
-	addPeerAllowedIP := flag.String("add-peer-allowed-ip", "", "CIDR (e.g. 10.100.0.254/32) allowed for the peer added by -add-peer-public-key (patch-seed mode)")
+	addPeerAllowedIP := flag.String("add-peer-allowed-ip", "", "CIDR allowed for the peer added by -add-peer-public-key, e.g. 10.100.0.254/32 to match -local-addr's default (patch-seed mode)")
 	method := flag.String("method", http.MethodGet, "HTTP method (http mode)")
 	path := flag.String("path", "/healthz", "request path on the web app's tunnel API, http://<peer-tunnel-ip>:80<path> (http mode)")
 	flag.Parse()
