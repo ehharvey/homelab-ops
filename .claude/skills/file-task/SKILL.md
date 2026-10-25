@@ -12,6 +12,13 @@ prefix rather than working from memory. If the item is really an unresolved
 design question, use `design_decision.yml`'s shape instead, since the task
 template itself says so. Use `bug_report.yml` for a defect.
 
+`/file-task` never files the other two templates. `feature_request.yml`
+(`[Feature]: `, `enhancement`) is an intake form with no `Done when`, so an
+issue filed from it can't meet the Ready criteria; file the idea as a task, a
+decision or a bug instead, and `/refine-issue` reclassifies any `[Feature]: `
+issue the same way. `phase_planning.yml` (`[Phase]: `) is the operator's, for
+kicking off a Roadmap phase into a milestone.
+
 ## Before drafting
 
 - **Duplicates:** `gh issue list --state all --search "<keywords>" --limit 10 --json number,title,state`.

@@ -8,6 +8,8 @@ body:
     attributes:
       value: |
         For work already scoped in `docs/Roadmap.md`, use **Roadmap task** instead. This template is for net-new ideas not yet reflected in the docs.
+
+        A feature request has no **Done when**, so it can't be picked up as filed. Before it can be `Ready`, it is refined (`/refine-issue`) into a task, a decision or a bug, and retitled and relabelled to match.
   - type: textarea
     id: proposal
     attributes:
