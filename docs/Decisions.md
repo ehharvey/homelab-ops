@@ -202,9 +202,9 @@ bus" addendum immediately above, and doesn't reopen that rejection:
   no command semantics — sitting on top of the WireGuard tunnel once it
   exists, closer to a bastion/jump host than a control plane.
 
-**Expected sequencing:** after Phase 4 (`docs/Roadmap.md`), once WireGuard
-node connectivity (Phase 3) and logging/metrics (Phase 4) are both in
-place. Not designed or built now — captured here so the shape of the
+**Expected sequencing:** with the web app as a bastion (#399, Phase 6 in
+`docs/Roadmap.md` since §30). WireGuard node connectivity is in place
+(#91). Not designed or built now — captured here so the shape of the
 options survives until then.
 
 **Options considered so far (2026-07-14 discussion), none designed/built:**
@@ -315,9 +315,9 @@ Surfaced by #46 (no `Network`-level validation) and tracked as the decision #47.
 
 Implementation (the `netip` type rework + `config.Validate` pass, which also closes #46) lands under #46; dev-facing conventions for it are in `Development Conventions.md` § Config validation.
 
-## 14. Metrics (Phase 3 scope addition)
+## 14. Metrics (added to the logging work, now Phase 8)
 
-Phase 3 was originally scoped as Tailscale + logging only (§7 above). Folding in node/infra resource metrics (host + Incus-instance CPU/memory/disk/network) alongside logging raised three questions: where do metrics come from, how do they get shipped, and how does the shipping agent authenticate.
+The logging work (then Phase 3; Phase 8 since §30) was originally scoped as Tailscale + logging only (§7 above). Folding in node/infra resource metrics (host + Incus-instance CPU/memory/disk/network) alongside logging raised three questions: where do metrics come from, how do they get shipped, and how does the shipping agent authenticate.
 
 ### Source
 
@@ -341,14 +341,30 @@ Alloy's log/metric shipping is not a single hardcoded destination. Both of Alloy
 
 This means "local Grafana instance" and "Grafana Cloud" aren't an either/or choice: an operator can run both simultaneously (e.g. always mirror to a local Grafana instance for fast local queries/debugging, while also shipping to Grafana Cloud as the durable production destination), point at multiple cloud accounts/environments, or configure just one — whatever the deployment needs. The exact shape of the "list of destinations" config (repeated env vars vs. a small typed list) is left to whichever mechanism #67 (Unified config / viper) lands on, rather than inventing a bespoke env-var scheme now that config consolidation would immediately have to replace.
 
-**Local dev/test stack:** requiring live Grafana Cloud credentials for every `scripts/validate/` run (or every dev loop) is exactly the friction the repo's other dev fixtures avoid (`dev/git-fixture` for config sync). So a local stack — Grafana + Loki + Prometheus (with `--web.enable-remote-write-receiver`) under `docker-compose.yml`, mirroring the existing `web`/`config-repo` services — is always at least one of the configured destinations for `scripts/validate/`'s Phase 3 checks: no cloud credentials needed for that destination, fully automatable, torn down after each run. A real Grafana Cloud check (with the local stack configured as an *additional* destination, or on its own) remains available as a separate, credential-gated step (same gate-and-skip pattern as `INCUSOS_BASE_IMAGE`/`BASE_IMAGE_PATH` for real-VM tests) rather than the thing CI/every contributor has to run.
+**Local dev/test stack:** requiring live Grafana Cloud credentials for every `scripts/validate/` run (or every dev loop) is exactly the friction the repo's other dev fixtures avoid (`dev/git-fixture` for config sync). So a local stack — Grafana + Loki + Prometheus (with `--web.enable-remote-write-receiver`) under `docker-compose.yml`, mirroring the existing `web`/`config-repo` services — is always at least one of the configured destinations for `scripts/validate/`'s logging and metrics checks (Phase 8): no cloud credentials needed for that destination, fully automatable, torn down after each run. A real Grafana Cloud check (with the local stack configured as an *additional* destination, or on its own) remains available as a separate, credential-gated step (same gate-and-skip pattern as `INCUSOS_BASE_IMAGE`/`BASE_IMAGE_PATH` for real-VM tests) rather than the thing CI/every contributor has to run.
 
-## 15. Multi-OS support (Debian, Talos) — direction, not yet built
+## 15. Multi-OS support (Debian, NixOS, Talos) — Phase 6, not yet built
 
-Explored 2026-07-03: the long-term plan is to manage more than IncusOS
-nodes. Two targets came up; neither is built, and both are blocked on
-prerequisite work below. Captured here so the reasoning survives even
-though `Out of Scope.md` is where this currently lives.
+Explored 2026-07-03: the plan is to manage more than IncusOS nodes. None of
+the other targets is built. They are `docs/Roadmap.md` Phase 6 (§30), after
+the agent (Phase 3), the web app appliance (Phase 4) and same-OS clusters
+(Phase 5).
+
+### Order: IncusOS → Debian → NixOS → Talos
+
+- **IncusOS** is done.
+- **Debian + Incus** comes next, by the declared-disk path first
+  (Prerequisite 4 below). #398 is the first step.
+- **NixOS + Incus** follows. It is an Incus host like Debian, so the agent
+  runs there and joins clusters. Its install mechanism isn't covered below and
+  needs its own decision before it's built.
+- **Talos** comes last. It isn't an Incus host (below), so the agent can't
+  run there, and "the agent handles clustering" stops at NixOS. Talos needs
+  its own management path.
+
+A cluster's members all run the same OS (§30): Incus rejects a joiner whose
+version differs from the cluster's at `Accept` (§27). A host in no cluster is
+standalone, treated as a one-member cluster (§30), and still runs an agent.
 
 ### Debian + Incus
 
@@ -380,7 +396,9 @@ identical struct. The open question was the install mechanism:
   (most work, least reuse of Debian's official images) — but mkosi is
   still the right tool for building the *helper* boot environment itself.
   The web app's own mkosi-built appliance image (§29, #393) is folded into
-  this work as another role for the same build, with its design open.
+  this work as another role for the same build, with its design open. The
+  Roadmap keeps #393 as a `(later)` item in Phase 4, beside the other
+  appliance forms.
 
 ### Helper OS: pre-install hardware registration/confirmation
 
@@ -424,18 +442,27 @@ deferral.
    helper OS reporting hardware back to the app pre-install is exactly the
    "node talks back to the app" problem §11 defers. This has to be decided
    before the helper-OS flow is buildable at all, not just nice-to-have.
-   Phase 3's Tailscale work may end up supplying the answer — §11 already
-   lists "web app also runs Tailscale" as a live option, and it's the same
-   transport the existing phone-home-over-Tailscale idea (Other notes #2)
-   would use.
-3. Phase 3 (Tailscale/logging/metrics) is already in progress and likely
-   lands first regardless of this direction.
+   §11 has since been resolved by the seeded WireGuard tunnel (#91), which
+   a helper OS could reuse; Tailscale (Phase 7) is no longer the expected
+   answer.
+3. **Ordering.** Phase 6 comes before Tailscale (Phase 7). The declared-disk
+   path (4) needs no node-to-web-app round-trip, so Debian doesn't wait on
+   the confirmation flow's networking.
 4. A smaller intermediate milestone is worth considering before the full
    confirmation-flow UX: a "declared-disk" Debian+Incus path (operator
    pre-specifies the target disk in config, no helper-OS round-trip) as a
    stepping stone — proves systemd-repart + cert/network seed rendering
    end-to-end before adding the networking-dependent confirmation flow on
    top.
+
+### History
+
+- **2026-10-26 (#401, §30):** multi-OS moved from "direction, not yet built"
+  and `Out of Scope.md` to Roadmap Phase 6, with the order IncusOS → Debian →
+  NixOS → Talos and same-OS clusters. NixOS was added. Prerequisite 3 used to
+  read "Phase 3 (Tailscale/logging/metrics) is already in progress and likely
+  lands first regardless of this direction"; Prerequisite 2 expected
+  Tailscale to answer §11.
 
 ## 16. `internal/incuslocal` vs. `internal/nodeprovision`: accepted duplication (#92)
 
@@ -1600,7 +1627,7 @@ Requirement: **at most one agent performs leader-only writes at a time.** Idle p
 
 Leader election is an interface, `internal/leaderelection.Elector`, answering `MayAct(ctx) (Decision, error)`. Callers ask before every leader-only action and treat an error as "not leader". 0.x ships one implementation, `Designated`; a second (ranked) can replace it with no change to the reconcile loop.
 
-**Designated.** Git config names a `primary` node, and nothing else (`docs/Config Schema.md`). The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself.
+**Designated.** Git config names a `primary` node, and nothing else (`docs/Config Schema.md`). Leadership is per cluster (§30): a standalone host is its own primary, and `primary` names a multi-member cluster's. The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself.
 
 Each agent publishes two `user.*` keys on its own instance, each written by that agent alone (no CAS, no contention):
 
@@ -1650,7 +1677,7 @@ There's no overlap and no timer. The handoff takes as long as node0's next tick.
 
 An agent may act iff, all at once:
 
-1. its designation, from its own last successful sync (within the sync-failure threshold, below), names its node as primary;
+1. its designation, from its own last successful sync (within the sync-failure threshold, below), names its node as its cluster's primary, or its node is standalone and so its own primary (§30);
 2. every running, non-draining peer's published commit is in its own history;
 3. no other running peer shows `acting: true`;
 4. it isn't draining, and no older non-draining instance runs on its node.
@@ -1732,6 +1759,7 @@ Recorded so it can be built later without re-deriving it. Everything registers a
 - **2026-09-30 (#212): commits and the acting handoff replaced the epoch, superseding #187's rejection of git recency.** The epoch was a second source of truth that had to move in step with `primary`. And as shipped, a change of `primary` at the same epoch wasn't fenced at all, since `MayAct` stood down only for a *strictly higher* epoch, so both nodes acted until the old one synced. #187's objections were answered: being ahead never makes an agent leader, and with a persistent full clone the ancestry check is local. The cost moved from a counter the operator maintains to a clone the agent maintains.
 - **2026-10-03 (#101, PR #219):** building it settled the force-push refspec, ancestry as the meaning of "in my history", a failed parse as a failed sync, the own-instance and own-flag checks, peers scoped to the agent's own App, draining peers skipped by rule 2, and un-draining only after a successful sync.
 - **2026-10-03 (#223):** the #187, #212 and #101 addenda folded into the body above.
+- **2026-10-26 (#401, §30):** rule 1 went from one primary per repo to one per cluster, with a standalone host its own primary. Rule 3's reach was already one cluster, since an agent reads its peers from its own member's Incus.
 
 ## 26. Incus clustering: 0.x claimed a one-member cluster it never built; splitting the fix into Tier A and Tier B (#177)
 
@@ -1774,13 +1802,13 @@ incus:
 
 **Verified against a real boot**, not just source-reading (#315): `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` passes 16/0/0. A freshly installed node reports `environment.server_clustered: true`, and `GET /1.0`'s `config` carries both keys exactly as seeded, not normalised: `core.https_address` is `":8443"` and `cluster.https_address` is `"192.168.1.201:8443"`. `GET /1.0/cluster/members?recursion=1` has exactly one member, with `url` `https://192.168.1.201:8443`. `scripts/validate/node-tunnel-survives-nat-and-provisions.sh` reaches the same node's API over `wg0` (`10.100.0.2:8443`) and provisions through it, passing 44/0/0. Before this fix, its section 6 got `connection was refused` on that address.
 
-**§27's joiner seed is not covered.** Its incus.yaml (Phase 4, not built) still sets `core.https_address: "<static_ip>:8443"`, so a joiner would bind its LAN address only and be unreachable over its own tunnel, the bug #315 fixed here. Revisit it when §27's seed is built.
+**§27's joiner seed is not covered.** Its incus.yaml (Phase 5, not built) still sets `core.https_address: "<static_ip>:8443"`, so a joiner would bind its LAN address only and be unreachable over its own tunnel, the bug #315 fixed here. Revisit it when §27's seed is built.
 
 **Scope stayed deliberately small.** One member is still Incus's whole scheduler decision (§17's "no placement field" reasoning is unaffected — `Target`/cluster groups still buy nothing with one member). No join token, no membership config, no networks/storage-pool parity work: all of that is Tier B.
 
-### Tier B: real multi-member clustering (new Phase 4)
+### Tier B: real multi-member clustering (Phase 5)
 
-Growing to N≥2 members is a materially bigger project — Architecture.md's "explicitly out of scope for 0.x" framing was right about *this* half of clustering, just conflated with Tier A under one sentence. It gets its own roadmap phase (the existing Phase 4, "Tailscale, logging + metrics," renumbers to Phase 5 to make room — pure renumbering, no content change, same pattern as #58's v1→0.x rename).
+Growing to N≥2 members is a materially bigger project — Architecture.md's "explicitly out of scope for 0.x" framing was right about *this* half of clustering, just conflated with Tier A under one sentence. It gets its own roadmap phase: Phase 5, after the agent (Phase 3) and the web app appliance (Phase 4), per §30.
 
 What it needs, roughly in dependency order:
 
@@ -1791,25 +1819,26 @@ What it needs, roughly in dependency order:
 - **Member add/remove and quorum-loss recovery** as an operator workflow.
 - **Revisit `leaderelection`.** §25's `Designated` and the deferred ranked-over-Incus election are both node-scoped already and don't need rework to keep working across real members; N≥3 real Incus members are what would make automated (ranked) election worth its cost over `Designated`'s operator step, per §25's own trade-off.
 
-Tier B is filed as a tracking issue plus its workstreams, all `later` — nothing here blocks Phase 3.
+Tier B is filed as a tracking issue (#179) plus its workstreams, all `later` — nothing here blocks Phase 3 or 4.
 
 ### History
 
 - **2026-09-21, #178: concrete `core.https_address`, wildcard rejected.** The source-reading spike planned `core.https_address: ":8443"` (a wildcard bind, and the value every `scripts/validate/*.sh` script dials) with `cluster.https_address` unset. A real boot caught the problem: the config applied fine (it showed in `GET /1.0`'s `config`), but `UpdateCluster` failed with `Cannot use wildcard core.https_address "" for cluster.https_address. Please specify a new cluster.https_address or core.https_address`. That was found by replaying `ApplyServerPreseed`'s `PUT /1.0/cluster` by hand against the booted node, since the VM console log carries no `incus-osd` application output. The fix then bound `core.https_address` to the instance's static IP. The conclusion drawn, "Incus rejects a wildcard bind outright", was too broad: the `""` in that error is the empty *cluster* address the `%q` prints, and the check runs only when `cluster.https_address` is empty. `node-boots-and-trusts-bootstrap-cert.sh` passed 12/0/0.
 - **2026-10-17, #315: split the API bind from the member address.** Binding the API to the LAN IP alone left nothing listening on `wg0`'s `10.100.0.2`, so `node-tunnel-survives-nat-and-provisions.sh` section 6 failed with `connection was refused` (found while verifying #268). The seed now sets `core.https_address: ":8443"` plus a concrete `cluster.https_address`, per the body above.
+- **2026-10-26, #401: Tier B is Phase 5.** §30's re-plan put the web app appliance at Phase 4, so Tier B renumbered from Phase 4 to Phase 5, and its clusters are same-OS. The body used to say Tier B took Phase 4 while the old Phase 4 ("Tailscale, logging + metrics") renumbered to Phase 5 as pure renumbering, and that nothing in Tier B blocked Phase 3, which was then that Tailscale and logging phase.
 
-## 27. Pivot to a real 3-member cluster; the agent joins members; AppManager's app reconciliation paused (2026-09-28)
+## 27. Pivot to a real 3-member cluster; the agent joins members; App reconciliation deferred to Phase 8 (2026-09-28)
 
-The project's next goal is a real 3-member Incus cluster (Phase 4), ahead of the rest of #92.
+A real 3-member Incus cluster (Phase 5) comes ahead of the rest of #92. §30 narrows the agent to managing itself and its cluster, and keeps every cluster to one host OS.
 
-**Why.** An operational cluster now matters more than AppManager. Work so far has run into problems that came from not having a real cluster, and the operator needs a working cluster in any case. AppManager's app reconciliation resumes afterwards, on a real physical cluster, where its HA can be tested for real rather than on one member.
+**Why.** An operational cluster now matters more than AppManager. Work so far has run into problems that came from not having a real cluster, and the operator needs a working cluster in any case. AppManager's app reconciliation is deferred to Phase 8 (§30), after host management, where its HA can be tested on a real physical cluster rather than on one member.
 
 The app-manager agent still ships, but its first real jobs are **cluster membership**, not app deployment:
 
 - joining new members (#180);
 - making sure every member runs an agent (#203).
 
-The rest of the blue-green reconcile machinery (#98, #103, #109) is paused, and so is cluster-group placement (#182). An agent that is deployed and does little else is an acceptable Phase 3 end state.
+Generic App reconciliation (#98, beyond #203's slice) and cluster-group placement (#182) are deferred to Phase 8 (§30). #109 and #103 are narrowed to the agent's own self-upgrade and stay in Phase 3 (§30).
 
 What follows was first read from `lxc/incus/v7` v7.5.1 and IncusOS source, then checked by hand on `homelab-host` in the #193 spike (evidence below). The web app's interim security posture was raised at the same time but is independent of this pivot; it is §28.
 
@@ -1823,7 +1852,7 @@ What follows was first read from `lxc/incus/v7` v7.5.1 and IncusOS source, then 
   - **If the join happens from the seed** (a `cluster_token` in the preseed), it runs before `applyDefaults`, which then skips quietly because the cluster's pools already exist. The joiner never gets the `backups`/`images`/`logs` volumes or its `storage.*_volume` settings.
   - **If the join happens over the API after `applyDefaults`,** the join fails outright when given `member_config`: it tries to *update* the existing `local` pool with a member-specific key, is refused, and spends the token. Without `member_config` it succeeds, but the `storage.*_volume` keys (member-local, in the node database) are left pointing at volumes the cluster has no records for, whose ZFS datasets still exist. Only Incus's internal recovery API repairs that. Hence `apply_defaults: false` on joiners.
 - **A joiner trusts its seed's certificates before it has finished initializing.** They're applied before `applyDefaults` runs, so a joiner answers `auth: trusted` while still initializing. `GET /os/1.0/applications/incus` → `state.initialized: true` is the signal to wait for, and the joiner cert can read it.
-- **Members must match versions.** `Accept` rejects a joiner whose schema or API version differs from the cluster's (`membershipCheckClusterStateForAccept`; not yet exercised). #68 (one flasher-tool/IncusOS pin) helps. But IncusOS updates itself, so members also drift apart depending on when each one updated. The join loop has to tolerate a mismatch (below).
+- **Members must match versions.** `Accept` rejects a joiner whose schema or API version differs from the cluster's (`membershipCheckClusterStateForAccept`; not yet exercised). #68 (one flasher-tool/IncusOS pin) helps. But IncusOS updates itself, so members also drift apart depending on when each one updated. The join loop has to tolerate a mismatch (below). Members on different host OSes would never converge, which is why §30 keeps each cluster to one OS.
 
 ### Decision: an agent on an existing member drives the join
 
@@ -1890,17 +1919,20 @@ A joiner booted this way comes up with an empty Incus: no pools, no networks, an
 **The agent's scope, in issue terms:**
 
 - Needed: #99, #100 (both the web app route and the `bootstrap deploy-agent` CLI path), #101, #102, #160 and #203.
-- Paused: #98 (apart from #203's slice), #103, #109 and #182.
+- Narrowed to the agent's own self-upgrade (§30): #103 and #109.
+- Deferred to Phase 8 (§30): #98 (apart from #203's slice) and #182.
 
 ### Decision: every member runs an agent (#203)
 
-Per-node agents come from #98's reconcile loop ("the fleet self-expands", `docs/AppManager.md`). Pausing all of #98 would leave only member 1 with an agent.
+Per-node agents come from #98's reconcile loop ("the fleet self-expands", `docs/AppManager.md`). Deferring all of #98 would leave only member 1 with an agent.
 
 The web app can't fill the gap. Its one-shot bootstrap cert is revoked after first use (`internal/nodeprovision`), and the join wipes the joiners' copies, so after the first agent it holds no credential on any member. Losing member 1 would then leave nothing to join a replacement, and no agent for a `Designated` failover to promote.
 
-So #98's zero-match branch is un-paused for the agent App alone (#203). Each tick, the designated primary creates generation 0 of the agent on any declared member that has none. Nothing else of #98 comes with it: no image-change handling, no blue-green, no teardown. Agent upgrades stay an operator step until #98 and #109 resume.
+So #98's zero-match branch is carved out for the agent App alone (#203). Each tick, the designated primary creates generation 0 of the agent on any declared member that has none. Nothing else of #98 comes with it: no generic image-change handling, no blue-green for other Apps, no teardown. The agent's own upgrades are agent-driven (§30, #109).
 
-- **Each agent is placed on its own member** (`target=<member>`), since it reaches that member's Incus through the `incus-socket` proxy. This is the first place 0.x sets a target. The target comes from per-node synthesis, not from a declared placement field. So `docs/AppManager.md`'s "no `Target`" rule still holds for declared Apps, and #182 stays paused.
+A standalone host, in no cluster with other hosts, has no primary's agent that can reach it. It gets its agent from the web app's one-shot window or from `bootstrap deploy-agent` (§30).
+
+- **Each agent is placed on its own member** (`target=<member>`), since it reaches that member's Incus through the `incus-socket` proxy. This is the first place 0.x sets a target. The target comes from per-node synthesis, not from a declared placement field. So `docs/AppManager.md`'s "no `Target`" rule still holds for declared Apps, and #182 (their placement) is Phase 8.
 - **The CLI deploy path is no longer deferred.** `bootstrap deploy-agent` (#100) uses the break-glass cert over the LAN and needs no web app. If every agent is lost, nothing is left to recreate one, so this is the recovery path.
 
 ### Decision: the joiner credential is operator-generated, for now
@@ -1970,7 +2002,7 @@ The web app is a provisioning and observation plane, never on the cluster's runt
 - **Lost while the web app is down, by design:**
   - rendering seeds and images for new nodes;
   - the web app's `deploy-agent` route (the CLI path still works);
-  - the missing-primary-heartbeat alert (`docs/AppManager.md`). That one is monitoring, not function; Phase 5's Grafana stack is its longer-term home.
+  - the missing-primary-heartbeat alert (`docs/AppManager.md`). That one is monitoring, not function; Phase 8's observability App (Alloy, #77–#80) is its longer-term home.
 - **Rule for future work:** nothing on a node or in the agent may call the web app synchronously. If a feature seems to need that, it belongs in git or in the agent.
 
 ### Operations Center, again
@@ -2023,10 +2055,11 @@ Also found:
 - **2026-09-28 (#202):** the pivot, with the join mechanics read from source and a manual join spike (#193) required before building any of it.
 - **2026-09-29 (#193):** the spike confirmed the source reading, except that no physical network needs `member_config`. It added what a join body needs beyond the token, how the token is assembled, the wait for `initialized`, `dns.hostname` on joiners, and the four-call fix-up.
 - **2026-10-03 (#223):** the spike addendum folded into the body above; its evidence kept as its own subsection.
+- **2026-10-26 (#401, §30):** the re-plan around host management. The "paused" App items stopped being paused-to-resume: #98's generic reconciliation and #182 moved to Phase 8, and #103/#109 were narrowed to the agent's self-upgrade, replacing "agent upgrades stay an operator step until #98 and #109 resume". The cluster phase renumbered from 4 to 5, multi-node now means same-OS clusters, and standalone hosts got their deploy path. The body used to say an agent "that is deployed and does little else is an acceptable Phase 3 end state"; Phase 3 now ends with agent self-upgrade.
 
 ## 28. The web app's interim security posture: WireGuard API by default, one operator-held key (2026-09-28)
 
-Raised alongside §27 but independent of it: none of this blocks Phase 4. It is scheduled in `docs/Roadmap.md` § Web app hardening (#195–#200). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
+Raised alongside §27 but independent of it: none of this blocks the cluster work (Phase 5). It is scheduled in `docs/Roadmap.md` Phase 4, the web app appliance and hardening (#195–#200, #397; folded in by §30). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
 
 **The problem.**
 
@@ -2135,7 +2168,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 - **Proper auth and a JS client** (sized 2026-09-28).
   - Auth alone is roughly three to four issues: TLS; OIDC login (Authorization Code + PKCE via `coreos/go-oidc`, with the server holding the login so the browser only ever gets a session cookie); session and CSRF middleware; an identity provider (Dex) in compose for validation; and device-code or mTLS access for the CLI.
   - The JS client is the larger cost. The repo has no Node toolchain, build stage or CI job yet, and every screen adds to it.
-  - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 5).
+  - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 7).
 - **Asymmetric encryption (GPG or age X25519).** This would let the web app write backups it can't read, and snapshot signing belongs with it.
   - GPG fits best if the operator already has a key, especially on a hardware token: one key both decrypts backups and verifies signatures. Its Go dependency is the cost. `golang.org/x/crypto/openpgp` is frozen and deprecated, and the maintained `github.com/ProtonMail/go-crypto` is heavier than this repo usually accepts (Development Conventions' "small dependency" rule).
   - age X25519 plus stdlib `crypto/ed25519` is lighter, and age can encrypt to an SSH key the operator already has.
@@ -2225,6 +2258,73 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
   - **The Docker box became a cloud-init Debian box, with automatic OS updates.** That removes both the manual setup and the manual patching.
   - **The IncusOS host was parked.** Its plan assumed the seed could set up the web app. It can't create instances, so the form always needs a post-boot `deploy-web`.
   - **The mkosi image moved from rejected to later and undecided (#393).** Folded into §15's multi-OS work, it shares a build with the helper OS rather than costing a one-off.
+
+## 30. Re-plan around host management: the agent manages only itself and its cluster (2026-10-26)
+
+The project's goal moves from App management to **host support and management**. Until a deferred App management phase (Phase 8), **the agent is the only App managed**. `docs/Roadmap.md` is re-laid as Phases 3–8 to match (#401).
+
+### The agent manages only itself, and clusters
+
+The agent deploys (#100), upgrades itself (#109, #103), runs one per host (#203) and joins members of its cluster (#180). Nothing beyond that. Generic App reconciliation (#98), blue/green for other Apps, placement (#182) and stateful apps (§19) are deferred to Phase 8. §27's "paused" items are deferred, not paused-to-resume.
+
+**One agent per host, by two paths:**
+
+- **Cluster members:** §27's mechanism. Each tick, the designated primary's agent creates the agent on each declared member that has none, placed with `target=<member>` (#203).
+- **Standalone hosts** (a one-member cluster, below): the web app's one-shot window (#100) or `bootstrap deploy-agent`. No other agent can reach a standalone host's socket, and the web app keeps no standing credential after its one-shot cert is revoked (§4, §27). None is added for this.
+
+### Leadership is per cluster; a standalone host is its own primary
+
+A standalone host is treated as a one-member cluster, whether its Incus is a Tier A one-member cluster (static IP) or a bare, unclustered daemon (DHCP-only, which skips clustering, §26). **Its one host is its primary:** the agent takes its own node as primary, with no `kind: Designation` needed. A multi-member cluster's primary is the node `kind: Designation` names. This amends §25 rule 1 from one primary per repo to one per cluster. §25's other rules stand, and its single acting instance holds per cluster, which was already its reach: an agent reads its peers from its own member's Incus, so it never sees another cluster's agents. Taking a standalone host as its own primary is #109's; scoping `kind: Designation` to a cluster is #181's (Phase 5). On a standalone host, creates omit `target=`, as `internal/agentdeploy` already does; only a multi-member cluster needs it.
+
+### Agent upgrade is agent-driven
+
+When the agent App's `image` in git differs from the running agents', **the primary's agent creates every host's successor** (generation g+1) over its Incus socket: the same leader loop as #203's. **The primary never moves for an upgrade.** The designation names a node, not an instance (§25), so the primary host stays the same throughout.
+
+- **On the primary's host, the primary's agent creates its own successor on that same host.** §25's handoff follows: the old instance marks itself `draining` once its candidate is sustained-healthy, the candidate takes over as the acting instance, and **the candidate retires the old instance**. The old instance never deletes itself. On a standalone host, this is the whole upgrade.
+- **On a follower's host** (a multi-member cluster, Phase 5), the primary's agent creates the follower's successor, placed with `target=<member>`. A follower's candidate is a follower and never acts (§25 rule 1), so **the acting primary retires the old follower instance** once its candidate is sustained-healthy.
+
+There is one acting instance per cluster throughout, §25's invariant unchanged. This is #109 (which takes the agent-only slice of #98's image-change handling) plus #103's proof, narrowed to the agent.
+
+- **Not each agent for itself.** A follower that crashed before creating its own successor would be left behind; the primary-driven loop covers it, as #109's original design argued.
+
+- **Not the web app.** It keeps no standing Incus trust after #100's one-shot credential is revoked (§4), so it can't drive the upgrade, and nothing on a node may call it synchronously (§27).
+- **The fallback is an operator-driven CLI upgrade**, over the break-glass cert, not the main path. This replaces §27's "agent upgrades stay an operator step until #98 and #109 resume".
+
+### Clusters are same-OS, joined by the agent
+
+A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The check that a cluster's members declare one `os` arrives with that field, in #398 (Phase 6). Until then every host is IncusOS, so #181 (Phase 5) has nothing to check.
+
+### Host OS order: IncusOS → Debian → NixOS → Talos
+
+Phase 6, detailed in §15.
+
+- IncusOS is done. Debian is next, by §15's declared-disk path first; #398 is the first step.
+- NixOS isn't in §15's original exploration, and needs its own decision.
+- Talos is not an Incus host (§15), so the agent can't run there, and "the agent handles clustering" stops at NixOS. Talos needs its own management path.
+
+### Node access
+
+- **The web app becomes a bastion** (#399). The local network remains a valid alternative.
+- **Instances:** Incus's own websocket exec.
+- **Debian and NixOS host shells:** SSH with an SSH CA.
+- **Deferred: an agent-served shell over websocket.** Dropped for Incus hosts: IncusOS has no host shell by design, and the agent's socket is effectively root on the host. Elsewhere it waits on auth.
+
+### Auth and certs
+
+- One operator client cert for Incus and the web app (#397).
+- The web app as a CA is a later decision (#400).
+- **Not settled here: credential custody.** A bastion that proxies Incus exec or SSH, an SSH CA and a shared operator cert each need either pass-through of the operator's credential or a standing credential or CA key in the web app. That meets §4 (the app never holds the break-glass key) and §28 (one operator-held key). #397, #399 and #400 decide it; this section doesn't.
+
+### Roadmap layout
+
+| Phase | Scope |
+|---|---|
+| 3 | The agent and node connectivity: agent deploy, one per host, agent self-upgrade |
+| 4 | Web app appliance and hardening (the former "Web app deployment" and "Web app hardening" sections) |
+| 5 | Multi-node: same-OS Incus clusters, joined by the agent (formerly Phase 4) |
+| 6 | Multi-OS hosts |
+| 7 | Tailscale (the Tailscale half of the former Phase 5) |
+| 8 | App management, deferred: #92's umbrella, generic reconciliation, placement, stateful apps, and observability (Alloy) as a supported App |
 
 ## Sources consulted
 
