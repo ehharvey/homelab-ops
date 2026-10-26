@@ -39,11 +39,21 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 **Done when:** the app can take a new `Instance` entry from the synced repo and produce a working installer end-to-end, without the bootstrap CLI.
 
-## Phase 3 — Local app-manager agent + node connectivity
+## Phase 3 — The agent and node connectivity
+
+> **Re-plan note (2026-10-26, #401, `docs/Decisions.md` §30):** the goal moved
+> from App management to host support and management. The agent manages only
+> itself and its cluster: it deploys, runs one per managed host (#203, moved
+> here from the cluster phase) and upgrades itself (#109, #103, narrowed to
+> the agent). Generic App reconciliation (#98) moved to Phase 8, #68 to
+> Phase 5 and #67 to Phase 4. The two notes below are kept as history, in
+> the phase numbering of their dates. Of their "paused" items, #98 is now
+> Phase 8, while #109 and #103 are this phase's agent self-upgrade.
 
 > **Rejig note (2026-07-14):** this phase used to be "Tailscale, logging +
 > metrics." That content didn't disappear — it moved to what was then Phase 4
-> below (now **Phase 5**, since 2026-09-20 — see #177), displaced by two
+> below (Phase 5 from 2026-09-20, see #177; **Phase 7** since 2026-10-26,
+> §30), displaced by two
 > pieces of infrastructure everything after it now builds on: node↔app
 > connectivity, and a self-managing app-manager agent. See `docs/Decisions.md`
 > for the full rationale (cert custody, why a local agent instead of the
@@ -80,17 +90,16 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   IP (`cluster.https_address`), which Incus requires at bootstrap; a
   DHCP-only Instance skips clustering rather than erroring. Verified against
   a real booted node (`node-boots-and-trusts-bootstrap-cert.sh`); growing
-  past one member is Phase 4: DONE; see #178, #315, `docs/Decisions.md` §26
-- [ ] Per-node app-manager agent with an operator-designated leader: one agent
-  instance per node; a single primary named in git (fenced by git commits and
-  an acting handoff, so a stale checkout stands down and a new primary waits
-  for the old one, `docs/Decisions.md` §25) is the only one that reconciles a new `kind: App`
-  object across the whole fleet via a small renderer registry, proven by
-  managing its own fleet (blue-green self-upgrade, driven fleet-wide by the
-  primary) — see #92, `docs/Decisions.md` §25. Leader election is a pluggable
-  interface, so the automated ranked-over-Incus election (specified in §25) can
-  replace the designation later without touching the reconcile loop. Built in
-  dependency order:
+  past one member is Phase 5: DONE; see #178, #315, `docs/Decisions.md` §26
+- [ ] Per-host app-manager agent with an operator-designated leader, managing
+  only itself (`docs/Decisions.md` §30): one agent instance per managed host;
+  a single primary named in git (fenced by git commits and an acting handoff,
+  so a stale checkout stands down and a new primary waits for the old one,
+  `docs/Decisions.md` §25), proven by the agent's own blue-green self-upgrade.
+  Reconciling other `kind: App` objects is Phase 8 (#92). Leader election is a
+  pluggable interface, so the automated ranked-over-Incus election (specified
+  in §25) can replace the designation later without touching the loop. Built
+  in dependency order:
   - [x] `kind: App` schema + store/configdiff plumbing — no runtime
     behaviour, pure parse/validate/store, prerequisite for every step
     below; `App` carries a cardinality field rather than a separate
@@ -108,10 +117,6 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     so the epoch ratchet stays a single-writer read-modify-write above this
     layer (#101; since #212 there's no ratchet at all). `Exec` gave way to `ReadFile`, since `Healthy` is defined as
     the freshness of a heartbeat file: DONE; see #160
-  - [ ] *(paused, §27)* App renderer registry + fleet-wide reconcile
-    algorithm; fleet reconciliation only ever runs while the caller's
-    `Elector` says it may. Its zero-match branch for the agent App alone is
-    split out as #203 (Phase 4) — see #98
   - [x] Preseed the `incus-socket` profile onto every node
     unconditionally, since an agent now runs everywhere. The socket lands at
     `/dev/incus-host.sock` rather than the issue's `/mnt/incus/unix.socket`,
@@ -125,41 +130,40 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   - [x] `cmd/agent` binary tying the `Elector` and the designation's git
     parsing to a loop; every node runs the same binary and the `Elector`
     decides which is active each tick. Its first loop is cluster membership
-    (Phase 4), not App reconciliation — see `docs/Decisions.md` §27. Built
+    (Phase 5), not App reconciliation — see `docs/Decisions.md` §27. Built
     minimal: `kind: Designation`, commit fencing and the acting handoff
     (§25), a persistent full clone, `user.*` keys on each
     agent's own instance, #187's sync-failure threshold and self-drain, and a
     heartbeat. When it leads, it only logs. Proven with three real agents
     against real Incus: DONE; see #101
-  - [ ] *(paused, §27)* The leader marks itself draining on self version
-    mismatch, once its candidate is sustained-healthy, so the candidate takes
-    over and retires it during a self-upgrade — see #109
+  - [ ] One agent on every managed host: on cluster members, the designated
+    primary creates it with `target=<member>` (#98's zero-match branch for the
+    agent App alone); a standalone host gets it from the web app's one-shot
+    window or `bootstrap deploy-agent` (`docs/Decisions.md` §27, §30) — see #203
+  - [ ] Agent self-upgrade: when the agent App's `image` in git changes, the
+    primary's agent creates every host's successor, its own on its own host
+    (#98's image-change handling, for the agent App alone). On the primary's
+    host the old instance drains once its candidate is sustained-healthy, and
+    the candidate takes over and retires it; the primary retires a follower's
+    old instance. The primary never moves, and a standalone host is its own
+    primary (`docs/Decisions.md` §25, §30) — see #109
   - [x] Publish the agent image to GHCR; local registry for
     dev/validation: DONE; see #102
-  - [ ] *(paused, §27)* `scripts/validate/` script proving fleet-wide blue-green + the
+  - [ ] `scripts/validate/` script proving the agent's self-upgrade + the
     designation gate (a stale-checkout primary stands down; one acting
-    instance through a self-upgrade) end-to-end against #92's own done-when —
-    see #103
-- [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
-  the two cannot drift from one another. Matters more under Phase 4: Incus
-  rejects a joiner whose version differs from the cluster's. IncusOS's own
-  updates are the larger source of that drift, so the join loop retries on a
-  mismatch as well (`docs/Decisions.md` §27) — see #68
-- [ ] Unified config: consolidate config passing into one place and fail
-  fast on missing required values, rather than resolving it just-in-time
-  across the codebase — see #67
+    instance per cluster through a self-upgrade) end-to-end, against this
+    phase's done-when — see #103
+- [ ] Decide whether `wg0` keeps the IncusOS management role — see #342
 
-**Done when** (revised 2026-09-28, `docs/Decisions.md` §27): a managed node
-has a persistent WireGuard tunnel to the web app, and the web app has deployed
-the app-manager agent, published as an image, onto it. The agent runs under
-`Designated` and otherwise does little until Phase 4 gives it membership work.
+**Done when** (revised 2026-10-26, `docs/Decisions.md` §30): each managed
+host has a persistent WireGuard tunnel to the web app and runs one agent,
+deployed by the web app or `bootstrap deploy-agent`. Changing the agent image
+in git replaces every host's agent, each standalone host acting as its own
+primary and creating its successor on itself, with one acting instance per
+cluster throughout.
 
-The original done-when, kept for when the paused items resume: a per-node
-agent fleet whose designated primary deploys and upgrades the fleet
-(blue-green, fleet-wide, including its own self-upgrade with no reconciliation
-gap) from git-declared config, with a stale-checkout primary fencing itself out
-once a peer is on a newer commit (§25; this originally said
-"a higher epoch").
+The fleet-wide done-when (blue-green for every App, not only the agent) is
+#92's, and moved with it to Phase 8.
 
 ## Phase 3.5 — The validate suite made runnable
 
@@ -215,7 +219,86 @@ what it proves and what it needs without being read. (Reached. What
 remains is *enforcement* — nothing runs the suite automatically yet; that
 work is tracked separately and is not part of this section.)
 
-## Phase 4 — Multi-member Incus clustering
+## Phase 4 — Web app appliance and hardening
+
+> **New phase (2026-10-26, #401, `docs/Decisions.md` §30):** the former "Web
+> app deployment" and "Web app hardening" sections, which sat alongside the
+> cluster phase, folded into one phase. #67 moved here from Phase 3, because
+> #241's config contract absorbs it. The web app runs on its own appliance
+> machine, either an internet-reachable VM or a spare machine on the nodes'
+> LAN (§29), and every deployment setting is an operator choice with a safe
+> default. It is a provisioning and observation plane: nothing on a node or in
+> the agent may call it synchronously, and the cluster must keep running while
+> it's down or locked (§27). Proper auth and a JS client are deferred (§28);
+> the hardening items are the interim posture.
+
+Appliance (from "Web app deployment", added 2026-10-03, #247, §29):
+
+- [x] Publish the web image to GHCR from `main`: DONE; see #240
+- [ ] Cloud-init Debian appliance: a stock Debian cloud image set up by
+  cloud-init, running the production compose file, with unattended upgrades
+  that reboot only when required. VM and LAN runbooks, and a validate script.
+  First — see #243
+- [ ] Deployment config contract: one directory, every setting with its
+  default, the WireGuard endpoint as a DNS name — see #241. It absorbs #67's
+  unified config (one place for config, failing fast on missing required
+  values) — see #67
+- [ ] Build install media client-side: a local image build from a downloaded
+  seed, or a `SEED_DATA` stick beside a stock IncusOS image — see #242
+- [ ] Provision node0 from the web app by default; the bootstrap CLI as the
+  alternative — see #244
+- [ ] Migrate the web app between hosts without reflashing nodes, including
+  the endpoint DNS re-resolution probe — see #245
+- [ ] *(later)* `bootstrap deploy-web`: the web image as an Incus OCI
+  container on any Incus host, which is the path into the fleet — see #386
+- [ ] *(parked)* IncusOS turnkey appliance: an appliance seed and a hardware
+  runbook. An IncusOS seed can't create instances, so it always needs
+  `deploy-web` after boot (`docs/Decisions.md` §29) — see #246, #394
+- [ ] *(later)* mkosi-built appliance image, sharing a build with Phase 6's
+  helper OS (`docs/Decisions.md` §15); design open — see #393
+
+Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
+
+- [x] Serve the HTTP API over the web app's in-process WireGuard tunnel, to
+  operator peers, by default; a plain-HTTP host listener only by explicit
+  opt-in (`docs/Decisions.md` §28, §29). Closes the leak where the seed and image
+  routes hand any caller a node's WireGuard private key (#63): DONE; see #195
+- [ ] Operator CLI for the API, over the tunnel — see #196
+- [ ] Operator-held symmetric key: held only in memory, web app locked on
+  restart, store encrypted at rest, and a wrong key on unlock never resets
+  anything. The web app's WireGuard identity becomes operator-supplied
+  deployment config — see #197
+- [ ] Encrypted seed, image and snapshot downloads; the CLI decrypts
+  straight to the install media — see #198
+- [ ] Network addressing from git (private repo) or web app state, exactly
+  one source per network — see #199
+- [ ] *(optional)* Push encrypted store snapshots to off-cluster S3 — see
+  #200
+- [ ] One operator client cert for both Incus and the web app's tunnel API;
+  its custody is #397's to decide (`docs/Decisions.md` §30) — see #397
+
+**Done when:** both former sections' done-whens hold.
+
+- *Appliance:* the web app runs from the published image on a dedicated
+  appliance machine, either an internet VM or a LAN machine. The operator
+  chooses each deployment setting, and it can be moved to another host without
+  reflashing any node. HA, as a warm standby, is decided after that
+  (`docs/Decisions.md` §29).
+- *Hardening:* by default, the web app's API is reachable only by operator
+  peers over WireGuard; nothing it stores or serves exists in plaintext outside
+  its own memory, apart from its WireGuard identity (operator-supplied
+  deployment config, `docs/Decisions.md` §28); and its state survives the loss
+  of its host.
+
+## Phase 5 — Multi-node: same-OS Incus clusters
+
+> **Re-plan note (2026-10-26, #401, `docs/Decisions.md` §30):** this was
+> Phase 4; the web app appliance took that number. A cluster's members all run
+> one host OS, since Incus rejects a joiner whose version differs at `Accept`
+> (§27). #203 (an agent on every member) moved to Phase 3, which puts an agent
+> on every managed host; #182 (placement) moved to Phase 8 with App
+> management; #68 (the version pin) moved here from Phase 3. The notes below
+> are kept as history; their "Phase 4" is this phase.
 
 > **New phase (2026-09-20, see #177, `docs/Decisions.md` §26):** displaces the
 > old Phase 4 ("Tailscale, logging + metrics"), which renumbers to Phase 5
@@ -243,7 +326,14 @@ work is tracked separately and is not part of this section.)
   Sets the scope of the items below — see `docs/Decisions.md` §27
   (its "Evidence" subsection): DONE; see #193
 - [ ] Cluster membership config model: declare which `Instance` bootstraps
-  the cluster vs. joins it, with no addresses required in git — see #181
+  the cluster vs. joins it, with no addresses required in git, and scope
+  `kind: Designation` to a cluster (`docs/Decisions.md` §30). The same-OS
+  check arrives with the `os` field, in #398 — see #181
+- [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
+  the two cannot drift from one another: Incus rejects a joiner whose version
+  differs from the cluster's. IncusOS's own updates are the larger source of
+  that drift, so the join loop retries on a mismatch as well
+  (`docs/Decisions.md` §27) — see #68
 - [ ] Joiner seed variant (no cluster or profile preseed, `apply_defaults:
   false` set explicitly) and the operator-generated joiner cert, preseeded
   into joiners only — see #194
@@ -251,106 +341,93 @@ work is tracked separately and is not part of this section.)
   subnet with the joiner cert (trust on first use for now,
   `docs/Decisions.md` §27), waits out version mismatches, mints tokens over
   its unix socket, and joins missing members over the LAN — see #180
-- [ ] Every member runs an agent: #98's zero-match branch for the agent App
-  alone, each agent created on its own member — see #203
 - [ ] Storage/network parity across members — largely the `member_config`
   and post-join volume fix-up the join step needs anyway — see #183
-- [ ] *(paused, §27)* Cluster-group placement: a `Target` field on
-  `kind: App`, since Incus's scheduler stops being a trivial decision once
-  members > 1. Nothing needs it while App reconciliation is paused — see #182
 - [ ] A 3-VM validate script proving real node-loss fault tolerance, closing
   #92's own done-when caveat that 0.x never proved surviving an actual
   physical node's loss — see #184
 - [ ] Member add/remove and quorum-loss recovery runbook — see #185
 
-**Done when:** a fleet of ≥3 real Incus cluster members, joined by the agent
-rather than by hand and each running an agent, survives losing any one
+**Done when:** a fleet of ≥3 real Incus cluster members on one host OS,
+joined by the agent rather than by hand and each running an agent, survives losing any one
 member. Incus keeps quorum and the remaining agents keep running, with no
 operator intervention beyond eventually replacing the member — plus, if it
 was the designated primary, the operator's §25 failover (commit a new
 `primary`, #212) before the replacement can be joined. (Placement of `kind: App`
-workloads across members is paused with #182; see `docs/Decisions.md` §27.)
+workloads across members is Phase 8, with #182; see `docs/Decisions.md` §30.)
 `docs/Decisions.md` §25's `leaderelection.Designated` is re-weighed against the deferred
 ranked-over-Incus election once real membership exists to make the automated
 option's cost worth paying.
 
-## Web app hardening (alongside Phase 4)
 
-> **Added 2026-09-28 (#201, `docs/Decisions.md` §28).** Not a phase in the
-> sense the others are — like Phase 3.5, it's recorded here so the work has a
-> home. It is independent of Phase 4's critical path; #195 fixes a live leak
-> and is worth doing early. Proper auth and a JS client are deferred (§28);
-> this is the interim posture. The web app is a provisioning and observation
-> plane: nothing on a node or in the agent may call it synchronously, and
-> the cluster must keep running while it's down or locked (§27).
+## Phase 6 — Multi-OS hosts
 
-- [x] Serve the HTTP API over the web app's in-process WireGuard tunnel, to
-  operator peers, by default; a plain-HTTP host listener only by explicit
-  opt-in (`docs/Decisions.md` §28, §29). Closes the leak where the seed and image
-  routes hand any caller a node's WireGuard private key (#63): DONE; see #195
-- [ ] Operator CLI for the API, over the tunnel — see #196
-- [ ] Operator-held symmetric key: held only in memory, web app locked on
-  restart, store encrypted at rest, and a wrong key on unlock never resets
-  anything. The web app's WireGuard identity becomes operator-supplied
-  deployment config — see #197
-- [ ] Encrypted seed, image and snapshot downloads; the CLI decrypts
-  straight to the install media — see #198
-- [ ] Network addressing from git (private repo) or web app state, exactly
-  one source per network — see #199
-- [ ] *(optional)* Push encrypted store snapshots to off-cluster S3 — see
-  #200
+> **New phase (2026-10-26, #401, `docs/Decisions.md` §30, §15):** multi-OS
+> moved here from "direction, not yet built" and `docs/Out of Scope.md`. Order:
+> IncusOS (done) → Debian → NixOS → Talos. Debian and NixOS are Incus hosts,
+> so the agent runs there and joins same-OS clusters. Talos isn't an Incus
+> host: the agent can't run there, and it needs its own management path.
 
-**Done when:** by default, the web app's API is reachable only by operator
-peers over WireGuard; nothing it stores or serves exists in plaintext outside
-its own memory, apart from its WireGuard identity (operator-supplied
-deployment config, `docs/Decisions.md` §28); and its state survives the loss
-of its host.
+- [ ] An `os` field on `Instance` and a per-OS seed/image renderer seam,
+  behaviour-neutral, IncusOS only, plus the check that a cluster's members
+  declare one `os` (`docs/Decisions.md` §15, Prerequisite 1; §30) — see #398
+- [ ] Debian + Incus host, by §15's declared-disk path first (the operator
+  names the target disk; no helper-OS round-trip). To file.
+- [ ] NixOS + Incus host. Needs its own install-mechanism decision first. To
+  file.
+- [ ] Talos host, with its own management path (machine config and PKI, no
+  agent). Needs its own decision. To file.
+- [ ] SSH-CA host access to Debian and NixOS hosts, with the web app as a
+  bastion. The bastion (#399) and the CA (#400) are decisions to settle first;
+  instances keep Incus's own websocket exec — see #399, #400
 
-## Web app deployment (alongside Phase 4)
+**Done when:** a Debian host and a NixOS host are each provisioned and run an
+agent joined to a same-OS cluster. Talos is filed with its own decision and
+doesn't gate this phase, since it isn't an Incus host.
 
-> **Added 2026-10-03 (#247, `docs/Decisions.md` §29).** Like Web app
-> hardening, this sits off Phase 4's critical path. The web app runs on its
-> own appliance machine, either an internet-reachable VM or a spare machine on
-> the nodes' LAN. Every deployment setting is an operator choice with a safe
-> default. An internet-reachable deployment needs #195 first.
+## Phase 7 — Tailscale
 
-- [x] Publish the web image to GHCR from `main`: DONE; see #240
-- [ ] Deployment config contract: one directory, every setting with its
-  default, the WireGuard endpoint as a DNS name — see #241
-- [ ] Build install media client-side: a local image build from a downloaded
-  seed, or a `SEED_DATA` stick beside a stock IncusOS image — see #242
-- [ ] Cloud-init Debian appliance: a stock Debian cloud image set up by
-  cloud-init, running the production compose file, with unattended upgrades
-  that reboot only when required. VM and LAN runbooks, and a validate script —
-  see #243
-- [ ] Provision node0 from the web app by default; the bootstrap CLI as the
-  alternative — see #244
-- [ ] Migrate the web app between hosts without reflashing nodes, including
-  the endpoint DNS re-resolution probe — see #245
-- [ ] *(later)* `bootstrap deploy-web`: the web image as an Incus OCI
-  container on any Incus host, which is the path into the fleet — see #386
-- [ ] *(parked)* IncusOS turnkey appliance: an appliance seed and a hardware
-  runbook. An IncusOS seed can't create instances, so it always needs
-  `deploy-web` after boot (`docs/Decisions.md` §29) — see #246
-- [ ] *(later)* mkosi-built appliance image, folded into multi-OS support
-  (`docs/Decisions.md` §15); design open — see #393
-
-**Done when:** the web app runs from the published image on a dedicated
-appliance machine, either an internet VM or a LAN machine. The operator
-chooses each deployment setting, and it can be moved to another host without
-reflashing any node. HA, as a warm standby, is decided after that
-(`docs/Decisions.md` §29).
-
-## Phase 5 — Tailscale, logging + metrics
+> **Renumbered (2026-10-26, #401, `docs/Decisions.md` §30):** this was Phase
+> 5, "Tailscale, logging + metrics". Logging and metrics moved to Phase 8 as an
+> observability App (Alloy), so this phase's done-when drops their half.
 
 - [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service (blocked on upstream seed support — see #76, deferred)
+
+**Done when:** a freshly provisioned node is reachable over Tailscale.
+
+## Phase 8 — App management (deferred)
+
+> **New phase (2026-10-26, #401, `docs/Decisions.md` §30):** until this phase,
+> the agent is the only App managed. Generic App reconciliation, blue/green for
+> other Apps, placement and stateful apps (§19) moved here from Phases 3 and
+> 4, where §27 had paused them. Logging and metrics moved here from the old
+> Phase 5, as one of the supported Apps.
+
+- [ ] Per-node agents reconcile every `kind: App` fleet-wide with blue/green
+  upgrades, from git-declared config. #92 is the umbrella; its original
+  done-when holds: a per-node agent fleet whose designated primary deploys and
+  upgrades the fleet (blue-green, fleet-wide, including its own self-upgrade
+  with no reconciliation gap) from git-declared config, with a stale-checkout
+  primary fencing itself out once a peer is on a newer commit (§25) — see #92
+  - [ ] App renderer registry + fleet-wide reconcile algorithm; fleet
+    reconciliation only ever runs while the caller's `Elector` says it may.
+    Its zero-match branch for the agent App alone is #203 (Phase 3) —
+    see #98
+  - [ ] Human approval before blue-green promotion (manual promote mode per
+    App) — see #340
+  - [ ] Cluster-group placement: a `Target` field on `kind: App`, since Incus's
+    scheduler stops being a trivial decision once members > 1 — see #182
+  - [ ] Stateful apps (databases, Kubernetes), a direction only
+    (`docs/Decisions.md` §19). To file.
 - [x] Add a local Grafana + Loki + Prometheus dev stack under `docker-compose.yml`, so log/metric forwarding can be validated without live Grafana Cloud credentials (see #82)
-- [ ] Stand up an Alloy Incus instance; point node syslog at it — now a renderer registered with Phase 3's app-manager agent (see #92) rather than built from scratch — see #77
+- [ ] Stand up an Alloy Incus instance; point node syslog at it — a renderer registered with the agent's App registry (see #92) rather than built from scratch — see #77
 - [ ] Alloy → Grafana forwarding confirmed end-to-end (local stack by default; Grafana Cloud is the real production destination, checked separately) — see #78
 - [ ] Mint a per-instance `metrics`-typed Incus cert at seed-render time (shared `internal/cert`+`internal/seed` code, used by both the bootstrap CLI and the web app) and preseed it via `incus.yaml` for Alloy's local scrape — invisible to the operator, distinct from the break-glass client cert — see #79
 - [ ] Extend the per-node Alloy instance to scrape Incus's native `/1.0/metrics` endpoint and remote_write to Grafana, alongside its existing syslog forwarding — see #80
 
-**Done when:** a freshly provisioned node is reachable over Tailscale and both its logs and its resource metrics (host + instance, CPU/memory/disk/network) show up in Grafana Cloud.
+**Done when:** #92's done-when above holds, and a freshly provisioned node's
+logs and resource metrics (host + instance, CPU/memory/disk/network) show up
+in Grafana Cloud.
 
 ## Deferred / post-1.0 — tooling and dev-host health
 
