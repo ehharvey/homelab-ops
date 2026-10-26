@@ -9,7 +9,11 @@
 #   park   an open blocker is in this run or has an open PR: it can't start
 #          until that PR merges, or until stacked PRs exist (#254)
 #   skip   anything else, with the reason. That includes a sub-issue of an
-#          open bundle (/bundle, #409): it ships with its parent
+#          open bundle (/bundle, #409): it ships with its parent, and a Ready
+#          issue whose Done-when names no validate script or real-run check
+#          (the /file-task Ready criterion, checked by
+#          .claude/skills/file-task/done-when.jq, #410): a worker would have
+#          nothing that proves it done
 #
 # Bundles and blockers (#409): a bundle parent's blockers are its own plus its
 # open children's, less the children themselves (a sibling isn't a blocker,
@@ -73,6 +77,7 @@ printf '%s\n' "$@" | tr -d '#' | jq -R 'select(. != "") | tonumber' | jq -s . >"
 
 jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local.json" --slurpfile want "$tmp/want.json" '
   include "lib";
+  include "file-task/done-when";
   def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 80 then .[:79] + "…" else . end;
   def labels: [.labels.nodes[].name];
   def pr($n): [$prs[0][] | select(.headRefName == "eharvey/#\($n)") | .number] | first;
@@ -100,6 +105,8 @@ jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local
           elif bundled then {v: "skip", why: "sub-issue of bundle #\(.parent.number): ships with it"}
           elif pr($n) then {v: "skip", why: "in flight: PR #\(pr($n))"}
           elif ($local[0] | index($n)) then {v: "skip", why: "local branch eharvey/#\($n) exists: resume it by hand"}
+          elif (.body | done_when_ok | not) then {v: "skip", why: (done_when_gap
+              + if ($b | length) > 0 then "; also blocked by \($b | map("#\(.)") | join(", "))" else "" end)}
           elif ($b | length) == 0 then {v: "run"}
           else {v: "?"}
           end
