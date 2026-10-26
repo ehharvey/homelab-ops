@@ -2,7 +2,14 @@
 
 set -e
 
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+# The trust step (#374) runs on every attach (devcontainer.json's
+# postAttachCommand, with --trust-only) as well as at start (postStartCommand,
+# with everything else). A fresh start therefore runs it twice; the second run
+# finds the remote already `trusted` and only refreshes the fingerprint cache.
+TRUST_ONLY=false
+if [ "${1:-}" = "--trust-only" ]; then
+  TRUST_ONLY=true
+fi
 
 # cd cascade upwards until we find a .git directory
 while [ ! -d ".git" ] && [ "$PWD" != "/" ]; do
@@ -10,25 +17,65 @@ while [ ! -d ".git" ] && [ "$PWD" != "/" ]; do
 done
 
 TOKEN_FILE=".devcontainer/host-setup/.trust-token"
+FINGERPRINT_FILE=".devcontainer/host-setup/.client-fingerprint"
+CLIENT_CERT="$HOME/.config/incus/client.crt"
 
-if [ ! -f "$TOKEN_FILE" ]; then
-  echo "No Incus trust token found at $TOKEN_FILE."
-  echo "Run .devcontainer/host-setup/setup-incus-trust.sh on the HOST machine, then reload this devcontainer."
-  exit 0
-fi
+# Cache the client cert's fingerprint where the host-side
+# setup-incus-trust.sh (initializeCommand) can read it: while a `devcontainer`
+# trust entry has this fingerprint, the host skips its revoke-and-reissue. The
+# form matches Incus's own (shared/tls.CertFingerprint, the `fingerprint` field
+# of `incus config trust list -f json`): SHA-256 of the DER bytes, 64 lowercase
+# hex digits. Never fatal under `set -e`: if the fingerprint can't be computed
+# or written, drop the cache so the host falls back to issuing a token.
+write_client_fingerprint() {
+  local fingerprint
+  fingerprint="$(set -o pipefail; openssl x509 -in "$CLIENT_CERT" -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1 | tr 'A-F' 'a-f')" || fingerprint=""
+  if [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] &&
+    printf '%s\n' "$fingerprint" 2>/dev/null > "$FINGERPRINT_FILE.tmp" &&
+    mv -f "$FINGERPRINT_FILE.tmp" "$FINGERPRINT_FILE" 2>/dev/null; then
+    return 0
+  fi
+  echo "WARNING: could not cache the Incus client cert fingerprint in $FINGERPRINT_FILE;" \
+    "the host will reissue a trust token on the next connect." >&2
+  rm -f "$FINGERPRINT_FILE.tmp" "$FINGERPRINT_FILE" 2>/dev/null || true
+}
 
-sudo chown "$USER" "$TOKEN_FILE"
 sudo chown -R "$USER" "$HOME/.config/incus"
 
-incus remote switch local >/dev/null 2>&1 || true
+# Probe before looking for a token: on a reload (or the second run of a fresh
+# start) the remote is already trusted and there is nothing to consume.
+# `|| true`: an unreachable host or a missing remote must not abort the start.
+AUTH="$(incus query homelab-host:/1.0 2>/dev/null | jq -r '.auth' 2>/dev/null || true)"
 
-incus remote remove homelab-host >/dev/null 2>&1 || true
-incus remote add homelab-host https://host.docker.internal:8443 --token "$(cat "$TOKEN_FILE")" --accept-certificate
-rm -f "$TOKEN_FILE"
+if [ "$AUTH" = "trusted" ]; then
+  # A token the host issued anyway (e.g. the cache was missing) is now moot.
+  rm -f "$TOKEN_FILE"
+  write_client_fingerprint
+  echo "Incus remote 'homelab-host' already trusted."
+else
+  if [ ! -f "$TOKEN_FILE" ]; then
+    echo "No Incus trust token found at $TOKEN_FILE."
+    echo "Run .devcontainer/host-setup/setup-incus-trust.sh on the HOST machine, then reload this devcontainer."
+    exit 0
+  fi
+
+  sudo chown "$USER" "$TOKEN_FILE"
+
+  incus remote switch local >/dev/null 2>&1 || true
+
+  incus remote remove homelab-host >/dev/null 2>&1 || true
+  incus remote add homelab-host https://host.docker.internal:8443 --token "$(cat "$TOKEN_FILE")" --accept-certificate
+  rm -f "$TOKEN_FILE"
+  write_client_fingerprint
+fi
 
 incus remote switch homelab-host
 
 echo "Incus remote 'homelab-host' configured."
+
+if [ "$TRUST_ONLY" = true ]; then
+  exit 0
+fi
 
 # Warn early on a client/server major-version split (#131). Surfacing it here
 # is far cheaper than discovering it mid-run: the 7.1-vs-6.0.4 skew #131 found

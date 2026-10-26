@@ -6,6 +6,7 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 .devcontainer/host-setup/.trust-token
+.devcontainer/host-setup/.client-fingerprint
 
 # Go build artifacts
 bin/
