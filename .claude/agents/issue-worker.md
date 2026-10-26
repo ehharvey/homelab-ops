@@ -21,6 +21,14 @@ You implement exactly one GitHub issue in this repo (Go, module
    `gh issue view <n> --json body --jq .body`. A decision's body and an issue's
    body are the current spec (supersede in place, #223). Where an older one
    still stacks dated notes or addenda, **the newest wins** over older text.
+   **Fast lane** (`/run-chain`, #409): when the prompt says `fast lane`, no
+   scout ran, and the issue body is the whole spec. Still read the `§N`
+   sections cited by the files you touch (`CLAUDE.md`); that alone isn't a
+   reason to stop. Stop, commit nothing, and hand back
+   `verdict: needs full lane: <what you hit>` when the body itself cites a
+   `§N` or `docs/Decisions.md`, or when the work, or a decision you read,
+   raises a design question whose answer changes what you'd build. The root
+   re-queues the issue with a scout brief and resumes you with it.
 3. If the spec and the sources disagree on something that changes what you'd
    build, stop and report the conflict. Don't pick a side yourself.
 
@@ -67,7 +75,9 @@ You implement exactly one GitHub issue in this repo (Go, module
 
 - Exactly **one commit** on the branch. The body holds `## Plan`, `## Test plan`
   and `Closes #<n>` (it becomes the PR body via `make ship`), and ends with the
-  Co-Authored-By trailer the session gives you.
+  Co-Authored-By trailer the session gives you. A `/bundle` parent
+  (`[Task]: Bundle: …`) also needs one `Closes #<n>` line per open sub-issue
+  (`docs/Development Conventions.md` § Sizing and bundles).
 - If the work finishes a `docs/Roadmap.md` item, check it off in the same commit
   as `DONE; see #<n>`.
 - **Don't** run `make ship`, push, or run `make lgtm` unless your prompt
@@ -81,7 +91,7 @@ the full Plan and Test plan; don't repeat them.
 
 ```
 ## Hand-back #<n>
-verdict: ready to ship | not ready: <why>
+verdict: ready to ship | not ready: <why> | needs full lane: <the §N or question>
 branch: eharvey/#<n> @ <short sha>   worktree: <absolute path>
 done when:
 - [x] <the issue's item> — <the file, test or validate run that covers it>
