@@ -136,8 +136,11 @@ After the last worker hands back, run `/file-findings`
 (`.claude/skills/file-findings/SKILL.md`) and follow its steps as written, so
 the two can't drift. It files the log's unfiled findings, every worker's
 together, as `proposed` (never `Ready`), drops the ones an open issue already
-covers, and marks each record. The findings it leaves unfiled as too thin go
-under open questions in the summary, as candidates for `/refine-issue`.
+covers, and marks each record. A non-bug finding whose origin is still open
+and unshipped becomes a comment there (a worker's own issue, behind the PR
+just shipped, doesn't count), and past the `proposed` backlog cap only bugs
+are filed (#410). The findings it leaves unfiled as too thin go under open
+questions in the summary, as candidates for `/refine-issue`.
 
 ## 6. Run summary
 
@@ -148,7 +151,9 @@ End with a single report:
   its base (`main` until #254), and its issue. Merging is the operator's
   `make lgtm`.
 - **Parked**, each with its reason.
-- **Proposed issues filed**, each with its origin issue.
+- **Proposed issues filed**, each with its origin issue; the comments posted
+  on open origins instead; and the held findings, under `/file-findings`'
+  backlog line.
 - **Skips**: queue skips, plus validate checks that SKIPped inside workers.
 - **Open questions** from the workers.
 

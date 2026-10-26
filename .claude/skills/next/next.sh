@@ -8,7 +8,9 @@
 # Blockers come from GitHub's native blocked-by links only (#234 moved the
 # repo's dependency prose onto them). The inconsistencies section is what keeps
 # that honest: a Ready issue with an open blocker, a blocker closed as not
-# planned, a cycle, and dependency prose that has no matching link.
+# planned, a cycle, and dependency prose that has no matching link. It also
+# flags a Ready issue whose Done-when names no validate script or real-run
+# check, by the check queue.sh shares (.claude/skills/file-task/done-when.jq, #410).
 #
 # A Ready sub-issue of an open bundle (/bundle, #409) is tagged `bundled`, not
 # `clear`: it ships with its parent, so it isn't work to start on its own.
@@ -69,6 +71,7 @@ jq -R -s '[split("\n")[] | split("\t") | select(.[2] == " " and (.[3] // "" | st
 
 common='
 include "lib";
+include "file-task/done-when";
 def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 90 then .[:89] + "…" else . end;
 def st($n): $states[0][$n | tostring] // "?";
 def blockers: [.blockedBy.nodes[] | select(.state == "OPEN") | .number];
@@ -133,6 +136,8 @@ q -r "$common"'
        | "#\(.number) has both Ready and proposed; triage drops proposed (until then /run-chain skips it)"),
       (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(blockers | length > 0)
        | "#\(.number) is Ready but blocked by open \(blockers | map(tag(.)) | join(" "))"),
+      (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(.body | done_when_ok | not)
+       | "#\(.number) is Ready but \(done_when_gap); see /file-task Ready criteria (/run-chain skips it)"),
       (.[] | . as $i | .blockedBy.nodes[] | select(.stateReason == "NOT_PLANNED" or .stateReason == "DUPLICATE")
        | "#\($i.number) is blocked by #\(.number), closed as \(.stateReason | ascii_downcase | sub("_"; " ")); drop the link or rethink #\($i.number)"),
       ($cyc | map(. as $n | [$n] + ([reach($n)[] | select(. as $m | $cyc | index($m)) | select(reach(.) | index($n))]) | unique) | unique[]
