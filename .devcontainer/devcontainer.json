@@ -35,7 +35,14 @@
 		}
 	},
 
-	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r .devcontainer/scripts/* $TEMPDIR/ && chmod +x $TEMPDIR/*.sh && for f in $TEMPDIR/*.sh; do $f; done && rm -rf $TEMPDIR"
+	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r .devcontainer/scripts/* $TEMPDIR/ && chmod +x $TEMPDIR/*.sh && for f in $TEMPDIR/*.sh; do $f; done && rm -rf $TEMPDIR",
+
+	// initializeCommand runs on every connect, including a reload that re-attaches
+	// to a running container, where postStartCommand doesn't run. So the Incus
+	// trust step runs on attach too, consuming any token issued on this connect
+	// (#374). It's a mode flag rather than its own file under scripts/, since
+	// postStartCommand runs every *.sh there.
+	"postAttachCommand": "bash .devcontainer/scripts/1-setup-incus-remote.sh --trust-only"
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
