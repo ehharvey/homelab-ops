@@ -1,6 +1,6 @@
 ---
 name: run-chain
-description: Work through a chain of Ready issues from one root session. Each issue gets a decisions-scout brief and an issue-worker in its own worktree, then a Done-when audit and `make ship`. Never `make lgtm`. Workers' "Noticed" items are filed as `proposed` issues for triage. Operator-invoked only.
+description: Work through a chain of Ready issues from one root session. Each issue gets a decisions-scout brief (skipped for a fast-lane `small` issue) and an issue-worker in its own worktree, then a Done-when audit and `make ship`. Never `make lgtm`. Workers' "Noticed" items are filed as `proposed` issues for triage. Operator-invoked only.
 argument-hint: "[<issue> ...]"
 disable-model-invocation: true
 ---
@@ -47,22 +47,34 @@ No arguments takes every `Ready` issue. Arguments are filtered the same way,
 so only `Ready` ones run. `queue.sh`'s header says what each verdict means. A
 `proposed` issue is always skipped, even when it's also `Ready`. A parked
 issue waits for its blocker's PR to merge, because stacked PRs (#254) don't
-exist yet. Don't try to work around a park. Show the operator the queue in a
-few lines, then start.
+exist yet. Don't try to work around a park. Each `run` issue also gets a
+**lane**, `fast` or `full`, with its reason; the header says what qualifies.
+The root follows it and doesn't second-guess it. Show the operator the queue
+in a few lines, then start.
 
 ## 2. Brief, then hand off
 
 For each `run` issue, in queue order, with **at most 2 workers at once** (3
 only if the operator says so):
 
-1. `decisions-scout` on the issue number. Its brief (~2k tokens) is the spec.
-2. `issue-worker` (background, worktree-isolated) with this prompt:
+1. **Full lane:** `decisions-scout` on the issue number. Its brief (~2k
+   tokens) is the spec. **Fast lane:** no scout. The issue body is the spec,
+   handed over by reference: the worker fetches it, so the root still reads
+   no full issue bodies.
+2. `issue-worker` (background, worktree-isolated) with this prompt, taking
+   the `Spec` line for its lane:
 
    ```
    Implement #<n>. Chain mode: /run-chain is the root.
    Spec (decisions-scout brief):
    <brief>
    Read only the §N / doc sections the brief cites.
+   ── or, fast lane ──
+   Spec: fast lane, #<n>. No scout brief: the issue body
+   (`gh issue view <n> --json body --jq .body`) is the whole spec. Your agent
+   file's Fast lane rule says when to hand back
+   `verdict: needs full lane: <what you hit>`; don't guess.
+   ──
    Other workers run beside you: <#m, … | none>. Run non-`none`-group
    validate scripts under the shared lock (your agent file, § Verifying);
    `make lint` locks itself.
@@ -70,7 +82,8 @@ only if the operator says so):
    End with the hand-back block from your agent file, Noticed section included.
    ```
 
-Note each worker's agent ID in the ledger; step 3 needs it to send work back.
+Note each worker's agent ID and lane in the ledger; step 3 needs the ID to
+send work back.
 When a worker finishes, start the next queued issue before auditing, so the
 slot doesn't sit idle.
 
@@ -100,6 +113,14 @@ operator) parks it straight away.
 A hand-back with verdict `awaiting operator answers` (`/refine-issue` as a
 subagent) isn't a miss: ask its open questions with `AskUserQuestion`, then
 resume the same worker with the answers via `SendMessage`.
+
+Nor is `needs full lane` from a fast-lane worker. Re-queue the issue as
+`full`: mark it so in the ledger with what the worker hit, run
+`decisions-scout` on it (point the scout at that), and resume the **same**
+worker via `SendMessage` with the full-lane `Spec` lines. It keeps its
+worktree and branch. If it can't be resumed, start a new worker only after
+removing the old one's worktree and its `eharvey/#<n>` branch, or the new
+one can't create the branch.
 
 ## 4. Ship
 

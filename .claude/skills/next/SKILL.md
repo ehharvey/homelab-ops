@@ -28,6 +28,8 @@ comes from.
   The prose check is a heuristic. Name each hit and suggest the fix, either
   `gh issue edit <n> --add-blocked-by <m>` or rewording a sentence that isn't
   a dependency, and leave the edit to the operator.
+- **`bundled`** marks a sub-issue of an open `/bundle` parent (#409). It ships
+  in the parent's commit, so recommend the parent, never the child alone.
 - **Never recommend two issues together when one blocks the other** without
   saying which comes first. Check `blocked by` / `unblocks` across your picks.
 - **In-flight work comes first.** An open PR with green checks and auto-merge
