@@ -130,7 +130,7 @@ seed file incus-osd won't yet read.
 
 ## 9. Where does the web app itself run?
 
-**Current rule: on its own appliance machine, outside the cluster: a Docker box first, an IncusOS turnkey host later. See §29.** The options and first answer below are kept as the record. (Originally flagged as open.)
+**Current rule: on its own appliance machine, outside the cluster: first a stock Debian cloud image set up by cloud-init to run the published image under Docker. An IncusOS turnkey host is parked, and an mkosi-built image is undecided. See §29.** The options and first answer below are kept as the record. (Originally flagged as open.)
 
 - Inside the homelab it manages (a container/VM on one Incus host) — needs a bootstrap path for node #1 before the app exists to generate its installer.
 - Or a separate always-on box outside the cluster — avoids the chicken-and-egg problem, adds "one more thing to maintain" outside the managed fleet.
@@ -142,6 +142,7 @@ seed file incus-osd won't yet read.
 ### History
 
 - **2026-10-03 (#247).** Answered by §29: the web app runs on an appliance machine (an internet VM or a LAN machine), from one published image. Moving into the fleet is §29's migration path (#245, #246).
+- **2026-10-26 (#395).** §29 re-planned the host forms: a cloud-init Debian box first, the IncusOS turnkey host parked, and an mkosi image later (#393). The current rule above was updated to match.
 
 ## 10. Single disk / single NIC default, configurable (note 9)
 
@@ -378,6 +379,8 @@ identical struct. The open question was the install mechanism:
 - **mkosi-built target image**: rejected as the *target* rootfs mechanism
   (most work, least reuse of Debian's official images) — but mkosi is
   still the right tool for building the *helper* boot environment itself.
+  The web app's own mkosi-built appliance image (§29, #393) is folded into
+  this work as another role for the same build, with its design open.
 
 ### Helper OS: pre-install hardware registration/confirmation
 
@@ -2156,14 +2159,19 @@ Resolves §9's open question for 0.x. The web app runs on its own machine, outsi
 
 The operator reaches it in both cases.
 
-### Decision: one image, two host forms
+### Decision: one image; a cloud-init Debian box first
 
-Both forms run the same published OCI image (#240) with the same deployment config directory (#241), so moving between them is a migration, not a rebuild.
+Every host form runs the same published OCI image (#240) with the same deployment config directory (#241), so moving between them is a migration, not a rebuild.
 
-- **A dedicated Docker box first (#243).** A production compose file, plus a runbook per topology. It works the same on a VM and a laptop, and it is the deployment target §9 already chose. The host OS is the operator's to patch.
-- **An IncusOS turnkey host later (#246).** The bootstrap CLI renders a seed for a standalone IncusOS machine, which isn't a cluster member. `bootstrap deploy-web` then runs the web app on it as an Incus OCI container, reusing #100's `deploy-agent` mechanism. Pointing the same command at a cluster member is how the web app later moves into the fleet (§9).
-  - Unverified, to settle in #246: whether a typical spare laptop meets IncusOS's hardware needs (TPM 2.0 and Secure Boot unless degraded, §6; Wi-Fi support), and whether a given cloud provider will boot IncusOS.
-- **Rejected for now: a custom mkosi-built appliance image.** It is the same tool family as §15's helper OS, none of which exists yet, and it is the most work for the least reuse.
+- **First: a stock Debian cloud image, set up by cloud-init (#243).** It's the Docker box that §9 already chose as a deployment target, made turnkey. We build no OS image, only a `user-data` file.
+  - **Setup:** the bootstrap CLI renders the `user-data`. It installs Debian's own Docker packages, writes the production compose file and the config directory, and starts the web app. The box comes up serving, with no second step.
+  - **Where it runs:** on a cloud VM, every provider takes `user-data`. On a LAN machine, the same file goes on a NoCloud `CIDATA` stick, beside Debian's `generic` image written to the disk.
+  - **OS updates:** `unattended-upgrades` patches the host, Docker included, from Debian-Security. It reboots only when an update requires it, in an operator-set window. Once #197 lands, each reboot seals the web app until the operator unlocks it, which §27 accepts. The web image itself stays pinned, and the operator bumps it.
+- **Parked: an IncusOS turnkey host (#246)** (first planned as the second form; see History). An IncusOS seed can't create instances: the Incus preseed it carries (`InitLocalPreseed`, Incus v7.5.2 `shared/api/init.go`) declares networks, pools, volumes, profiles, projects, certificates and cluster groups, but no instances.
+  - So this form always needs `bootstrap deploy-web` after boot, over the Incus API, from a client the host already trusts. On an internet VM, that means exposing the Incus API to finish the install.
+  - Its seed (#394) and hardware runbook (#387) wait on #246. They hold the open hardware questions: TPM 2.0 and Secure Boot (§6), Wi-Fi, and cloud-provider boot.
+  - **`bootstrap deploy-web` itself (#386) isn't parked.** Pointed at a cluster member, it is how the web app later moves into the fleet (§9).
+- **Later and undecided: an mkosi-built appliance image (#393)** (first rejected; see History). It's the fancier form: self-contained, with the OS contents under our control. It's folded into §15's multi-OS work, the same tool family as §15's helper OS, rather than built as a one-off. Its design is open: read-only root, update model, where secrets come from, and outputs.
 
 ### Decision: every deployment setting is an operator choice, with a safe default
 
@@ -2171,7 +2179,9 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 
 | Setting | Default | Alternatives |
 | --- | --- | --- |
-| Host form | Docker box (#243) | IncusOS turnkey host (#246); plain binary + systemd (§9's other target, not yet planned) |
+| Host form | Stock Debian cloud image set up by cloud-init (#243) | Any Docker host running #243's compose file by hand; IncusOS turnkey host (#246, parked); mkosi-built image (#393, undecided); plain binary + systemd (§9's other target, not yet planned) |
+| Host OS updates | `unattended-upgrades`, rebooting only when an update requires it, in a window (#243) | An operator-set window; the operator patches by hand |
+| How the config directory reaches the host | Inline in cloud-init `user-data` (#243), so the WireGuard key also sits in the provider's metadata | `--no-secrets`: the secret files are left out, the operator copies them in after boot, and the web app starts once they're present |
 | API listener | Tunnel only, operator peers (§28, #195) | Opt-in plain-HTTP host listener on a chosen address; TLS later |
 | Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set (today's image route, kept as the default because it works now; costly on an internet VM, see below) | Client-side image build from a downloaded seed; a `SEED_DATA` stick beside a stock IncusOS image (#242) |
 | node0 provisioning | By the web app over the tunnel (#244) | Bootstrap CLI, offline, no tunnel (today's Flow A) |
@@ -2181,7 +2191,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 - **Install media.** On an internet VM, server-side builds mean a multi-GB transfer across the internet per node, plus VM disk for each copy. The seed is a few KB.
   - IncusOS reads a user-provided FAT or ISO volume labelled `SEED_DATA` beside an unmodified install image (upstream `doc/reference/seed.md`). The stick must be removed after install.
   - Both client-side options need a base image on the operator's machine, which #206 currently blocks `flasher-tool` from downloading.
-- **node0.** Both paths call the same `seed.Render`. A web-app-rendered seed already sets the node up as a one-member cluster (§26 Tier A) and adds the tunnel, so making the web app the default is mostly a change of order: the appliance first, then node0. The bootstrap CLI stays for offline bring-up, and for the IncusOS turnkey host itself.
+- **node0.** Both paths call the same `seed.Render`. A web-app-rendered seed already sets the node up as a one-member cluster (§26 Tier A) and adds the tunnel, so making the web app the default is mostly a change of order: the appliance first, then node0. The bootstrap CLI stays for offline bring-up, and for rendering the appliance's own `user-data`.
 - **The endpoint.** `WIREGUARD_ENDPOINT` is baked into every node's seed, so an IP address pins the web app to one host. IncusOS accepts a hostname (`networkd_validate.go` checks it with `net.SplitHostPort`) and renders it into systemd-networkd's `Endpoint=`. Unverified: whether a running node re-resolves the name after the address changes. #245 probes it.
 
 ### Decision: migration first; HA later, as a warm standby
@@ -2192,7 +2202,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
   3. load the latest snapshot (#198);
   4. repoint the endpoint's DNS name.
 
-  No node is reflashed. This covers laptop to VM, Docker box to IncusOS, and the later move into the fleet.
+  No node is reflashed. This covers laptop to VM, one host form to another, and the later move into the fleet.
 - **HA, when wanted, is a warm standby with manual failover, not active/active.**
   - Two live instances sharing one WireGuard identity would fight over node endpoints, because WireGuard roams each peer to whichever address it last heard from.
   - The store is single-writer SQLite.
@@ -2203,6 +2213,18 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 
 - **TLS as a third API listener mode.** It comes with, or before, any web UI (§28's deferred auth).
 - **The bootstrap CLI rendering tunnel config for node0.** Once #197 makes the web app's identity operator-supplied, the CLI knows its public key offline. The node's own keypair would still have to be imported into the web app's store. Not needed while the web app provisions node0 by default.
+
+### History
+
+- **2026-10-26 (#395).** The host forms were re-planned. The 2026-10-03 rule was:
+  - a dedicated Docker box first (#243), with a host OS for the operator to patch;
+  - an IncusOS turnkey host later (#246);
+  - a custom mkosi-built image "rejected for now: the same tool family as §15's helper OS, none of which exists yet, and the most work for the least reuse".
+
+  What changed:
+  - **The Docker box became a cloud-init Debian box, with automatic OS updates.** That removes both the manual setup and the manual patching.
+  - **The IncusOS host was parked.** Its plan assumed the seed could set up the web app. It can't create instances, so the form always needs a post-boot `deploy-web`.
+  - **The mkosi image moved from rejected to later and undecided (#393).** Folded into §15's multi-OS work, it shares a build with the helper OS rather than costing a one-off.
 
 ## Sources consulted
 

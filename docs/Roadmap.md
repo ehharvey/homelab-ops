@@ -319,14 +319,21 @@ of its host.
   default, the WireGuard endpoint as a DNS name — see #241
 - [ ] Build install media client-side: a local image build from a downloaded
   seed, or a `SEED_DATA` stick beside a stock IncusOS image — see #242
-- [ ] Docker-box appliance: production compose, VM and LAN runbooks, and a
-  validate script — see #243
+- [ ] Cloud-init Debian appliance: a stock Debian cloud image set up by
+  cloud-init, running the production compose file, with unattended upgrades
+  that reboot only when required. VM and LAN runbooks, and a validate script —
+  see #243
 - [ ] Provision node0 from the web app by default; the bootstrap CLI as the
   alternative — see #244
 - [ ] Migrate the web app between hosts without reflashing nodes, including
   the endpoint DNS re-resolution probe — see #245
-- [ ] *(later)* IncusOS turnkey appliance: appliance seed plus
-  `bootstrap deploy-web`, which is also the path into the fleet — see #246
+- [ ] *(later)* `bootstrap deploy-web`: the web image as an Incus OCI
+  container on any Incus host, which is the path into the fleet — see #386
+- [ ] *(parked)* IncusOS turnkey appliance: an appliance seed and a hardware
+  runbook. An IncusOS seed can't create instances, so it always needs
+  `deploy-web` after boot (`docs/Decisions.md` §29) — see #246
+- [ ] *(later)* mkosi-built appliance image, folded into multi-OS support
+  (`docs/Decisions.md` §15); design open — see #393
 
 **Done when:** the web app runs from the published image on a dedicated
 appliance machine, either an internet VM or a LAN machine. The operator
