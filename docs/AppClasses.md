@@ -121,8 +121,8 @@ So a generic system wouldn't cover 1–6; it'd cover 1, 2, 4 and 6, which are th
 
 | App | Class | Cardinality | Status |
 |---|---|---|---|
-| `agent` | 2 | per-node | the one renderer 0.x ships (#98) |
-| Alloy | 2 | per-node | Phase 4 (#77) |
+| `agent` | 2 | per-node | deployed by `internal/agentdeploy` (#100, #203), upgrades itself (#109); #98's renderer registry is Phase 8 |
+| Alloy | 2 | per-node | Phase 8 (#77) |
 | web app | 6 | 1 | migrating it into the fleet is out of scope |
 | DB proxy | 1 or 6 | fixed N | a *separate* App from the database, not a role within it — unresolved pending the endpoint and cross-App-reference questions above |
 | database | 3 | fixed N ≥ 3 | direction only (`Decisions.md` § Stateful app support) |

@@ -1,5 +1,14 @@
 # App Manager — per-node agents, leader/follower HA, fleet-wide blue-green (0.x)
 
+> **Re-plan note (2026-10-26, `docs/Decisions.md` §30):** until Roadmap
+> Phase 8, the agent is the only App managed. It deploys, runs one per
+> managed host (#203) and upgrades itself by this document's blue-green
+> handoff (#109, #103, narrowed to the agent). Fleet-wide reconciliation of
+> other Apps (#98), placement (#182) and the rest of this document's App
+> machinery are deferred to Phase 8, not near-term. Where the note below says
+> "paused" and "resumes", read "deferred to Phase 8"; the self-upgrade is no
+> longer paused.
+
 > **Pivot note (2026-09-28, `docs/Decisions.md` §27):** the agent's first
 > jobs are cluster membership, not App reconciliation:
 >

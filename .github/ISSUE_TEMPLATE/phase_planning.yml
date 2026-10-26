@@ -15,7 +15,12 @@ body:
         - "Phase 0 — Node #0 bootstrap tool"
         - "Phase 1 — Web app skeleton + config sync"
         - "Phase 2 — IPAM + app-driven installer generation"
-        - "Phase 3 — Tailscale, logging + metrics"
+        - "Phase 3 — The agent and node connectivity"
+        - "Phase 4 — Web app appliance and hardening"
+        - "Phase 5 — Multi-node: same-OS Incus clusters"
+        - "Phase 6 — Multi-OS hosts"
+        - "Phase 7 — Tailscale"
+        - "Phase 8 — App management (deferred)"
         - "Deferred / post-1.0"
     validations:
       required: true
