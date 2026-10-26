@@ -65,6 +65,14 @@ It resets to the merge-base rather than to `FETCH_HEAD`, because on a branch beh
 
 Why one commit rather than squash-merging: squash-vs-rebase was a per-PR judgment call with no right answer (#119), and rebase-only removes the decision while keeping history linear. The cost is moving the squash upstream, to the branch, where a force-push is still cheap and the commit message is still editable.
 
+### Sizing and bundles (#409)
+
+Every issue pays a roughly fixed pipeline cost (scout, worker, lint, review, ship), so a 10-line fix costs about what a 100-line one does. The `small` label and bundles pay it less often.
+
+- **`small`** means the change is expected to be **≤ ~100 lines in one area** of the repo, with **no open design question** and **no new validate script**. It's a sizing hint, not a priority, and there's deliberately no `trivial`. Apply it when the Done-when and Doc references make the size plain; leave it off when unsure. `/file-task` applies it and `/refine-issue` re-sizes against it.
+- **Fast lane:** `/run-chain` skips the decisions-scout for a `small` issue whose body cites no decision (no `§<digit>`, no mention of `docs/Decisions.md`; `cites` in `.claude/skills/lib.jq`). The issue body is the worker's whole spec, so a refinement that adds a `§N` citation also moves the issue to the full lane, which is the point of citing it.
+- **A bundle** is a `[Task]: Bundle: …` parent issue (`/bundle`) with its `small` issues attached as native sub-issues. It ships as one branch, `eharvey/#<parent>`, and one commit whose message has `Closes #<parent>` plus one `Closes #<n>` per open sub-issue; `audit.sh` checks every one, since a child the commit doesn't close stays Ready and gets redone. While the parent is open, its children never run alone (`/run-chain` skips them, `/next` tags them `bundled`). The parent's blockers are its own plus its children's, and a blocker inside a bundle counts as the bundle. Revert a bundle by closing the parent as not planned; a closed bundle holds nothing back, and `/bundle` can move its children into a new one. An umbrella issue (any other title) doesn't bundle: its sub-issues still run alone.
+
 ## PR body format
 
 **Write these two sections in the commit message body, not the GitHub web form.** `gh pr create --fill` (what `make ship` uses) takes the PR title from the commit subject and the PR body verbatim from the commit message body, so a well-formed commit satisfies this convention with nothing retyped — and the rationale stays in `git`, readable offline and greppable via `git log`.

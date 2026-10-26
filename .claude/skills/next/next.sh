@@ -9,9 +9,13 @@
 # repo's dependency prose onto them). The inconsistencies section is what keeps
 # that honest: a Ready issue with an open blocker, a blocker closed as not
 # planned, a cycle, and dependency prose that has no matching link.
+#
+# A Ready sub-issue of an open bundle (/bundle, #409) is tagged `bundled`, not
+# `clear`: it ships with its parent, so it isn't work to start on its own.
 # shellcheck disable=SC2016 # the $vars in single quotes are GraphQL's and jq's
 set -euo pipefail
 
+skills=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$(git rev-parse --show-toplevel)"
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 
@@ -26,6 +30,7 @@ query($owner: String!, $name: String!, $endCursor: String) {
       nodes {
         number title body createdAt
         labels(first: 20) { nodes { name } }
+        parent { number state title }
         blockedBy(first: 50) { nodes { number state stateReason } }
         blocking(first: 50) { nodes { number state } }
       }
@@ -63,6 +68,7 @@ jq -R -s '[split("\n")[] | split("\t") | select(.[2] == " " and (.[3] // "" | st
 	"$tmp/roadmap.tsv" >"$tmp/paused.json"
 
 common='
+include "lib";
 def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 90 then .[:89] + "…" else . end;
 def st($n): $states[0][$n | tostring] // "?";
 def blockers: [.blockedBy.nodes[] | select(.state == "OPEN") | .number];
@@ -74,7 +80,7 @@ def prfor($n): [$prs[0][] | select(.headRefName == "eharvey/#\($n)") | .number];
 '
 # Every filter gets the shared defs and all three inputs, since a jq def that
 # names an unbound $var fails to compile even when it's never called.
-q() { jq --slurpfile states "$tmp/states.json" --slurpfile prs "$tmp/prs.json" \
+q() { jq -L "$skills" --slurpfile states "$tmp/states.json" --slurpfile prs "$tmp/prs.json" \
 	--slurpfile open "$tmp/open.json" --slurpfile paused "$tmp/paused.json" "$@"; }
 
 echo "== Ready issues (blockers: native blocked-by links) =="
@@ -82,9 +88,10 @@ q -r "$common"'
   .[] | select(any(.labels.nodes[]; .name == "Ready"))
   | blockers as $open | done_deps as $done | unblocks as $unblocks
   | ([.labels.nodes[].name | select(startswith("phase-"))] | join(",")) as $phase
-  | (if ($open | length) > 0 then "BLOCKED" else "clear  " end) as $tag
+  | (if ($open | length) > 0 then "BLOCKED" elif bundled then "bundled" else "clear  " end) as $tag
   | "#\(.number) \($tag) [\(if $phase == "" then "no phase" else $phase end)] \(.title | short)",
     (if ($open | length) > 0 then "      blocked by: \($open | map(tag(.)) | join(" "))" else empty end),
+    (if bundled then "      ships with: bundle #\(.parent.number), not on its own" else empty end),
     (if ($done | length) > 0 then "      done deps:  \($done | map("#\(.)") | join(" "))" else empty end),
     (if ($unblocks | length) > 0 then "      unblocks:   \($unblocks | map("#\(.)") | join(" "))" else empty end),
     (prfor(.number) | if length > 0 then "      in flight:  PR \(map("#\(.)") | join(" "))" else empty end)

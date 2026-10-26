@@ -8,7 +8,22 @@
 #   run    Ready, not `proposed`, no open blocker, nothing in flight
 #   park   an open blocker is in this run or has an open PR: it can't start
 #          until that PR merges, or until stacked PRs exist (#254)
-#   skip   anything else, with the reason
+#   skip   anything else, with the reason. That includes a sub-issue of an
+#          open bundle (/bundle, #409): it ships with its parent
+#
+# Bundles and blockers (#409): a bundle parent's blockers are its own plus its
+# open children's, less the children themselves (a sibling isn't a blocker,
+# it's in the same commit). A blocker that is a sub-issue of an open bundle
+# counts as that bundle, since it lands only when the bundle's PR merges.
+#
+# Each `run` issue also gets a lane, with its reason (#409):
+#   fast   labelled `small`, and its body cites no decision (`cites` in
+#          ../lib.jq): the root skips the decisions-scout
+#   full   anything else, or any doubt: a scout brief, then the worker
+# Only bodies count, not comments. A bundle parent's lane also counts its open
+# children's bodies, in case its own didn't carry a citation over.
+# Bodies are fetched for every open issue: at 127 issues that's ~400 KB but
+# no slower than without them, and one fetch per `run` row costs ~0.5 s each.
 #
 # `proposed` wins over `Ready`: an issue carrying both hasn't been triaged, and
 # the triage gate is the point of the label. Run order is most-unblocking
@@ -23,6 +38,7 @@ for a in "$@"; do
 	}
 done
 
+skills=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$(git rev-parse --show-toplevel)"
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 
@@ -35,8 +51,10 @@ query($owner: String!, $name: String!, $endCursor: String) {
     issues(states: OPEN, first: 100, after: $endCursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title
+        number title body
         labels(first: 20) { nodes { name } }
+        parent { number state title }
+        subIssues(first: 50) { nodes { number } }
         blockedBy(first: 50) { nodes { number state } }
         blocking(first: 50) { nodes { number state } }
       }
@@ -53,22 +71,33 @@ git for-each-ref --format='%(refname:short)' 'refs/heads/eharvey/*' |
 
 printf '%s\n' "$@" | tr -d '#' | jq -R 'select(. != "") | tonumber' | jq -s . >"$tmp/want.json"
 
-jq -r --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local.json" --slurpfile want "$tmp/want.json" '
+jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local.json" --slurpfile want "$tmp/want.json" '
+  include "lib";
   def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 80 then .[:79] + "…" else . end;
   def labels: [.labels.nodes[].name];
   def pr($n): [$prs[0][] | select(.headRefName == "eharvey/#\($n)") | .number] | first;
   def unblocks: [.blocking.nodes[] | select(.state == "OPEN")] | length;
 
   (map({key: (.number | tostring), value: .}) | from_entries) as $by
-  | (if ($want[0] | length) > 0 then $want[0]
+  # An issue plus, for a bundle parent, its open children: what ships in its commit.
+  | def members: [., (if (.title | bundle_title) then .subIssues.nodes[] | $by[.number | tostring] // empty else empty end)];
+    # A blocker in an open bundle lands with the bundle, so it counts as the bundle.
+    def eff($m): $by[$m | tostring] as $i | if $i != null and ($i | bundled) then $i.parent.number else $m end;
+    def lane:
+      if (labels | index("small") | not) then {lane: "full", lw: "not labelled small"}
+      elif any(members[]; (.body | type) != "string") then {lane: "full", lw: "body unreadable"}
+      elif ([members[] | cites[]] | unique | length) > 0 then {lane: "full", lw: "body cites \([members[] | cites[]] | unique | join(" "))"}
+      else {lane: "fast", lw: "small; body cites no §N and no Decisions.md"} end;
+  (if ($want[0] | length) > 0 then $want[0]
      else [.[] | select(labels | index("Ready"))] | sort_by(-unblocks, .number) | map(.number) end) as $cand
   # Pass 1: eligibility, ignoring blockers.
   | [ $cand[] | . as $n | $by[$n | tostring] as $i
       | if $i == null then {n: $n, t: "(not found)", v: "skip", why: "not an open issue"}
-        else $i | (labels) as $l | [.blockedBy.nodes[] | select(.state == "OPEN") | .number] as $b
-          | {n: $n, t: (.title | short), b: $b} +
+        else $i | (labels) as $l | ([members[].blockedBy.nodes[] | select(.state == "OPEN") | eff(.number)] | unique - [$n]) as $b
+          | {n: $n, t: (.title | short), b: $b} + lane +
           if ($l | index("proposed")) then {v: "skip", why: "proposed: awaiting the operator'"'"'s triage"}
           elif ($l | index("Ready") | not) then {v: "skip", why: "not Ready"}
+          elif bundled then {v: "skip", why: "sub-issue of bundle #\(.parent.number): ships with it"}
           elif pr($n) then {v: "skip", why: "in flight: PR #\(pr($n))"}
           elif ($local[0] | index($n)) then {v: "skip", why: "local branch eharvey/#\($n) exists: resume it by hand"}
           elif ($b | length) == 0 then {v: "run"}
@@ -88,7 +117,7 @@ jq -r --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local.json" --slur
       | .ok += $new)
   | .rows | map(if .v == "?" then .v = "skip" | .why = "blocked by open \(.b | map("#\(.)") | join(", ")), outside this run" else . end)
   | "== Run (in this order) ==",
-    ([.[] | select(.v == "run") | "#\(.n)  \(.t)"] | if length == 0 then "(none)" else .[] end),
+    ([.[] | select(.v == "run") | "#\(.n)  \(.t)\n      lane \(.lane): \(.lw)"] | if length == 0 then "(none)" else .[] end),
     "",
     "== Parked ==",
     ([.[] | select(.v == "park") | "#\(.n)  \(.t)\n      \(.why)"] | if length == 0 then "(none)" else .[] end),

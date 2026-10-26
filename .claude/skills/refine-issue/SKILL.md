@@ -81,6 +81,10 @@ get. Add the classification's label, drop the ones it contradicts, and keep
 the rest (`later`, `phase-<n>`). `enhancement` always goes once step 1 has
 reclassified the issue, whether to a task, a decision or a bug.
 
+Once the rewrite has settled its size, add or remove `small` against its
+definition (`docs/Development Conventions.md` § Sizing and bundles): remove it
+when the refinement grew the issue past it or left a design question open.
+
 ## 8. Report
 
 - Every change with the command that reverts it: title

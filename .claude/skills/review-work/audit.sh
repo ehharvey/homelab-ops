@@ -21,7 +21,9 @@
 #
 # Checks (a `FAIL` line each): the branch is eharvey/#<n>; the checkout is
 # clean; exactly one commit beyond the base; the message has `## Plan`,
-# `## Test plan` and `Closes #<n>`; no bootstrap-output/ or *.img committed.
+# `## Test plan` and `Closes #<n>`, plus, when #<n> is a /bundle parent, a
+# `Closes` line for each of its open sub-issues (Development Conventions
+# § Sizing and bundles); no bootstrap-output/ or *.img committed.
 # Then, for the calling skill to judge (nothing here decides whether the work
 # is done): the facts its convention checks need, the commit message, the
 # --stat, the issue's `### Done when` section and the Roadmap lines naming #<n>.
@@ -50,6 +52,7 @@ refuse() {
 # bound and worktree_of.
 # shellcheck source=SCRIPTDIR/../lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
+skills=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 pr="" state="" branch="" base_ref="" head="" wt=""
 
@@ -166,6 +169,12 @@ if [[ $count -gt 0 ]]; then
 	grep -qE '^## Test plan[[:space:]]*$' <<<"$msg" || missing+=("## Test plan")
 	if [[ -n $n ]]; then
 		grep -qE "(^|[^[:alnum:]])Closes #$n([^0-9]|$)" <<<"$msg" || missing+=("Closes #$n")
+		# A bundle's commit lands its children's work too, so it closes them.
+		if gh issue view "$n" --json title | jq -e -L "$skills" 'include "lib"; .title | bundle_title' >/dev/null; then
+			for c in $(gh api "repos/{owner}/{repo}/issues/$n/sub_issues?per_page=100" --jq '.[] | select(.state == "open") | .number'); do
+				grep -qE "(^|[^[:alnum:]])Closes #$c([^0-9]|$)" <<<"$msg" || missing+=("Closes #$c (sub-issue)")
+			done
+		fi
 	elif ! grep -qE '(^|[^[:alnum:]])Closes #[0-9]+' <<<"$msg"; then
 		missing+=("Closes #<n>")
 	fi

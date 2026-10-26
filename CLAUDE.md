@@ -212,6 +212,10 @@ The recurring loops, so a session runs them rather than re-deriving them:
   `make ship`. It never runs `make lgtm`. Workers' "Noticed" items are filed
   as **`proposed`** issues, which nothing picks up until the operator triages
   them to `Ready`.
+- **`/bundle`** (#409): group open `small` issues by area into one
+  `[Task]: Bundle:` parent with native sub-issues, once the operator confirms.
+  `small`, bundles and `/run-chain`'s fast lane are
+  `docs/Development Conventions.md` § Sizing and bundles.
 
 They point at this file and `docs/Development Conventions.md` for the rules
 rather than restating them. Change the rules there.
