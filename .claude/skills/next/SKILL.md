@@ -24,10 +24,13 @@ comes from.
   `gh issue view <n> --json body --jq .body | head -40`.
 - **Dependency inconsistencies** are data faults to report, not to work
   around: a `Ready` issue with an open blocker, a blocker closed as not
-  planned or duplicate, a cycle, or dependency prose with no matching link.
-  The prose check is a heuristic. Name each hit and suggest the fix, either
-  `gh issue edit <n> --add-blocked-by <m>` or rewording a sentence that isn't
-  a dependency, and leave the edit to the operator.
+  planned or duplicate, a cycle, dependency prose with no matching link, or a
+  `Ready` issue whose Done-when names no validate script or real-run check
+  (`/file-task`'s Ready criteria; `/run-chain` skips it). The prose check is a
+  heuristic. Name each hit and suggest the fix, either
+  `gh issue edit <n> --add-blocked-by <m>`, rewording a sentence that isn't
+  a dependency, or a Done-when item in the convention's form (`/refine-issue`),
+  and leave the edit to the operator.
 - **`bundled`** marks a sub-issue of an open `/bundle` parent (#409). It ships
   in the parent's commit, so recommend the parent, never the child alone.
 - **Never recommend two issues together when one blocks the other** without

@@ -42,9 +42,11 @@ The four sections as `### ` headings, in the template's order:
   one-line "why" beside one is fine (e.g. "Needs #A's renderer registry."),
   but the link is the record. `/next` reads only links, and flags dependency
   prose that has none.
-- `### Done when`: concrete, checkable `- [ ]` items. Where a real pipeline is
-  involved, one of them names the `scripts/validate/` behaviour that proves it
-  (see `CLAUDE.md` § Validating changes for real).
+- `### Done when`: concrete, checkable `- [ ]` items. One of them says what
+  proves the work for real, in the form § Labels and milestone gives (see
+  `CLAUDE.md` § Validating changes for real). A bug's template has no such
+  section, so its items go in a `Done when:` list at the end of
+  `### Expected behavior`.
 - `### Doc references`: `docs/<File>.md § Section` / `§N`, plus code paths.
 
 Write the "why" into the body. The implementer has only this text and the docs.
@@ -64,9 +66,19 @@ Write the "why" into the body. The implementer has only this text and the docs.
   - No open blockers: no open blocked-by link, no unchecked `- [ ]` prerequisite.
   - No open design questions.
   - Every `Done when` item is concrete and checkable.
-  - `Done when` names the `scripts/validate/` script that proves the work: an
-    existing one by name, or a new one sketched as pseudocode in the body. A
-    tooling or docs issue with no pipeline names its real-run check instead.
+  - **`Done when` names its proof** (#410). One item either names
+    `scripts/validate/<name>.sh`, or starts `Real-run check:`:
+    - Name the script that proves the work, existing or new. A new one is named
+      for the behaviour it proves (`scripts/validate/README.md`), and the body
+      says what it checks. The check is textual, so a script the issue will
+      create counts.
+    - A tooling or docs issue with no pipeline starts an item
+      `Real-run check:`, then says what to run and what to record in the PR.
+
+    `.claude/skills/file-task/done-when.jq` is the mechanical check. `/next`
+    lists a `Ready` issue that fails it, and `/run-chain` skips one, so write
+    the item in one of these two forms, not a paraphrase. Check a draft with
+    `jq -R -s -L .claude/skills/file-task 'include "done-when"; done_when_ok' <file>`.
 - Issues filed while refining another (`/refine-issue`): subtasks from an
   umbrella split get `Ready` if they meet the Ready criteria; otherwise they
   don't, and the report says what's left. Separate tasks and design-decision

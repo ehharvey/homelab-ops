@@ -1,9 +1,10 @@
 #! /bin/bash
 # finding.sh — the findings log: things noticed outside the current issue (#314).
 #   add --kind bug|drift|follow-up --where <path:line> [--origin <n>] [--branch <b>] [--session <id>] "<one line why>"
-#   list [--unfiled] [--limit N] [--json]
+#   list [--unfiled | --commented] [--limit N] [--json]
 #   count [--unfiled]
 #   mark-filed <id> <issue#>
+#   mark-commented <id> <issue-or-PR#>
 #
 # Findings used to live in a session's context (an issue-worker's "## Noticed"
 # hand-back, or a note to post "at the end of the session") and were lost when
@@ -13,20 +14,24 @@
 # `proposed` issues.
 #
 # One JSONL record per finding:
-#   {id, ts, session, branch, origin, kind, where, text, filed_as}
-# `origin` and `filed_as` are issue numbers or null. Unfiled means filed_as is
-# null.
+#   {id, ts, session, branch, origin, kind, where, text, filed_as, commented_on}
+# `origin` is an issue or PR number (GitHub numbers both from one sequence) or
+# null. `filed_as` is the issue that tracks the finding: one /file-findings
+# filed, or an open one that already covered it. `commented_on` is the open
+# issue or PR /file-findings posted it to as a comment instead (#410); nothing
+# tracks it there once that closes, so `list --commented` re-surfaces them.
+# Unfiled means both are null (records older than #410 have no commented_on).
 #
 # The log is $(git rev-parse --git-common-dir)/claude-findings.jsonl: one file
 # shared by every worktree, outside any working tree (so it can't be committed),
 # and untouched by `make wt-gc`. FINDINGS_LOG overrides it, which is how the
-# tests keep off the real log. add and mark-filed hold an flock on <log>.lock,
-# since parallel workers' hooks append at once; mark-filed rewrites atomically
-# (temp file + mv).
+# tests keep off the real log. add and the mark-* commands hold an flock on
+# <log>.lock, since parallel workers' hooks append at once; mark-* rewrites
+# atomically (temp file + mv).
 set -euo pipefail
 
 usage() {
-	sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//' >&2
+	sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//' >&2
 	exit 2
 }
 
@@ -118,20 +123,25 @@ cmd_add() {
 		  session: (if $session == "" then null else $session end),
 		  branch: (if $branch == "" or $branch == "HEAD" then null else $branch end),
 		  origin: (if $origin == "" then null else ($origin | tonumber) end),
-		  kind: $kind, where: $where, text: $text, filed_as: null}' >>"$log"
+		  kind: $kind, where: $where, text: $text, filed_as: null, commented_on: null}' >>"$log"
 	echo "$id"
 }
 
-# select_filter <unfiled> — the jq filter list/count share.
+# select_filter <all|unfiled|commented> — the jq filter list/count share.
 select_filter() {
-	if [ "$1" = 1 ]; then echo 'select(.filed_as == null)'; else echo '.'; fi
+	case "$1" in
+	unfiled) echo 'select(.filed_as == null and .commented_on == null)' ;;
+	commented) echo 'select(.commented_on != null)' ;;
+	*) echo '.' ;;
+	esac
 }
 
 cmd_list() {
-	local unfiled=0 limit=50 json=0
+	local which=all limit=50 json=0
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		--unfiled) unfiled=1 ;;
+		--unfiled) which=unfiled ;;
+		--commented) which=commented ;;
 		--limit) limit="${2:-}"; shift ;;
 		--json) json=1 ;;
 		*) die "list: unknown argument $1" ;;
@@ -143,14 +153,16 @@ cmd_list() {
 	log=$(log_path)
 	[ -s "$log" ] || return 0
 	local filter total
-	filter=$(select_filter "$unfiled")
+	filter=$(select_filter "$which")
 	total=$(jq -c "$filter" "$log" | wc -l)
 	if [ "$json" = 1 ]; then
 		jq -c "$filter" "$log" | tail -n "$limit"
 	else
 		jq -r "$filter"' | [.id, .kind, .where, .text,
 			(if .origin then "from #\(.origin)" else "from ?" end),
-			(if .filed_as then "filed #\(.filed_as)" else "unfiled" end)] | join("  ")' "$log" |
+			(if .filed_as then "filed #\(.filed_as)"
+			 elif .commented_on then "commented on #\(.commented_on)"
+			 else "unfiled" end)] | join("  ")' "$log" |
 			tail -n "$limit"
 	fi
 	if [ "$total" -gt "$limit" ]; then
@@ -159,43 +171,55 @@ cmd_list() {
 }
 
 cmd_count() {
-	local unfiled=0
+	local which=all
 	case "${1:-}" in
-	--unfiled) unfiled=1 ;;
+	--unfiled) which=unfiled ;;
 	"") ;;
 	*) die "count: unknown argument $1" ;;
 	esac
 	local log
 	log=$(log_path)
 	if [ -s "$log" ]; then
-		jq -c "$(select_filter "$unfiled")" "$log" | wc -l
+		jq -c "$(select_filter "$which")" "$log" | wc -l
 	else
 		echo 0
 	fi
 }
 
-cmd_mark_filed() {
+# mark <field> <sub> <id> <n> — set one record's filed_as or commented_on.
+mark() {
+	local field="$1" sub="$2"
+	shift 2
 	[ $# -eq 2 ] || usage
 	local id="$1" issue
 	issue=$(issue_number "$2")
-	[ -n "$issue" ] || die "mark-filed: '$2' is not an issue number"
+	[ -n "$issue" ] || die "$sub: '$2' is not an issue number"
 	local log
 	log=$(log_path)
-	[ -s "$log" ] || die "mark-filed: no findings in $log"
+	[ -s "$log" ] || die "$sub: no findings in $log"
 	exec 9>>"$log.lock"
 	flock 9
 	local n
 	n=$(jq -r --arg id "$id" 'select(.id == $id) | .id' "$log" | wc -l)
-	[ "$n" -ge 1 ] || die "mark-filed: no finding with id $id"
+	[ "$n" -ge 1 ] || die "$sub: no finding with id $id"
 	local tmp
 	tmp=$(mktemp "$log.XXXXXX")
-	if ! jq -c --arg id "$id" --argjson n "$issue" \
-		'if .id == $id then .filed_as = $n else . end' "$log" >"$tmp"; then
+	if ! jq -c --arg id "$id" --arg f "$field" --argjson n "$issue" \
+		'if .id == $id then .[$f] = $n else . end' "$log" >"$tmp"; then
 		rm -f "$tmp"
-		die "mark-filed: could not rewrite $log"
+		die "$sub: could not rewrite $log"
 	fi
 	mv "$tmp" "$log"
-	echo "$id filed as #$issue"
+}
+
+cmd_mark_filed() {
+	mark filed_as mark-filed "$@"
+	echo "$1 filed as #$(issue_number "$2")"
+}
+
+cmd_mark_commented() {
+	mark commented_on mark-commented "$@"
+	echo "$1 commented on #$(issue_number "$2")"
 }
 
 [ $# -ge 1 ] || usage
@@ -206,6 +230,7 @@ add) cmd_add "$@" ;;
 list) cmd_list "$@" ;;
 count) cmd_count "$@" ;;
 mark-filed) cmd_mark_filed "$@" ;;
+mark-commented) cmd_mark_commented "$@" ;;
 -h | --help | help) usage ;;
 *) usage ;;
 esac

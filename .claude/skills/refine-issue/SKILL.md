@@ -94,7 +94,10 @@ when the refinement grew the issue past it or left a design question open.
   (`gh issue comment <n> --delete-last --yes`).
 - The questions answered, with their answers, and those still open.
 - The Ready verdict, criterion by criterion against the Ready criteria in
-  `/file-task` § Labels and milestone. Adding `Ready` stays the operator's call.
+  `/file-task` § Labels and milestone, including the Done-when proof item in
+  the form it gives. That criterion's check, on the rewritten body:
+  `jq -R -s -L .claude/skills/file-task 'include "done-when"; done_when_ok' <scratch>/<n>-body.md`.
+  Adding `Ready` stays the operator's call.
 - If the issue belongs on `docs/Roadmap.md` and isn't there, say so. Don't
   edit the Roadmap here.
 
