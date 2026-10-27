@@ -2,11 +2,12 @@
 // node runs the same binary; leaderelection.Designated decides each tick
 // which one may act.
 //
-// This is the minimal agent of #101: it keeps a persistent clone of the config
-// repo, publishes its commit and acting state on its own Incus instance, runs
-// the #212 handoff, and writes a heartbeat. When it leads it does nothing yet
-// but log — its first real job is cluster membership (#180), and App
-// reconciliation (#98) is paused (docs/Decisions.md §27).
+// It keeps a persistent clone of the config repo, publishes its commit and
+// acting state on its own Incus instance, runs the #212 handoff, and writes a
+// heartbeat (#101). When it leads, it creates the agent on every declared
+// cluster member that has none (#203), syncing the same CONFIG_REPO_URL and
+// CONFIG_REPO_REF as itself. Generic App reconciliation (#98) is deferred to
+// Phase 8 (docs/Decisions.md §30).
 //
 // Configuration is environment variables only, in cmd/web's style:
 //
@@ -35,6 +36,7 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/agent"
+	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/incuslocal"
 	"github.com/ehharvey/homelab-ops/internal/incusregistry"
@@ -88,7 +90,8 @@ func run() error {
 	}
 	clone := &configsync.Clone{RepoURL: s.repoURL, Ref: s.repoRef, Dir: s.repoDir, FailureThreshold: s.failureThreshold}
 	reg := &incusregistry.Registry{Client: client, Self: s.instance, Node: s.node, Generation: s.generation}
-	a := agent.New(s.instance, s.node, s.generation, clone, reg, logger)
+	repo := agentdeploy.Repo{URL: s.repoURL, Ref: s.repoRef}
+	a := agent.New(s.instance, s.node, s.generation, clone, reg, client, repo, logger)
 
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()

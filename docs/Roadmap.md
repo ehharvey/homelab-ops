@@ -136,10 +136,11 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     agent's own instance, #187's sync-failure threshold and self-drain, and a
     heartbeat. When it leads, it only logs. Proven with three real agents
     against real Incus: DONE; see #101
-  - [ ] One agent on every managed host: on cluster members, the designated
+  - [x] One agent on every managed host: on cluster members, the designated
     primary creates it with `target=<member>` (#98's zero-match branch for the
     agent App alone); a standalone host gets it from the web app's one-shot
-    window or `bootstrap deploy-agent` (`docs/Decisions.md` §27, §30) — see #203
+    window or `bootstrap deploy-agent` (`docs/Decisions.md` §27, §30): DONE;
+    see #203
   - [ ] Agent self-upgrade: when the agent App's `image` in git changes, the
     primary's agent creates every host's successor, its own on its own host
     (#98's image-change handling, for the agent App alone). On the primary's

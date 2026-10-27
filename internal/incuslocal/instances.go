@@ -18,6 +18,25 @@ import (
 // fleet does not manage.
 const AppTagKey = "user.homelab-ops.app"
 
+// GenerationTagKey holds an App instance's blue-green generation as a
+// decimal string ("0" for the first). #98's reconcile loop keys its state
+// machine on it; #203's agent creates write "0".
+const GenerationTagKey = "user.homelab-ops.generation"
+
+// ImageTagKey holds the image an App instance was created from, as the App's
+// declared image serialized by agentdeploy.ImageTag (docs/AppManager.md).
+// Comparing it with the declared image is how an image change is detected
+// (#109, and #98 in Phase 8).
+const ImageTagKey = "user.homelab-ops.image"
+
+// StatusRunning is the Status of an instance that is up. Incus's others
+// include "Stopped", "Frozen" and "Error".
+const StatusRunning = "Running"
+
+// UnclusteredLocation is the Location Incus reports for every instance on an
+// unclustered daemon (see Instance.Location).
+const UnclusteredLocation = "none"
+
 // userKeyPrefix is the only config namespace SetUserKeys will write. Incus
 // reserves user.* for exactly this: arbitrary caller metadata it never
 // interprets.
@@ -33,7 +52,7 @@ const userKeyPrefix = "user."
 type Instance struct {
 	// Name is the instance name, e.g. "agent-node0-g3".
 	Name string
-	// Status is Incus's own status string, e.g. "Running" or "Stopped".
+	// Status is Incus's own status string, e.g. StatusRunning or "Stopped".
 	//
 	// Load-bearing, not informational: leaderelection.Registry.Peers must
 	// exclude anything not running, because a dead older generation that
@@ -100,7 +119,13 @@ func (c *Client) ListInstances(ctx context.Context) ([]Instance, error) {
 // CreateInstance creates req and waits for the resulting operation to
 // finish, so a returned nil means the instance exists rather than merely
 // that Incus accepted the request.
-func (c *Client) CreateInstance(ctx context.Context, req lxcapi.InstancesPost) error {
+//
+// A non-empty target places the instance on that cluster member
+// (POST /1.0/instances?target=<member>). An empty one leaves placement to
+// Incus: on a standalone daemon that is the daemon itself, and an
+// unclustered daemon rejects any target, so a caller passes one only for a
+// member it read from ListMembers.
+func (c *Client) CreateInstance(ctx context.Context, req lxcapi.InstancesPost, target string) error {
 	if req.Name == "" {
 		return fmt.Errorf("incuslocal: instance name is required")
 	}
@@ -110,7 +135,11 @@ func (c *Client) CreateInstance(ctx context.Context, req lxcapi.InstancesPost) e
 		return fmt.Errorf("marshal create request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/1.0/instances", bytes.NewReader(body))
+	u := baseURL + "/1.0/instances"
+	if target != "" {
+		u += "?" + url.Values{"target": {target}}.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build create request: %w", err)
 	}

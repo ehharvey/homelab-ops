@@ -14,6 +14,7 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/cert"
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/incuslocal"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision/nodeprovisiontest"
 	"github.com/ehharvey/homelab-ops/internal/seed"
 )
@@ -97,6 +98,17 @@ func TestInstanceDeployAgentSuccess(t *testing.T) {
 	want := agentdeploy.Desired(sampleAgentApp(), sampleSeedInstance(), sampleAgentRepo)
 	if !reflect.DeepEqual(created[0], want) {
 		t.Errorf("created %+v, want agentdeploy.Desired's %+v", created[0], want)
+	}
+	// Spelled out, not only via Desired: the first agent carries the same
+	// generation-0 tags as the ones the primary creates on members (#203).
+	for key, wantVal := range map[string]string{
+		incuslocal.AppTagKey:        "agent",
+		incuslocal.GenerationTagKey: "0",
+		incuslocal.ImageTagKey:      `{"server":"https://ghcr.io","protocol":"oci","alias":"ehharvey/homelab-ops/agent:latest"}`,
+	} {
+		if got := created[0].Config[key]; got != wantVal {
+			t.Errorf("Config[%q] = %q, want %q", key, got, wantVal)
+		}
 	}
 
 	wantAddr := net.JoinHostPort("10.100.0.5", seed.IncusHTTPSPort)

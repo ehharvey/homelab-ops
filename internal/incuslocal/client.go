@@ -42,11 +42,14 @@ package incuslocal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	lxcapi "github.com/lxc/incus/v7/shared/api"
@@ -113,13 +116,38 @@ func (c *Client) do(req *http.Request) (*lxcapi.Response, error) {
 		return nil, fmt.Errorf("decode response (http %d): %w", resp.StatusCode, err)
 	}
 	if envelope.Type == lxcapi.ErrorResponse {
-		return nil, fmt.Errorf("incus error: %s", envelope.Error)
+		return nil, &incusError{code: envelope.Code, msg: envelope.Error}
 	}
 	return &envelope, nil
 }
 
+// incusError is a well-formed Incus error envelope, kept typed so a caller
+// can tell "not found" from a failure.
+type incusError struct {
+	code int // the envelope's error_code, an HTTP status
+	msg  string
+}
+
+func (e *incusError) Error() string { return "incus error: " + e.msg }
+
+// OperationPendingError is a wait that ended with its operation not yet
+// finished: the wait timed out, or its context ended. The operation goes on
+// in Incus regardless, so a caller that would otherwise send the same
+// request again looks it up by ID (Client.Operation) instead.
+type OperationPendingError struct {
+	ID  string
+	Err error // why the wait ended
+}
+
+func (e *OperationPendingError) Error() string {
+	return fmt.Sprintf("operation %s still running: %v", e.ID, e.Err)
+}
+
+func (e *OperationPendingError) Unwrap() error { return e.Err }
+
 // waitOperation blocks until the operation named by operationID finishes,
-// and reports a failed operation as an error.
+// and reports one that didn't succeed as an error: an
+// *OperationPendingError when it hadn't finished by the time the wait ended.
 //
 // Incus answers an async request with "Operation created" before the work
 // has happened, so a successful POST proves nothing about the outcome — the
@@ -127,23 +155,26 @@ func (c *Client) do(req *http.Request) (*lxcapi.Response, error) {
 // this, a create that returned an operation and then failed on a storage
 // pool that did not exist.
 func (c *Client) waitOperation(ctx context.Context, operationID string) error {
-	url := fmt.Sprintf("%s/1.0/operations/%s/wait", baseURL, operationID)
+	u := fmt.Sprintf("%s/1.0/operations/%s/wait", baseURL, operationID)
 	// If ctx carries a deadline, tell Incus about it too via ?timeout=
 	// (seconds), so the server-side wait and our own deadline stay aligned
 	// rather than relying solely on client-side cancellation to unblock.
 	// Same reasoning as internal/nodeprovision.waitOperation.
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
-			url += fmt.Sprintf("?timeout=%d", int(remaining.Seconds()))
+			u += fmt.Sprintf("?timeout=%d", int(remaining.Seconds()))
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return fmt.Errorf("build wait request: %w", err)
 	}
 
 	envelope, err := c.do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return &OperationPendingError{ID: operationID, Err: err}
+		}
 		return err
 	}
 
@@ -151,10 +182,44 @@ func (c *Client) waitOperation(ctx context.Context, operationID string) error {
 	if err := json.Unmarshal(envelope.Metadata, &final); err != nil {
 		return fmt.Errorf("decode operation: %w", err)
 	}
-	if final.StatusCode == lxcapi.Failure {
-		return fmt.Errorf("operation failed: %s", final.Err)
+	switch {
+	case !final.StatusCode.IsFinal():
+		// When ?timeout= runs out, Incus answers 200 with the operation as
+		// it stands, still Running: the wait's own error isn't returned
+		// (operationWaitGet in cmd/incusd/operations.go).
+		return &OperationPendingError{ID: operationID, Err: fmt.Errorf("wait ended with it %s", final.Status)}
+	case final.StatusCode != lxcapi.Success:
+		return fmt.Errorf("operation %s: %s", strings.ToLower(final.Status), final.Err)
 	}
 	return nil
+}
+
+// ErrOperationGone is Operation's answer for an operation Incus no longer
+// has. Incus forgets an operation about five seconds after it finishes, so
+// it means finished, outcome unknown.
+var ErrOperationGone = errors.New("operation not found")
+
+// Operation returns the operation named id as it stands, without waiting,
+// or ErrOperationGone. In a cluster any member answers for any member's
+// operation.
+func (c *Client) Operation(ctx context.Context, id string) (*lxcapi.Operation, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/1.0/operations/"+url.PathEscape(id), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build operation request: %w", err)
+	}
+	envelope, err := c.do(req)
+	var ie *incusError
+	if errors.As(err, &ie) && ie.code == http.StatusNotFound {
+		return nil, fmt.Errorf("operation %s: %w", id, ErrOperationGone)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("operation %s: %w", id, err)
+	}
+	var op lxcapi.Operation
+	if err := json.Unmarshal(envelope.Metadata, &op); err != nil {
+		return nil, fmt.Errorf("decode operation: %w", err)
+	}
+	return &op, nil
 }
 
 // awaitEnvelope waits on envelope's operation when it is async, and returns

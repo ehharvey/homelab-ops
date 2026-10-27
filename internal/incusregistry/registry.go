@@ -86,9 +86,6 @@ const DrainSyncFailure = "sync-failure"
 // taken over. It stays drained until the leader retires it.
 const DrainSuperseded = "superseded"
 
-// running is the one Incus status that counts as a live peer.
-const running = "Running"
-
 // Client is the slice of *incuslocal.Client the registry uses.
 type Client interface {
 	ListInstances(ctx context.Context) ([]incuslocal.Instance, error)
@@ -146,7 +143,7 @@ func (r *Registry) Peers(ctx context.Context) (map[string]leaderelection.Peer, e
 	}
 	for _, inst := range insts {
 		node, isAgent := inst.Config[KeyNode]
-		if !isAgent || inst.Status != running || inst.Config[incuslocal.AppTagKey] != app {
+		if !isAgent || inst.Status != incuslocal.StatusRunning || inst.Config[incuslocal.AppTagKey] != app {
 			continue
 		}
 		p, err := parsePeer(node, inst.Config)
@@ -197,7 +194,7 @@ type SelfState struct {
 }
 
 // VisibleToPeers reports whether other agents' Peers would include this one.
-func (s SelfState) VisibleToPeers() bool { return s.Listed && s.Status == running }
+func (s SelfState) VisibleToPeers() bool { return s.Listed && s.Status == incuslocal.StatusRunning }
 
 // SetDraining publishes this agent's draining state and why. Clearing it
 // clears the reason too.

@@ -97,11 +97,15 @@ func snapshot(primary, commit string) configsync.Snapshot {
 }
 
 func testAgent(peers map[string]leaderelection.Peer, s *fakeSync) (*Agent, *fakeReg) {
+	return testAgentWith(peers, s, &fakeIncus{})
+}
+
+func testAgentWith(peers map[string]leaderelection.Peer, s *fakeSync, inc *fakeIncus) (*Agent, *fakeReg) {
 	r := &fakeReg{peers: peers, reasons: map[string]string{}, status: map[string]string{}, self: "agent-node0-g0", node: "node0"}
 	if _, ok := peers[r.self]; !ok {
 		peers[r.self] = leaderelection.Peer{Node: "node0"}
 	}
-	return New(r.self, r.node, r.gen, s, r, log.New(io.Discard, "", 0)), r
+	return New(r.self, r.node, r.gen, s, r, inc, testRepo, log.New(io.Discard, "", 0)), r
 }
 
 func TestStartClearsALeftoverActingFlagFirst(t *testing.T) {
