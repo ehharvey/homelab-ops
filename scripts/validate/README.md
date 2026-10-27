@@ -297,40 +297,6 @@ aliases the same way.
 — it asserts the remote is reachable, the network exists, and that the Incus
 client and server share a major version.
 
-## A hung docker credential helper (#300)
-
-In the devcontainer, `~/.docker/config.json` sets `credsStore` to VS Code's
-dev-containers helper, which forwards every credential lookup to the attached
-VS Code client. With no client attached (a headless Claude Code session, an
-`issue-worker`) it never answers, and every pull and build waits on it until
-something times out. `docker build` and `compose up --build` fail with
-`DeadlineExceeded`, and a `docker pull` cut short ends in:
-
-```
-Error getting credentials - err: signal: terminated, out: ``
-```
-
-The compose script's first checks then fail for a reason that has nothing to
-do with the thing under test.
-
-The fix lives in `lib.sh`'s `require_docker_credential_helper`, which
-`require_compose` calls before any compose script pulls or builds. It asks the
-helper what a Docker Hub pull asks it, with a 5-second timeout. A helper that
-answers, found or not, changes nothing. One that doesn't is bypassed for that
-run: the harness exports `DOCKER_CONFIG` as a scratch copy of the config dir
-without `credsStore` (Docker then pulls anonymously, as it does with a client
-attached and nothing stored), and prints one line:
-
-```
-NOTE: docker credential helper docker-credential-dev-containers-<id> did not answer within 5s (no VS Code client attached?) — bypassing it with a scratch DOCKER_CONFIG without credsStore: /tmp/validate-docker-config.XXXXXX
-```
-
-If it can't build that copy, the script exits 2 with an `ERROR` naming the
-helper. `~/.docker/config.json` itself is never edited, so forwarding still
-works whenever VS Code is attached. Only `credsStore` is probed, not
-per-registry `credHelpers`. `harness-bypasses-hung-credential-helper.sh`
-proves this against a stub helper that sleeps.
-
 ## Parallelism
 
 `run.sh --jobs N` runs scripts concurrently. **The `compose` group cannot use it
@@ -360,8 +326,8 @@ an older or CI-provided Compose where `down` returns early (#153).
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
-| `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose, jq, the credential-helper probe), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
+| `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose + jq), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 
 `lib.sh`'s prereq DSL includes `require_incus_image`, which asserts the pinned

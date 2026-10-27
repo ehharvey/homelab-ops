@@ -82,13 +82,9 @@ _compose() {
 # and jq, which compose's port guard reads the rendered config with. Every
 # compose-group script calls it before check_prereqs, so a host without jq
 # exits 2 before doing any work rather than failing at its first `compose up`.
-# It also probes the docker credential helper (lib.sh's
-# require_docker_credential_helper, #300), so a helper that hangs with no
-# VS Code client attached is bypassed before the first pull or build.
 require_compose() {
 	require_docker_compose
 	require_cmd jq
-	require_docker_credential_helper
 }
 
 # COMPOSE_HOST_PORTS — every host port, as port/protocol, that a compose-group
