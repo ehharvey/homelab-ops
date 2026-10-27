@@ -93,6 +93,8 @@ func TestDesired(t *testing.T) {
 	}
 	for key, want := range map[string]string{
 		incuslocal.AppTagKey:              "agent",
+		incuslocal.GenerationTagKey:       "0",
+		incuslocal.ImageTagKey:            `{"server":"https://ghcr.io","protocol":"oci","alias":"ehharvey/homelab-ops/agent:latest"}`,
 		"environment.AGENT_NODE_NAME":     "node0",
 		"environment.AGENT_INSTANCE_NAME": "agent-node0-g0",
 		"environment.CONFIG_REPO_URL":     "https://example.test/fleet.git",
@@ -104,9 +106,88 @@ func TestDesired(t *testing.T) {
 	}
 }
 
+// cmd/agent reads its generation from the name suffix, and #98/#109 key on
+// the tag: the two must name the same generation.
+func TestDesiredNameAndGenerationTagAgree(t *testing.T) {
+	app := config.App{Name: "agent"}
+	got := Desired(app, config.Instance{Name: "node0"}, Repo{})
+	if want := "agent-node0-g" + got.Config[incuslocal.GenerationTagKey]; got.Name != want {
+		t.Errorf("name %q, but the generation tag says %q", got.Name, want)
+	}
+}
+
 func TestDesiredOmitsEmptyRef(t *testing.T) {
 	got := Desired(sampleAgentApp(), config.Instance{Name: "node0"}, Repo{URL: "https://example.test/fleet.git"})
 	if _, ok := got.Config["environment.CONFIG_REPO_REF"]; ok {
 		t.Error("CONFIG_REPO_REF set for an empty Ref; the agent's own default (main) should apply")
+	}
+}
+
+// The .app tag is the declared App's name on every member's agent, never a
+// per-node value: §25 scopes peers by it (#203).
+func TestDesiredAppTagIsSharedAcrossMembers(t *testing.T) {
+	app := sampleAgentApp()
+	a := Desired(app, config.Instance{Name: "node0"}, Repo{})
+	b := Desired(app, config.Instance{Name: "node1"}, Repo{})
+	if a.Config[incuslocal.AppTagKey] != "agent" || b.Config[incuslocal.AppTagKey] != "agent" {
+		t.Fatalf("app tags = %q, %q; want the App name on both", a.Config[incuslocal.AppTagKey], b.Config[incuslocal.AppTagKey])
+	}
+	if a.Name == b.Name {
+		t.Fatalf("both members' agents are named %q; instance names are cluster-wide", a.Name)
+	}
+}
+
+func TestImageTagRoundTrips(t *testing.T) {
+	for _, ref := range []config.ImageRef{
+		{},
+		sampleAgentApp().Image,
+		{Fingerprint: "abc123"},
+		{Server: "https://registry.local:5000", Protocol: "simplestreams", Alias: "a/b:c", Fingerprint: "deadbeef"},
+		// Characters JSON would escape by default, and a quote.
+		{Server: "https://x.test/?a=1&b=<2>", Alias: `odd"alias\`},
+	} {
+		tag := ImageTag(ref)
+		got, err := ParseImageTag(tag)
+		if err != nil {
+			t.Errorf("ParseImageTag(ImageTag(%+v) = %q): %v", ref, tag, err)
+			continue
+		}
+		if got != ref {
+			t.Errorf("round trip of %+v via %q = %+v", ref, tag, got)
+		}
+		if again := ImageTag(got); again != tag {
+			t.Errorf("not canonical: %q re-serialized as %q", tag, again)
+		}
+	}
+}
+
+func TestImageTagIsLegible(t *testing.T) {
+	got := ImageTag(config.ImageRef{Server: "https://x.test/?a=1&b=2", Fingerprint: "f"})
+	if want := `{"server":"https://x.test/?a=1&b=2","fingerprint":"f"}`; got != want {
+		t.Errorf("ImageTag = %s, want %s", got, want)
+	}
+}
+
+func TestParseImageTagRejectsWhatImageTagNeverWrites(t *testing.T) {
+	for _, s := range []string{
+		"",
+		"null",
+		`"ehharvey/homelab-ops/agent:latest"`,
+		`{"alias":"a","tag":"newer-writer"}`,
+		`{"alias":"a"} {"alias":"b"}`,
+		`{"alias":"a"`,
+		`{"alias":1}`,
+		// encoding/json alone accepts each of these.
+		`{"ALIAS":"x","alias":"y","server":null}`,
+		`{"Alias":"a"}`,
+		`{"alias":"a","alias":"a"}`,
+		`{"server":null,"alias":"a"}`,
+		`{"alias":"a","server":"s"}`, // ImageTag writes server first
+		`{"alias":"a"} `,
+		`{}x`,
+	} {
+		if ref, err := ParseImageTag(s); err == nil {
+			t.Errorf("ParseImageTag(%q) = %+v, want an error", s, ref)
+		}
 	}
 }

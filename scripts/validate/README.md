@@ -76,10 +76,13 @@ wired up it only protects the runs someone remembers to start by hand. Wiring
 it is tracked separately, and the "runs in CI" column below states intent, not
 current fact.
 
-Tags in use: `base-image`, `ct-image`, `flasher-tool`, `incus-instances`,
-`incus-socket`, `opt-in`, `upstream`. Four describe a prerequisite the environment
+Tags in use: `base-image`, `ct-image`, `flasher-tool`, `incus-cluster`, `incus-instances`,
+`incus-socket`, `opt-in`, `upstream`. Five describe a prerequisite the environment
 didn't supply — an IncusOS image, a container image, the `flasher-tool`
-binary, or a readable/writable Incus unix socket. `incus-instances` is a
+binary, a readable/writable Incus unix socket, or (`incus-cluster`) a
+clustered daemon, for a check that needs cluster members or a create's
+`target=` (at least two Online members for the targeted create, so that an
+ignored target would land elsewhere). `incus-instances` is a
 *probe* rather than a named cause: a script that needs to create instances
 asks the daemon to create one and skips with the daemon's own words if it
 can't, which covers an uninitialized daemon (no storage pool) and a
