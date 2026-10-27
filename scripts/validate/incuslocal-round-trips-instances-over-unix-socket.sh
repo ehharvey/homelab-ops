@@ -45,12 +45,14 @@
 # filesystem to read from — a stopped container is enough, since Incus serves
 # the files API off the storage volume either way. Everything else uses source
 # type "none" instances, which are instant and need nothing cached. With no
-# image the three skip together, tag [ct-image], and the other eight still run.
+# image the three skip together, tag [ct-image], and the others still run.
 #
 # Clustering is printed, not asserted: #178 made a seeded node a one-member
 # cluster, and one socket is supposed to reach every member. Printing it keeps
 # a run on a non-clustered dev host from being mistaken for the clustered path
-# 0.x actually runs.
+# 0.x actually runs. The two cluster checks (ListMembers, and a create placed
+# with target=<member>, #203) need a clustered daemon: an unclustered one has
+# no members and rejects any target, so there they skip, tag [incus-cluster].
 
 set -uo pipefail
 
@@ -60,7 +62,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="internal/incuslocal round-trips instances, user.* config and file reads over a real Incus unix socket (#160)"
 VALIDATE_GROUP="incus"
-VALIDATE_NEEDS="read/write access to the Incus unix socket, an Incus that can create instances, go, incus, curl, jq, [a container image]"
+VALIDATE_NEEDS="read/write access to the Incus unix socket, an Incus that can create instances, go, incus, curl, jq, [a container image], [a clustered Incus]"
 VALIDATE_DURATION="~30s"
 
 validate_parse_args "$@"
@@ -79,6 +81,8 @@ UNTAGGED="validate-incuslocal-untagged-$$"
 CREATED="validate-incuslocal-created-$$"
 DOOMED="validate-incuslocal-doomed-$$"
 FSINST="validate-incuslocal-fs-$$"
+TARGETED="validate-incuslocal-targeted-$$"
+PLACED="validate-incuslocal-placed-$$"
 HEARTBEAT_PATH="/run/heartbeat"
 
 # Every check this script records, in order and worded identically to its
@@ -94,6 +98,10 @@ _core_checks=(
 	"CreateInstance creates an instance the incus CLI can then see"
 	"CreateInstance reports an operation Incus accepted and then failed (#161)"
 	"DeleteInstance removes an instance the incus CLI then cannot see"
+)
+_cluster_checks=(
+	"ListMembers returns every cluster member with its status"
+	"CreateInstance with a target places the instance on that member"
 )
 _readfile_checks=(
 	"ReadFile returns a file pushed into an instance"
@@ -163,7 +171,7 @@ harness_list_entry() {
 
 cleanup() {
 	local name
-	for name in "$TAGGED" "$UNTAGGED" "$CREATED" "$DOOMED" "$FSINST"; do
+	for name in "$TAGGED" "$UNTAGGED" "$CREATED" "$DOOMED" "$FSINST" "$TARGETED" "$PLACED"; do
 		incus delete --force "$name" >/dev/null 2>&1
 		# Belt and braces: a source-type-none instance the CLI cannot see
 		# (wrong default remote, say) still goes through the socket.
@@ -178,7 +186,7 @@ require_cmd go incus curl jq
 check_prereqs
 
 if [ ! -S "$SOCKET" ] || [ ! -r "$SOCKET" ] || [ ! -w "$SOCKET" ]; then
-	for _desc in "${_core_checks[@]}" "${_readfile_checks[@]}"; do
+	for _desc in "${_core_checks[@]}" "${_cluster_checks[@]}" "${_readfile_checks[@]}"; do
 		skip_check "$_desc" incus-socket \
 			"$SOCKET is not a readable/writable socket (run on the Incus host, or set VALIDATE_INCUS_SOCKET)"
 	done
@@ -204,7 +212,7 @@ PROBE="validate-incuslocal-probe-$$"
 probe_err="$(create_fixture_error "$PROBE")"
 api DELETE "/1.0/instances/$PROBE" >/dev/null 2>&1
 if [ -n "$probe_err" ]; then
-	for _desc in "${_core_checks[@]}" "${_readfile_checks[@]}"; do
+	for _desc in "${_core_checks[@]}" "${_cluster_checks[@]}" "${_readfile_checks[@]}"; do
 		skip_check "$_desc" incus-instances \
 			"the Incus at $SOCKET cannot create an instance: $probe_err"
 	done
@@ -216,7 +224,7 @@ echo "== 1. Build the harness =="
 check "harness builds" go -C "$ROOT_DIR" build -o "$HARNESS_BIN" ./cmd/validate-incuslocal-harness
 if [ ! -x "$HARNESS_BIN" ]; then
 	echo "ERROR: the harness didn't build; nothing downstream can be meaningful" >&2
-	for _desc in "${_core_checks[@]:1}" "${_readfile_checks[@]}"; do
+	for _desc in "${_core_checks[@]:1}" "${_cluster_checks[@]}" "${_readfile_checks[@]}"; do
 		record_fail "$_desc" "harness did not build"
 	done
 	summary
@@ -313,7 +321,75 @@ else
 fi
 
 echo
-echo "== 5. ReadFile against a real instance filesystem =="
+echo "== 5. ListMembers and a targeted create (#203) =="
+# The oracle is curl against the same endpoint, projected to the harness's
+# shape, so the check is the decode and the field mapping (server_name ->
+# Name), not Incus's answer.
+if [ "$(jq -r '.metadata.environment.server_clustered' <<<"$info")" != "true" ]; then
+	for _desc in "${_cluster_checks[@]}"; do
+		skip_check "$_desc" incus-cluster \
+			"the Incus at $SOCKET is not clustered: it has no members, and rejects a target"
+	done
+else
+	want_members="$(api GET '/1.0/cluster/members?recursion=1' |
+		jq -c '[.metadata[] | {Name: .server_name, Status: .status}] | sort_by(.Name)')"
+	got_members="$("$HARNESS_BIN" -mode=members -socket="$SOCKET" 2>&1 | jq -c 'sort_by(.Name)' 2>/dev/null)"
+	if [ -n "$want_members" ] && [ "$want_members" != "[]" ] && [ "$got_members" = "$want_members" ]; then
+		record_pass "ListMembers returns every cluster member with its status"
+	else
+		record_fail "ListMembers returns every cluster member with its status" \
+			"want ${want_members:-<curl failed>}, got ${got_members:-<harness failed>}"
+	fi
+
+	# The check has to be able to fail: a create that ignored its target
+	# must land somewhere else. Incus places an untargeted create on the
+	# Online member with the fewest instances (GetCandidateMembers; ties in
+	# no fixed order), so the target is a member with more than that. On one
+	# member, or with every member tied, nothing qualifies until an
+	# untargeted fixture breaks the tie; one member can't, so it skips.
+	online_count="$(jq '[.[] | select(.Status == "Online")] | length' <<<"$want_members")"
+	# member_instance_counts — {member: instance count, all projects} for
+	# every Online member, zero included.
+	member_instance_counts() {
+		api GET '/1.0/instances?all-projects=true&recursion=1' |
+			jq -c --argjson members "$want_members" '
+				reduce (.metadata[] | .location) as $l
+					([$members[] | select(.Status == "Online") | {(.Name): 0}] | add;
+					if has($l) then .[$l] += 1 else . end)'
+	}
+	# busier_member <counts> — a member with more instances than the least
+	# busy, or nothing when every member is tied.
+	busier_member() {
+		jq -r '([.[]] | min) as $min | to_entries | map(select(.value > $min)) | .[0].key // empty' <<<"$1"
+	}
+	member=""
+	if [ "${online_count:-0}" -lt 2 ]; then
+		skip_check "CreateInstance with a target places the instance on that member" incus-cluster \
+			"needs two Online members, so that an ignored target would land elsewhere: $want_members"
+	else
+		counts="$(member_instance_counts)"
+		member="$(busier_member "$counts")"
+		if [ -z "$member" ]; then
+			create_fixture "$PLACED" || true
+			counts="$(member_instance_counts)"
+			member="$(busier_member "$counts")"
+		fi
+		if [ -z "$member" ]; then
+			record_fail "CreateInstance with a target places the instance on that member" \
+				"no member busier than the least busy, even after an untargeted create: $counts"
+		elif target_out="$("$HARNESS_BIN" -mode=create -socket="$SOCKET" -instance-name="$TARGETED" -app-tag="$APP" \
+			-target="$member" 2>&1)" &&
+			[ "$(api GET "/1.0/instances/$TARGETED" | jq -r '.metadata.location')" = "$member" ]; then
+			record_pass "CreateInstance with a target places the instance on that member"
+		else
+			record_fail "CreateInstance with a target places the instance on that member" \
+				"target $member (instances per member: $counts), location $(api GET "/1.0/instances/$TARGETED" | jq -r '.metadata.location // "<absent>"'), harness: $(tr '\n' '|' <<<"$target_out" | tail -c 300)"
+		fi
+	fi
+fi
+
+echo
+echo "== 6. ReadFile against a real instance filesystem =="
 # A *stopped* container, deliberately. Incus serves
 # GET /1.0/instances/{name}/files off the storage volume whether or not the
 # instance is running (verified: http 200 on a stopped container), and the

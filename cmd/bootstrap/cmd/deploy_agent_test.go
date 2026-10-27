@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/cert"
+	"github.com/ehharvey/homelab-ops/internal/incuslocal"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision/nodeprovisiontest"
 )
 
@@ -111,6 +112,16 @@ func TestDeployAgentCreatesThenReportsAlreadyDeployed(t *testing.T) {
 	}
 	if got := created[0].Config["environment.CONFIG_REPO_REF"]; got != "main" {
 		t.Errorf("CONFIG_REPO_REF = %q, want the default main", got)
+	}
+	// The same generation-0 tags the primary's per-member creates carry (#203).
+	for key, want := range map[string]string{
+		incuslocal.AppTagKey:        "agent",
+		incuslocal.GenerationTagKey: "0",
+		incuslocal.ImageTagKey:      `{"server":"https://ghcr.io","protocol":"oci","alias":"ehharvey/homelab-ops/agent:latest"}`,
+	} {
+		if got := created[0].Config[key]; got != want {
+			t.Errorf("Config[%q] = %q, want %q", key, got, want)
+		}
 	}
 
 	out, err = execDeployAgent(t, args...)

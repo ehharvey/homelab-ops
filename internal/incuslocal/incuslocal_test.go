@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -34,8 +35,12 @@ type fakeIncus struct {
 	patched map[string]map[string]string
 	// deleted records the names DeleteInstance asked to remove.
 	deleted []string
-	// created records the requests CreateInstance sent.
+	// created records the requests CreateInstance sent, and targets the
+	// ?target= each was sent with ("" for none).
 	created []lxcapi.InstancesPost
+	targets []string
+	// members is the listing GET /1.0/cluster/members?recursion=1 returns.
+	members []lxcapi.ClusterMember
 	// files is the content ReadFile serves, keyed "<instance>:<path>".
 	files map[string]string
 	// dirs marks paths that should answer as directories.
@@ -45,6 +50,12 @@ type fakeIncus struct {
 	patchAsync bool
 	// operationFails makes any awaited operation finish as a failure.
 	operationFails bool
+	// operationPending makes any wait end with the operation still Running,
+	// as Incus answers when ?timeout= runs out.
+	operationPending bool
+	// operations is what GET /1.0/operations/{id} serves; any other id is
+	// a 404, as for an operation Incus has forgotten.
+	operations map[string]lxcapi.Operation
 }
 
 func newFakeIncus(t *testing.T) *fakeIncus {
@@ -72,8 +83,20 @@ func newFakeIncus(t *testing.T) *fakeIncus {
 		}
 		f.mu.Lock()
 		f.created = append(f.created, req)
+		f.targets = append(f.targets, r.URL.Query().Get("target"))
 		f.mu.Unlock()
 		writeOperation(w)
+	})
+
+	mux.HandleFunc("GET /1.0/cluster/members", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("recursion") != "1" {
+			writeEnvelope(w, lxcapi.Response{Type: lxcapi.ErrorResponse, Code: http.StatusBadRequest, Error: "want recursion=1"})
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		meta, _ := json.Marshal(f.members)
+		writeEnvelope(w, lxcapi.Response{Type: lxcapi.SyncResponse, Metadata: meta})
 	})
 
 	mux.HandleFunc("DELETE /1.0/instances/{name}", func(w http.ResponseWriter, r *http.Request) {
@@ -131,13 +154,29 @@ func newFakeIncus(t *testing.T) *fakeIncus {
 
 	mux.HandleFunc("GET /1.0/operations/{id}/wait", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		fails := f.operationFails
+		fails, pending := f.operationFails, f.operationPending
 		f.mu.Unlock()
 
-		op := lxcapi.Operation{ID: r.PathValue("id"), StatusCode: lxcapi.Success}
-		if fails {
-			op.StatusCode = lxcapi.Failure
+		op := lxcapi.Operation{ID: r.PathValue("id"), Status: "Success", StatusCode: lxcapi.Success}
+		switch {
+		case fails:
+			op.Status, op.StatusCode = "Failure", lxcapi.Failure
 			op.Err = "synthetic operation failure"
+		case pending:
+			op.Status, op.StatusCode = "Running", lxcapi.Running
+		}
+		meta, _ := json.Marshal(op)
+		writeEnvelope(w, lxcapi.Response{Type: lxcapi.SyncResponse, Metadata: meta})
+	})
+
+	mux.HandleFunc("GET /1.0/operations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		op, ok := f.operations[r.PathValue("id")]
+		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			writeEnvelope(w, lxcapi.Response{Type: lxcapi.ErrorResponse, Code: http.StatusNotFound, Error: "Operation not found"})
+			return
 		}
 		meta, _ := json.Marshal(op)
 		writeEnvelope(w, lxcapi.Response{Type: lxcapi.SyncResponse, Metadata: meta})
@@ -285,18 +324,21 @@ func TestCreateInstanceWaitsForTheOperation(t *testing.T) {
 	c := f.client(t)
 
 	req := lxcapi.InstancesPost{Name: "agent-node0-g1", Type: lxcapi.InstanceTypeContainer}
-	if err := c.CreateInstance(context.Background(), req); err != nil {
+	if err := c.CreateInstance(context.Background(), req, ""); err != nil {
 		t.Fatalf("CreateInstance: %v", err)
 	}
 	if len(f.created) != 1 || f.created[0].Name != "agent-node0-g1" {
 		t.Fatalf("created = %+v, want one request for agent-node0-g1", f.created)
+	}
+	if f.targets[0] != "" {
+		t.Errorf("target = %q, want none: an unclustered daemon rejects any target", f.targets[0])
 	}
 
 	// "Operation created" is not success — #161 was exactly a create that
 	// returned an operation and then failed. A failed operation must be an
 	// error from CreateInstance, not a silent pass.
 	f.operationFails = true
-	err := c.CreateInstance(context.Background(), lxcapi.InstancesPost{Name: "doomed"})
+	err := c.CreateInstance(context.Background(), lxcapi.InstancesPost{Name: "doomed"}, "")
 	if err == nil {
 		t.Fatal("CreateInstance succeeded despite a failed operation")
 	}
@@ -305,9 +347,82 @@ func TestCreateInstanceWaitsForTheOperation(t *testing.T) {
 	}
 }
 
+// When ?timeout= runs out, Incus answers 200 with the operation still
+// Running. That is neither success nor failure: the create goes on in Incus,
+// and the caller needs its ID to look it up rather than send it again.
+func TestCreateInstanceWhoseWaitEndsRunningIsPending(t *testing.T) {
+	f := newFakeIncus(t)
+	f.operationPending = true
+	c := f.client(t)
+
+	err := c.CreateInstance(context.Background(), lxcapi.InstancesPost{Name: "slow-pull"}, "")
+	var pending *OperationPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("CreateInstance = %v, want an *OperationPendingError", err)
+	}
+	if pending.ID != "OP1" {
+		t.Errorf("pending operation ID = %q, want OP1", pending.ID)
+	}
+}
+
+func TestOperationIsGoneOnceIncusForgetsIt(t *testing.T) {
+	f := newFakeIncus(t)
+	f.operations = map[string]lxcapi.Operation{"OP1": {ID: "OP1", Status: "Running", StatusCode: lxcapi.Running}}
+	c := f.client(t)
+
+	op, err := c.Operation(context.Background(), "OP1")
+	if err != nil || op == nil || op.StatusCode != lxcapi.Running {
+		t.Errorf("Operation(OP1) = %+v, %v; want it Running", op, err)
+	}
+	op, err = c.Operation(context.Background(), "gone")
+	if !errors.Is(err, ErrOperationGone) {
+		t.Errorf("Operation(gone) = %+v, %v; want ErrOperationGone for a 404", op, err)
+	}
+}
+
+// #203 places each member's agent with POST /1.0/instances?target=<member>.
+// The target is a query parameter, never part of the body, so a member name
+// needing escaping still arrives intact.
+func TestCreateInstanceSendsTheTarget(t *testing.T) {
+	f := newFakeIncus(t)
+	req := lxcapi.InstancesPost{Name: "agent-node1-g0", Type: lxcapi.InstanceTypeContainer}
+	if err := f.client(t).CreateInstance(context.Background(), req, "node1&x=y"); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if len(f.targets) != 1 || f.targets[0] != "node1&x=y" {
+		t.Fatalf("targets = %q, want exactly [node1&x=y]", f.targets)
+	}
+}
+
+func TestListMembersReturnsNameAndStatus(t *testing.T) {
+	f := newFakeIncus(t)
+	f.members = []lxcapi.ClusterMember{
+		{ServerName: "node0", Status: MemberOnline, URL: "https://10.0.0.1:8443"},
+		{ServerName: "node1", Status: "Offline"},
+	}
+	got, err := f.client(t).ListMembers(context.Background())
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	want := []Member{{Name: "node0", Status: "Online"}, {Name: "node1", Status: "Offline"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListMembers = %+v, want %+v", got, want)
+	}
+}
+
+// An unclustered daemon answers the member listing with an error; it must
+// surface as one, not as an empty cluster.
+func TestListMembersSurfacesIncusError(t *testing.T) {
+	f := newFakeIncus(t)
+	f.srv.Config.Handler = http.NewServeMux()
+	if _, err := f.client(t).ListMembers(context.Background()); err == nil {
+		t.Fatal("ListMembers against a server with no route succeeded, want an error")
+	}
+}
+
 func TestCreateInstanceRequiresAName(t *testing.T) {
 	f := newFakeIncus(t)
-	if err := f.client(t).CreateInstance(context.Background(), lxcapi.InstancesPost{}); err == nil {
+	if err := f.client(t).CreateInstance(context.Background(), lxcapi.InstancesPost{}, ""); err == nil {
 		t.Fatal("CreateInstance with no name succeeded, want an error")
 	}
 }

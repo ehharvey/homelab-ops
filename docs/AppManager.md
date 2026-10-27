@@ -30,6 +30,28 @@ Purpose
 
 This doc complements `docs/Architecture.md` (system-wide shape) and `docs/Ipam.md` (the sibling per-subsystem policy doc this one mirrors); `docs/AppClasses.md` is its companion reference, classifying the workloads this mechanism runs (which cutover shape a renderer implements, and why the registry is curated). Implementation-level detail lives in `internal/config` (schema), `internal/apprenderer` (registry + fleet reconcile algorithm), `internal/apprenderer/agentrenderer` (the built-in `agent` renderer), and `internal/leaderelection` (the pluggable `Elector`; `Designated` in 0.x). See `docs/Decisions.md` § App Manager HA for the full design rationale and the trade-offs accepted along the way.
 
+## What 0.x builds: one agent per member (#203)
+
+Of the machinery below, 0.x builds only the zero-match branch, for the agent App alone (`docs/Decisions.md` §27, §30). Each tick, the designated primary's agent (inside `MayAct`'s leader block, `internal/agent`):
+
+1. lists the cluster members (`GET /1.0/cluster/members`) and matches them to declared `Instance`s by name, since a joiner's `dns.hostname` sets its member name. Members no `Instance` declares, declared `Instance`s that aren't members yet, and members that aren't `Online` are skipped, logged, and looked at again next tick;
+2. counts a member as having an agent when an instance carries the agent App's `user.homelab-ops.app` tag **and** its `Location` is that member. Instance names are cluster-wide, so a name alone can't say where an agent runs;
+3. creates generation 0 on each matched member without one, from `agentdeploy.Desired` with `target=<member>`, syncing the primary's own `CONFIG_REPO_URL`/`CONFIG_REPO_REF`. A failed create is logged and retried next tick. One deadline (5 minutes) covers the whole pass, every member's create and image pull included, so stalled pulls can't hold the leader's tick; members the pass didn't reach wait for the next. A create still running when its wait ends (a slow pull) isn't sent again: the leader remembers its operation, reports the member as creating, and looks the operation up each tick until Incus finishes it, retrying only if it failed. A member whose agent exists but isn't `Running` (a create whose start failed, or an agent the operator stopped) is logged and left alone: a create can't fix it.
+
+The leader creates nothing unless its own instance's `user.homelab-ops.app` tag equals the declared agent App's name. Peers are grouped by that tag (`internal/incusregistry`), so an agent tagged otherwise (an App renamed in git) would otherwise create a second, separate set of agents with a leader of its own.
+
+There is no teardown and no image-change handling: an existing agent is left alone whatever its image, and an agent on the wrong member stays until the operator deletes it (the create for its member keeps failing on the name conflict meanwhile). Upgrades are #109's. On an unclustered daemon (the leader's own instance has `Location` `none`) there are no members to list, so a standalone host's only agent is the one already running.
+
+Every agent instance, whichever path created it (this loop, the web route or `bootstrap deploy-agent`), carries the same tags:
+
+| Tag | Value |
+|---|---|
+| `user.homelab-ops.app` | the declared App's name (`agent`), **the same on every agent**. §25 scopes an agent's peers by it, so an agent tagged otherwise is neither a peer nor fenced. Per-node synthesis below names *instances* per node; it never changes this tag. |
+| `user.homelab-ops.generation` | `0` for every create 0.x makes. |
+| `user.homelab-ops.image` | the App's declared `image`, serialized as a compact JSON object of its non-empty fields under their YAML names, in the order `server`, `protocol`, `alias`, `fingerprint`, e.g. `{"server":"https://ghcr.io","protocol":"oci","alias":"ehharvey/homelab-ops/agent:latest"}`. Equal images give equal strings. `agentdeploy.ImageTag` writes it and `agentdeploy.ParseImageTag` reads it back, rejecting anything else, such as an unknown field. |
+
+Instances are named `<app.name>-<instance.name>-g0`, e.g. `agent-node1-g0`.
+
 ## Deployment topology
 
 One agent instance runs per node — but this is **not** operator-declared placement. The agent is an ordinary `kind: App` declaring `replicas: per-node` (see schema below): the leader synthesizes one App-shaped value per known `kind: Instance` from it, directly from the fleet's node list. Adding a node to the fleet is enough to get an agent on it; nothing node-specific needs to be authored for the agent. This is cardinality, not placement — the operator says *how many* ("one per node"), never *where* (see `docs/AppClasses.md` § Placement is a third axis).
@@ -76,6 +98,8 @@ params: {}
 ```
 
 The leader synthesizes one `config.App`-shaped value per known `Instance` — `Name: "<app.name>-" + instance.Name`, `Type`/`Image` from the declaration — and feeds those through the exact same `Renderer`/reconcile machinery as any fixed-count App. Those values are never parsed from git as literal documents; they're rebuilt fresh each tick from the fleet's node list, which is what makes self-expansion fall out for free (below).
+
+The synthesized `Name` (`agent-node0`) is only the stem of that node's instance names (`agent-node0-g0`, `agent-node0-g1`). It is **not** the `user.homelab-ops.app` value: every agent is tagged with the declared App's name (`agent`), as § What 0.x builds says, because §25's peer list is scoped by that tag.
 
 **Per-node synthesis injects per-instance identity.** The synthesized values are otherwise identical, so a renderer that needs to know which node it's on has no other source: the `agent` renderer depends on this via `AGENT_NODE_NAME`/`AGENT_INSTANCE_NAME`. This is general, not an agent quirk — #79's per-instance metrics cert needs the same hook, and a fleet-wide `params` map can't carry a per-node value.
 

@@ -1,7 +1,9 @@
 // Package agent is the app-manager agent's tick loop (docs/AppManager.md):
 // sync the config repo, publish, decide who leads, and keep this instance's
-// acting and draining flags honest. cmd/agent wires it to the environment, a
-// real configsync.Clone and a real incusregistry.Registry.
+// acting and draining flags honest. The leader also creates the agent on
+// every declared cluster member that has none (#203, ensure_agents.go).
+// cmd/agent wires it to the environment, a real configsync.Clone, a real
+// incusregistry.Registry and a real incuslocal.Client.
 //
 // It lives here rather than in cmd/agent so the drain state machine (#187)
 // and the acting handoff (#212) can be reused by the self-upgrade handoff
@@ -14,6 +16,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/incuslocal"
 	"github.com/ehharvey/homelab-ops/internal/incusregistry"
@@ -40,9 +43,9 @@ type Registry interface {
 
 var _ Registry = (*incusregistry.Registry)(nil)
 
-// Agent is one app-manager agent's tick loop: sync, publish, decide, and —
-// when it leads — nothing yet beyond saying so (#101 is deliberately minimal;
-// App reconciliation is #98, paused under docs/Decisions.md §27).
+// Agent is one app-manager agent's tick loop: sync, publish, decide, and,
+// when it leads, create the missing member agents (#203). Generic App
+// reconciliation (#98) is deferred to Phase 8 (docs/Decisions.md §30).
 //
 // Not safe for concurrent use: one goroutine calls Tick, then Shutdown.
 type Agent struct {
@@ -51,6 +54,8 @@ type Agent struct {
 
 	sync    Syncer
 	reg     Registry
+	incus   Incus
+	repo    agentdeploy.Repo // what the agents this one creates sync from
 	elector *leaderelection.Designated
 	now     func() time.Time
 	log     *log.Logger
@@ -59,14 +64,20 @@ type Agent struct {
 	draining    bool   // as published on our own instance
 	drainReason string // as published
 	leading     bool   // as last logged, for transition logs only
+
+	notes       map[string]string // leader-work skips as last logged; see note
+	creating    map[string]string // member -> ID of a create still running when its wait ended
+	passTimeout time.Duration     // bounds one ensureAgents pass; see defaultPassTimeout
 }
 
 // New returns the loop for agent instance self, generation generation, on
-// node node.
-func New(self, node string, generation int64, s Syncer, r Registry, logger *log.Logger) *Agent {
+// node node. incus is this agent's own member's Incus, and repo the config
+// repo it follows, which the agents it creates on other members follow too.
+func New(self, node string, generation int64, s Syncer, r Registry, incus Incus, repo agentdeploy.Repo, logger *log.Logger) *Agent {
 	return &Agent{
 		self: self, node: node, generation: generation,
-		sync: s, reg: r, now: time.Now, log: logger,
+		sync: s, reg: r, incus: incus, repo: repo, now: time.Now, log: logger,
+		notes: map[string]string{}, creating: map[string]string{}, passTimeout: defaultPassTimeout,
 		elector: &leaderelection.Designated{
 			Self: self, Node: node, Generation: generation,
 			Source: func() (leaderelection.Designation, error) {
@@ -132,6 +143,7 @@ func (a *Agent) Tick(ctx context.Context) {
 		// this agent's own member: Incus quorum, not MayAct, is what stops a
 		// partitioned agent from completing them. Work outside Incus needs a
 		// fence of its own first (docs/Decisions.md §25).
+		a.ensureAgents(ctx, dec.Commit)
 		status = "leader: " + dec.Reason
 	}
 	if err := a.reg.Heartbeat(ctx, a.now(), status); err != nil && ctx.Err() == nil {
@@ -149,8 +161,8 @@ func (a *Agent) syncOnce(ctx context.Context) bool {
 }
 
 // decide asks the elector, and keeps the acting flag honest: after a
-// non-leader answer it stops (there's no leader work in flight yet to wait
-// for) and only then clears the flag.
+// non-leader answer it stops and only then clears the flag. Leader work runs
+// inside Tick, after decide, so none is ever in flight here to wait for.
 func (a *Agent) decide(ctx context.Context) leaderelection.Decision {
 	dec, err := a.elector.MayAct(ctx)
 	if err != nil {
@@ -161,6 +173,7 @@ func (a *Agent) decide(ctx context.Context) leaderelection.Decision {
 		if !a.leading {
 			a.log.Printf("ACTING begin commit=%s: %s", dec.Commit, dec.Reason)
 			a.leading = true
+			clear(a.notes) // a new term states its skips afresh
 		}
 		return dec
 	}
@@ -169,8 +182,9 @@ func (a *Agent) decide(ctx context.Context) leaderelection.Decision {
 		a.leading = false
 	}
 	if a.elector.Acting() {
-		// Leader-only work would be stopped or abandoned here. There is none
-		// yet, so the flag can be cleared at once.
+		// Leader-only work would be stopped or abandoned here. It all runs
+		// synchronously within a tick, so none is in flight and the flag
+		// can be cleared at once.
 		if err := a.elector.Stop(ctx); err != nil {
 			a.log.Printf("clear acting flag: %v (retrying next tick)", err)
 		}

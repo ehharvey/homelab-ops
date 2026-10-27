@@ -36,11 +36,12 @@ func main() {
 }
 
 func run() error {
-	mode := flag.String("mode", "", "list | create | set-user-keys | read-file | delete")
+	mode := flag.String("mode", "", "list | members | create | set-user-keys | read-file | delete")
 	socket := flag.String("socket", "/var/lib/incus/unix.socket", "path to the Incus unix socket")
 	instanceName := flag.String("instance-name", "", "instance to act on")
 	appTag := flag.String("app-tag", "", "value for "+incuslocal.AppTagKey+" on a created instance; empty leaves the instance untagged, which is how the script proves ListInstances excludes unmanaged workloads")
 	storagePool := flag.String("storage-pool", "", "attach a root disk on this pool when creating; the script passes a name that does not exist to prove a create Incus accepts and then fails is reported as an error (#161)")
+	target := flag.String("target", "", "cluster member to place a created instance on; empty leaves placement to Incus")
 	keys := flag.String("keys", "", "comma-separated k=v pairs for set-user-keys")
 	path := flag.String("path", "", "file path inside the instance, for read-file")
 	timeout := flag.Duration("timeout", 30*time.Second, "bound on the whole operation")
@@ -57,8 +58,10 @@ func run() error {
 	switch *mode {
 	case "list":
 		return runList(ctx, client)
+	case "members":
+		return runMembers(ctx, client)
 	case "create":
-		return runCreate(ctx, client, *instanceName, *appTag, *storagePool)
+		return runCreate(ctx, client, *instanceName, *appTag, *storagePool, *target)
 	case "set-user-keys":
 		return runSetUserKeys(ctx, client, *instanceName, *keys)
 	case "read-file":
@@ -66,7 +69,7 @@ func run() error {
 	case "delete":
 		return client.DeleteInstance(ctx, *instanceName)
 	default:
-		return fmt.Errorf("unknown -mode %q (want list, create, set-user-keys, read-file, or delete)", *mode)
+		return fmt.Errorf("unknown -mode %q (want list, members, create, set-user-keys, read-file, or delete)", *mode)
 	}
 }
 
@@ -80,15 +83,30 @@ func runList(ctx context.Context, client *incuslocal.Client) error {
 	if err != nil {
 		return err
 	}
-	out, err := json.Marshal(instances)
+	return printJSON(instances)
+}
+
+// runMembers prints ListMembers as JSON, keyed by the Go field names (Name,
+// Status) for the same reason as runList.
+func runMembers(ctx context.Context, client *incuslocal.Client) error {
+	members, err := client.ListMembers(ctx)
 	if err != nil {
-		return fmt.Errorf("marshal listing: %w", err)
+		return err
+	}
+	return printJSON(members)
+}
+
+// printJSON prints v as one line of JSON, the shape the script's jq reads.
+func printJSON(v any) error {
+	out, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal output: %w", err)
 	}
 	fmt.Println(string(out))
 	return nil
 }
 
-func runCreate(ctx context.Context, client *incuslocal.Client, name, appTag, storagePool string) error {
+func runCreate(ctx context.Context, client *incuslocal.Client, name, appTag, storagePool, target string) error {
 	req := lxcapi.InstancesPost{
 		Name: name,
 		Type: lxcapi.InstanceTypeContainer,
@@ -105,7 +123,7 @@ func runCreate(ctx context.Context, client *incuslocal.Client, name, appTag, sto
 			"root": {"type": "disk", "pool": storagePool, "path": "/"},
 		}
 	}
-	if err := client.CreateInstance(ctx, req); err != nil {
+	if err := client.CreateInstance(ctx, req, target); err != nil {
 		return err
 	}
 	fmt.Printf("created %s\n", name)
