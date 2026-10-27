@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -430,6 +431,18 @@ func TestRenderWithWireGuard(t *testing.T) {
 		t.Errorf("Peers[0].PersistentKeepalive = %d, want %d", peer.PersistentKeepalive, wireGuardPersistentKeepaliveSeconds)
 	}
 
+	// eth0 must be the only "management" interface in the rendered
+	// network.yaml: IncusOS's GetInterfaceAddressByRole returns the first
+	// match from a map, so a second holder makes its answer arbitrary
+	// (#342). Read back from the marshalled YAML, as Write emits it.
+	networkYAML, err := yaml.Marshal(b.Network)
+	if err != nil {
+		t.Fatalf("marshal network: %v", err)
+	}
+	if got, want := roleHolders(t, networkYAML, "management"), []string{"eth0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("network.yaml interfaces with role management = %v, want %v, got:\n%s", got, want, networkYAML)
+	}
+
 	certs := b.Incus.Preseed.Certificates
 	if len(certs) != 2 {
 		t.Fatalf("len(Preseed.Certificates) = %d, want 2 (break-glass + bootstrap)", len(certs))
@@ -566,4 +579,36 @@ func TestWriteOverwritesWithForce(t *testing.T) {
 	if err := Write(dir, b, true); err != nil {
 		t.Fatalf("forced Write: %v", err)
 	}
+}
+
+// roleHolders returns, in document order, the names of every interface,
+// bond, VLAN and WireGuard tunnel in a rendered network.yaml that carries
+// role.
+func roleHolders(t *testing.T, networkYAML []byte, role string) []string {
+	t.Helper()
+
+	type entry struct {
+		Name  string   `yaml:"name"`
+		Roles []string `yaml:"roles"`
+	}
+	var doc struct {
+		Interfaces []entry `yaml:"interfaces"`
+		Bonds      []entry `yaml:"bonds"`
+		VLANs      []entry `yaml:"vlans"`
+		Wireguard  []entry `yaml:"wireguard"`
+	}
+	if err := yaml.Unmarshal(networkYAML, &doc); err != nil {
+		t.Fatalf("unmarshal network.yaml: %v", err)
+	}
+
+	var names []string
+	for _, section := range [][]entry{doc.Interfaces, doc.Bonds, doc.VLANs, doc.Wireguard} {
+		for _, e := range section {
+			if slices.Contains(e.Roles, role) {
+				names = append(names, e.Name)
+			}
+		}
+	}
+
+	return names
 }

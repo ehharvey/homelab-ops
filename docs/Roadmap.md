@@ -153,7 +153,8 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     designation gate (a stale-checkout primary stands down; one acting
     instance per cluster through a self-upgrade) end-to-end, against this
     phase's done-when — see #103
-- [ ] Decide whether `wg0` keeps the IncusOS management role — see #342
+- [x] Decide whether `wg0` keeps the IncusOS management role: DONE (dropped;
+  eth0 is the only `management` interface); see #342
 
 **Done when** (revised 2026-10-26, `docs/Decisions.md` §30): each managed
 host has a persistent WireGuard tunnel to the web app and runs one agent,
