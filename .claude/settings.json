@@ -2,6 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(scripts/finding.sh *)"
+    ],
+    "ask": [
+      "Bash(gh issue close *)",
+      "Bash(gh pr edit *)"
     ]
   },
   "hooks": {
