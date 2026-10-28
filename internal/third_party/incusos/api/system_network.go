@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ b68d60fa52cf683c085f5954dc22c1b1deb32e23
+// Vendored from github.com/lxc/incus-os @ cb1d7cc148918e4f30392d64875a2996b9298e13
 // (incus-osd/api/system_network.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Unmodified.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
@@ -44,6 +44,11 @@ type SystemNetworkConfig struct {
 	// back the new network changes after the specified timeout has elapsed unless those
 	// changes are confirmed before then.
 	DefaultConfirmationTimeout string `json:"default_confirmation_timeout,omitempty" yaml:"default_confirmation_timeout,omitempty"`
+
+	// If true, when bringing up the network don't wait for DNS and NTP to be configured and
+	// available before continuing. Most systems shouldn't need to set this, and when enabled
+	// initial update checks may fail due to being unable to resolve hostnames.
+	IgnoreServiceChecks bool `json:"ignore_service_checks" yaml:"ignore_service_checks"`
 
 	DNS   *SystemNetworkDNS   `json:"dns,omitempty"   yaml:"dns,omitempty"`
 	Time  *SystemNetworkTime  `json:"time,omitempty"  yaml:"time,omitempty"`
