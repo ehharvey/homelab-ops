@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
+.PHONY: build test lint lint-sh lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -45,7 +45,7 @@ LINT_LOCKED_CMD := sh -c 'docker ps -q --filter "label=$(LINT_LABEL)=$$1" | whil
 	exec docker run --rm --label "$(LINT_LABEL)=$$1" -v "$$2":/app -w /app $(LINT_IMAGE) golangci-lint run ./...' \
 	make-lint "$(LINT_LOCK)" "$(CURDIR)"
 
-lint:
+lint: lint-sh
 ifeq ($(LINT_LOCKED),)
 	$(LINT_CMD)
 else
@@ -141,3 +141,5 @@ docker-build:
 dev:
 	docker compose up --build
 
+lint-sh:
+	./scripts/lint-sh.sh
