@@ -288,17 +288,42 @@ func (d *Designated) evaluate(des Designation, peers map[string]Peer) (Decision,
 	return Decision{Leader: true, Commit: des.Commit, Reason: fmt.Sprintf("designated primary at commit %s", short(des.Commit))}, nil
 }
 
-// MayUndrain reports whether an instance that drained itself for a
-// recoverable reason — its git sync failing persistently (#187) — may clear
-// its Draining flag now that sync has recovered.
+// The reasons an agent drains for. Peer.Draining is one bool behind both;
+// the agent loop tracks which applies (docs/Decisions.md §25), and MayUndrain
+// is where the difference is enforced.
+const (
+	// DrainSyncFailure is the drain of an agent whose git sync failed
+	// FailureThreshold times in a row (#187). It is recoverable, subject to
+	// MayUndrain.
+	DrainSyncFailure = "sync-failure"
+	// DrainSuperseded is the drain of an instance a newer generation on its
+	// node replaces: an old primary whose self-upgrade candidate is
+	// sustained-healthy (#109), or a sync-failure drain that, on recovering,
+	// found a newer generation had taken over. It holds while that newer
+	// generation runs undrained, until the leader retires this instance; if
+	// the newer one stops, is deleted or drains first, it clears (MayUndrain),
+	// so a handover to a candidate that never leads doesn't leave the
+	// cluster leaderless.
+	DrainSuperseded = "superseded"
+)
+
+// MayUndrain reports whether an instance that drained itself for reason may
+// clear its Draining flag, sync having succeeded.
 //
-// It may not if a higher-generation instance on its node is non-draining:
-// that one took over while this one was drained (rule 4 let it), so this one
-// has been superseded and must stay drained until the leader retires it. The
-// check lives here, on the write side, rather than in MayAct, because MayAct's
-// same-node rule is deliberately one-sided: an old instance keeps acting
-// through a self-upgrade while its brand-new, non-draining candidate waits.
-func MayUndrain(self, node string, generation int64, peers map[string]Peer) (bool, string) {
+// Only this package's reasons are recoverable, DrainSyncFailure and
+// DrainSuperseded alike: a drain for any other reason was set by something
+// else, and MayUndrain says no whatever the peers show. Nor may it while a
+// higher-generation instance on its node is non-draining: that one took
+// over (rule 4 let it), or is the candidate this one handed over to, so this
+// one stays drained until the leader retires it. Once none is, nothing on
+// this node would lead but this one. The check lives here, on the write
+// side, rather than in MayAct, because MayAct's same-node rule is
+// deliberately one-sided: an old instance keeps acting through a
+// self-upgrade while its brand-new, non-draining candidate waits.
+func MayUndrain(self, node string, generation int64, reason string, peers map[string]Peer) (bool, string) {
+	if reason != DrainSyncFailure && reason != DrainSuperseded {
+		return false, fmt.Sprintf("a %q drain is not this agent's to clear; only %q and %q drains are", reason, DrainSyncFailure, DrainSuperseded)
+	}
 	for _, name := range slices.Sorted(maps.Keys(peers)) {
 		p := peers[name]
 		if name != self && p.Node == node && !p.Draining && p.Generation > generation {

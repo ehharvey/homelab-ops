@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -47,6 +48,98 @@ type fakeIncus struct {
 	stallCreate bool
 	ops         map[string]*lxcapi.Operation // what Operation serves; absent is ErrOperationGone
 	onCreate    func()                       // run at the start of each create, when set
+
+	// location is where a create with no target lands: "none" on an
+	// unclustered daemon, the only member on a one-member cluster.
+	location string
+	clock    func() time.Time // a create's CreatedAt, when set
+	// changes logs every stop, delete and key write, in order, e.g.
+	// "stop agent-node0-g0", "delete agent-node0-g0", "set agent-node0-g1".
+	changes []string
+	// by is changes made through an agent's own client (as()), each as
+	// "<agent>: <change>", so a test can tell which agent retired which
+	// instance.
+	by []string
+}
+
+// asClient is a fakeIncus as one agent sees it: the same instances, with
+// every change recorded as that agent's.
+type asClient struct {
+	*fakeIncus
+	who string
+}
+
+func (f *fakeIncus) as(who string) *asClient { return &asClient{f, who} }
+
+func (c *asClient) StopInstance(ctx context.Context, name string) error {
+	return c.record(c.fakeIncus.StopInstance(ctx, name))
+}
+
+func (c *asClient) DeleteInstance(ctx context.Context, name string) error {
+	return c.record(c.fakeIncus.DeleteInstance(ctx, name))
+}
+
+func (c *asClient) SetUserKeys(ctx context.Context, name string, keys map[string]string) error {
+	return c.record(c.fakeIncus.SetUserKeys(ctx, name, keys))
+}
+
+func (c *asClient) record(err error) error {
+	if err == nil {
+		c.by = append(c.by, c.who+": "+c.changes[len(c.changes)-1])
+	}
+	return err
+}
+
+func (f *fakeIncus) find(name string) int {
+	return slices.IndexFunc(f.instances, func(inst incuslocal.Instance) bool { return inst.Name == name })
+}
+
+// SetUserKeys merges keys into the instance's config, as Incus's PATCH does.
+func (f *fakeIncus) SetUserKeys(_ context.Context, name string, keys map[string]string) error {
+	i := f.find(name)
+	if i < 0 {
+		return fmt.Errorf("set user keys on %q: Instance not found", name)
+	}
+	f.instances[i].Config = maps.Clone(f.instances[i].Config)
+	maps.Copy(f.instances[i].Config, keys)
+	f.changes = append(f.changes, "set "+name)
+	return nil
+}
+
+// StopInstance refuses an instance that isn't running, as Incus does.
+func (f *fakeIncus) StopInstance(_ context.Context, name string) error {
+	i := f.find(name)
+	if i < 0 || f.instances[i].Status != incuslocal.StatusRunning {
+		return fmt.Errorf("stop instance %q: The instance is already stopped", name)
+	}
+	f.instances[i].Status = "Stopped"
+	f.changes = append(f.changes, "stop "+name)
+	return nil
+}
+
+// DeleteInstance refuses a running instance, as Incus does.
+func (f *fakeIncus) DeleteInstance(_ context.Context, name string) error {
+	i := f.find(name)
+	switch {
+	case i < 0:
+		return fmt.Errorf("delete instance %q: Instance not found", name)
+	case f.instances[i].Status == incuslocal.StatusRunning:
+		return fmt.Errorf("delete instance %q: Instance is running", name)
+	}
+	f.instances = slices.Delete(f.instances, i, i+1)
+	f.changes = append(f.changes, "delete "+name)
+	return nil
+}
+
+// deleted lists the instances deleted, in order.
+func (f *fakeIncus) deleted() []string {
+	var out []string
+	for _, c := range f.changes {
+		if name, ok := strings.CutPrefix(c, "delete "); ok {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (f *fakeIncus) Operation(_ context.Context, id string) (*lxcapi.Operation, error) {
@@ -62,8 +155,13 @@ func (f *fakeIncus) ListMembers(context.Context) ([]incuslocal.Member, error) {
 	return slices.Clone(f.members), nil
 }
 
+// ListInstances returns a snapshot: later writes don't show through it.
 func (f *fakeIncus) ListInstances(context.Context) ([]incuslocal.Instance, error) {
-	return slices.Clone(f.instances), nil
+	out := slices.Clone(f.instances)
+	for i := range out {
+		out[i].Config = maps.Clone(out[i].Config)
+	}
+	return out, nil
 }
 
 func (f *fakeIncus) CreateInstance(ctx context.Context, req lxcapi.InstancesPost, target string) error {
@@ -94,7 +192,14 @@ func (f *fakeIncus) CreateInstance(ctx context.Context, req lxcapi.InstancesPost
 			return fmt.Errorf("create instance %q: Instance %q already exists", req.Name, req.Name)
 		}
 	}
-	f.instances = append(f.instances, incuslocal.Instance{Name: req.Name, Status: "Running", Location: target, Config: req.Config})
+	inst := incuslocal.Instance{Name: req.Name, Status: "Running", Location: target, Config: maps.Clone(req.Config)}
+	if target == "" {
+		inst.Location = f.location
+	}
+	if f.clock != nil {
+		inst.CreatedAt = f.clock()
+	}
+	f.instances = append(f.instances, inst)
 	return nil
 }
 
@@ -168,7 +273,7 @@ func TestLeaderCreatesOneAgentOnEachDeclaredOnlineMemberWithout(t *testing.T) {
 	}
 	for _, c := range inc.creates {
 		inst := config.Instance{Name: c.target}
-		want := agentdeploy.Desired(agentApp, inst, testRepo)
+		want := agentdeploy.Desired(agentApp, inst, testRepo, agentdeploy.FirstGeneration)
 		if c.req.Name != want.Name || c.req.Name != "agent-"+c.target+"-g0" {
 			t.Errorf("create on %s named %q, want %q", c.target, c.req.Name, want.Name)
 		}
@@ -196,17 +301,20 @@ func TestLeaderCreatesOneAgentOnEachDeclaredOnlineMemberWithout(t *testing.T) {
 	}
 }
 
-// No image-change handling: an agent on its member is left alone, whatever
-// image it runs and whatever generation it is (upgrades are #109's).
-func TestMemberWithAnAgentIsUntouchedWhateverItsImage(t *testing.T) {
+// ensureAgents leaves a member with an agent alone, whatever image it runs and
+// whatever generation it is: it never makes a second generation 0. Replacing
+// one on a stale image is the upgrade pass's (upgrade_test.go).
+func TestMemberWithAnAgentGetsNoSecondFirstGeneration(t *testing.T) {
 	old := config.ImageRef{Server: "https://ghcr.io", Protocol: "oci", Alias: "ehharvey/homelab-ops/agent:v0.1"}
 	inc := &fakeIncus{
 		members:   online("node0", "node1"),
 		instances: []incuslocal.Instance{self(), agentOn("agent-node1-g3", "node1", old)},
 	}
 	leaderTick(t, fleetSnapshot("node0", "node1"), inc)
-	if len(inc.creates) != 0 {
-		t.Errorf("creates = %+v, want none", inc.creates)
+	for _, c := range inc.creates {
+		if c.req.Config[incuslocal.GenerationTagKey] == "0" {
+			t.Errorf("created %s, a first generation, on a member that has an agent", c.req.Name)
+		}
 	}
 }
 
@@ -484,7 +592,7 @@ func TestShutdownStopsTheMemberLoop(t *testing.T) {
 	snap := fleetSnapshot("node0", "node1", "node2", "node3")
 	a, _ := testAgentWith(map[string]leaderelection.Peer{}, &fakeSync{snap: snap, have: map[string]bool{snap.Commit: true}}, inc)
 	buf := logTo(a)
-	a.ensureAgents(ctx, snap.Commit)
+	a.leaderWork(ctx, snap.Commit)
 	if got := inc.targets(); !slices.Equal(got, []string{"node1"}) {
 		t.Errorf("create targets = %q, want only node1, interrupted by the shutdown", got)
 	}

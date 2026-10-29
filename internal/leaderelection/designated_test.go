@@ -737,13 +737,29 @@ func TestMayUndrain(t *testing.T) {
 		{"an older non-draining generation", map[string]Peer{"g0": {Node: "node0", Generation: 0}}, true},
 		{"a newer generation on another node", map[string]Peer{"x": {Node: "node1", Generation: 5}}, true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, reason := MayUndrain("self", "node0", 1, tt.peers)
-			if got != tt.want {
-				t.Errorf("MayUndrain = %v (%s), want %v", got, reason, tt.want)
-			}
-		})
+	// A superseded drain clears on the same terms as a sync-failure one: once
+	// no newer generation on the node is there to lead, as when the
+	// candidate an old primary handed over to stopped before taking over.
+	for _, reason := range []string{DrainSyncFailure, DrainSuperseded} {
+		for _, tt := range tests {
+			t.Run(reason+"/"+tt.name, func(t *testing.T) {
+				got, why := MayUndrain("self", "node0", 1, reason, tt.peers)
+				if got != tt.want {
+					t.Errorf("MayUndrain = %v (%s), want %v", got, why, tt.want)
+				}
+			})
+		}
+	}
+}
+
+// A drain for a reason this package doesn't define wasn't set by the agent
+// loop, so nothing on the node, not even being alone there, lets it clear.
+func TestMayUndrainNeverClearsAnotherReasonsDrain(t *testing.T) {
+	for _, reason := range []string{"", "something-else"} {
+		alone := map[string]Peer{"self": {Node: "node0", Generation: 1, Draining: true}}
+		if ok, why := MayUndrain("self", "node0", 1, reason, alone); ok {
+			t.Errorf("MayUndrain with reason %q = true (%s), want false", reason, why)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/agent"
 	"github.com/ehharvey/homelab-ops/internal/seed"
 )
 
@@ -34,22 +36,26 @@ func TestLoadSettingsDefaults(t *testing.T) {
 		t.Errorf("instance/generation = %q/%d, want the hostname and its -g7 suffix", s.instance, s.generation)
 	}
 	if s.socket != seed.IncusSocketPath || s.repoDir != defaultRepoDir || s.tick != defaultTickInterval ||
-		s.failureThreshold != defaultFailureThreshold || s.repoRef != "" {
+		s.failureThreshold != defaultFailureThreshold || s.repoRef != "" || s.upgrade != agent.DefaultUpgrade() {
 		t.Errorf("defaults = %+v", s)
 	}
 }
 
 func TestLoadSettingsOverrides(t *testing.T) {
 	s, err := loadSettings(env(map[string]string{
-		"AGENT_NODE_NAME":              "node1",
-		"AGENT_INSTANCE_NAME":          "custom",
-		"AGENT_GENERATION":             "2",
-		"CONFIG_REPO_URL":              "/srv/fleet.git",
-		"CONFIG_REPO_REF":              "prod",
-		"AGENT_REPO_DIR":               "/tmp/x",
-		"AGENT_INCUS_SOCKET":           "/tmp/incus.sock",
-		"AGENT_TICK_INTERVAL":          "2s",
-		"AGENT_SYNC_FAILURE_THRESHOLD": "4",
+		"AGENT_NODE_NAME":               "node1",
+		"AGENT_INSTANCE_NAME":           "custom",
+		"AGENT_GENERATION":              "2",
+		"CONFIG_REPO_URL":               "/srv/fleet.git",
+		"CONFIG_REPO_REF":               "prod",
+		"AGENT_REPO_DIR":                "/tmp/x",
+		"AGENT_INCUS_SOCKET":            "/tmp/incus.sock",
+		"AGENT_TICK_INTERVAL":           "2s",
+		"AGENT_SYNC_FAILURE_THRESHOLD":  "4",
+		"AGENT_HEARTBEAT_STALE_AFTER":   "6s",
+		"AGENT_MIN_HEALTHY_DURATION":    "10s",
+		"AGENT_UPGRADE_HEALTH_DEADLINE": "3m",
+		"AGENT_UPGRADE_MAX_ATTEMPTS":    "5",
 	}), host("ignored-g9"))
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +64,29 @@ func TestLoadSettingsOverrides(t *testing.T) {
 		node: "node1", instance: "custom", generation: 2,
 		repoURL: "/srv/fleet.git", repoRef: "prod", repoDir: "/tmp/x",
 		socket: "/tmp/incus.sock", tick: 2 * time.Second, failureThreshold: 4,
+		upgrade: agent.Upgrade{HeartbeatStaleAfter: 6 * time.Second, MinHealthy: 10 * time.Second, HealthDeadline: 3 * time.Minute, MaxAttempts: 5},
 	}
 	if s != want {
 		t.Errorf("settings = %+v, want %+v", s, want)
+	}
+}
+
+// The tuning knobs reach the agents this one creates; its identity, clone
+// and socket don't, since those are each instance's own.
+func TestInheritedEnvIsTheTuningKnobsOnly(t *testing.T) {
+	got := inheritedEnv(env(map[string]string{
+		"AGENT_NODE_NAME":            "node0",
+		"AGENT_INSTANCE_NAME":        "agent-node0-g0",
+		"AGENT_GENERATION":           "0",
+		"AGENT_REPO_DIR":             "/tmp/x",
+		"AGENT_INCUS_SOCKET":         "/tmp/s",
+		"CONFIG_REPO_URL":            "/r",
+		"AGENT_TICK_INTERVAL":        "2s",
+		"AGENT_MIN_HEALTHY_DURATION": "10s",
+	}))
+	want := map[string]string{"AGENT_TICK_INTERVAL": "2s", "AGENT_MIN_HEALTHY_DURATION": "10s"}
+	if !maps.Equal(got, want) {
+		t.Errorf("inheritedEnv = %v, want %v", got, want)
 	}
 }
 
@@ -77,6 +103,14 @@ func TestLoadSettingsRejects(t *testing.T) {
 		{"bad generation", "AGENT_GENERATION", "-1", "AGENT_GENERATION"},
 		{"bad tick", "AGENT_TICK_INTERVAL", "0s", "AGENT_TICK_INTERVAL"},
 		{"bad threshold", "AGENT_SYNC_FAILURE_THRESHOLD", "0", "AGENT_SYNC_FAILURE_THRESHOLD"},
+		{"bad stale-after", "AGENT_HEARTBEAT_STALE_AFTER", "soon", "AGENT_HEARTBEAT_STALE_AFTER"},
+		{"bad min healthy", "AGENT_MIN_HEALTHY_DURATION", "-1m", "AGENT_MIN_HEALTHY_DURATION"},
+		{"bad deadline", "AGENT_UPGRADE_HEALTH_DEADLINE", "0s", "AGENT_UPGRADE_HEALTH_DEADLINE"},
+		{"bad max attempts", "AGENT_UPGRADE_MAX_ATTEMPTS", "0", "AGENT_UPGRADE_MAX_ATTEMPTS"},
+		// Each valid alone, but every upgrade would fail with the defaults.
+		{"min healthy as long as the deadline", "AGENT_MIN_HEALTHY_DURATION", "10m", "AGENT_UPGRADE_HEALTH_DEADLINE"},
+		{"deadline within min healthy plus two ticks", "AGENT_UPGRADE_HEALTH_DEADLINE", "2m59s", "two AGENT_TICK_INTERVALs"},
+		{"tick as long as stale-after", "AGENT_TICK_INTERVAL", "90s", "AGENT_HEARTBEAT_STALE_AFTER"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

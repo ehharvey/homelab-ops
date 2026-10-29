@@ -100,7 +100,7 @@ func handleInstanceDeployAgent(store Store, tunnels TunnelSource, creds nodeprov
 			}
 		}
 
-		req := agentdeploy.Desired(app, inst, *repo)
+		req := agentdeploy.Desired(app, inst, *repo, agentdeploy.FirstGeneration)
 		if err := nodeprovision.CreateInstance(ctx, tunnels.DialContext, addr, cred.BootstrapCertPEM, cred.BootstrapKeyPEM, req); err != nil {
 			writeDeployAgentError(w, r, name, fmt.Errorf("%w: %w", errNodeIncus, err))
 			return

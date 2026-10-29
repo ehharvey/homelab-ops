@@ -21,17 +21,22 @@ type Incus interface {
 	ListInstances(ctx context.Context) ([]incuslocal.Instance, error)
 	CreateInstance(ctx context.Context, req lxcapi.InstancesPost, target string) error
 	Operation(ctx context.Context, id string) (*lxcapi.Operation, error)
+	// The self-upgrade's (#109, upgrade.go): its bookkeeping keys on other
+	// agents' instances, and retiring a generation.
+	SetUserKeys(ctx context.Context, name string, keys map[string]string) error
+	StopInstance(ctx context.Context, name string) error
+	DeleteInstance(ctx context.Context, name string) error
 }
 
 var _ Incus = (*incuslocal.Client)(nil)
 
-// defaultPassTimeout is Agent.passTimeout: it bounds one pass, every
-// member's create and image pull included. Tick runs on the process's
-// lifetime ctx, and creates run one after another, so stalled pulls would
-// otherwise hold the tick, and the acting flag a #212 handoff waits on, for
-// as long as they stall. A create still running when its wait ends isn't
-// cancelled in Incus: it is remembered by operation ID and looked up, not
-// sent again (Agent.creating).
+// defaultPassTimeout is Agent.passTimeout: it bounds one tick's leader work
+// (leaderWork), every member's create and image pull included. Tick runs on
+// the process's lifetime ctx, and creates run one after another, so stalled
+// pulls would otherwise hold the tick, and the acting flag a #212 handoff
+// waits on, for as long as they stall. A create still running when its wait
+// ends isn't cancelled in Incus: it is remembered by operation ID and looked
+// up, not sent again (Agent.creating).
 const defaultPassTimeout = 5 * time.Minute
 
 // ensureAgents is #98's zero-match branch carved out for the agent App alone
@@ -41,75 +46,26 @@ const defaultPassTimeout = 5 * time.Minute
 // through this agent's own member, so Incus quorum fences it (§25).
 //
 // Nothing else of #98 comes with it: an existing agent is left alone whatever
-// its image or status (upgrades are #109's), and nothing is ever deleted, not
-// even an agent on the wrong member. Every skip and failed create is retried
+// its image or status (replacing one on a stale image is upgradeAgents',
+// #109), and nothing here is ever deleted, not even an agent on the wrong
+// member. Every skip and failed create is retried
 // next tick; a create still running in Incus is waited on, never re-sent; a
 // member whose agent exists but isn't Running is logged and left for the
 // operator, since a create can't fix it.
 //
-// commit is the commit MayAct decided on. The config read here must be that
-// same checkout, or the leader would act on config it hasn't been fenced on.
-func (a *Agent) ensureAgents(ctx context.Context, commit string) {
-	snap, err := a.sync.Current()
-	if err != nil {
-		a.log.Printf("member agents: read config: %v (retrying next tick)", err)
-		return
-	}
-	if snap.Commit != commit {
-		a.log.Printf("member agents: checkout is at %s, not the decided %s (retrying next tick)", snap.Commit, commit)
-		return
-	}
-	app, ok := agentdeploy.FindApp(snap.Config.Apps)
-	if !ok {
-		a.note("app", fmt.Sprintf("member agents: no agent App declared (kind: App, type: %s, replicas: per-node); creating none", agentdeploy.AppType))
-		a.pruneNotes(nil)
-		return
-	}
-
-	pctx, cancel := context.WithTimeout(ctx, a.passTimeout)
-	defer cancel()
-	// Before the listing, so a create that finished since the last tick is
-	// in it rather than sent again.
-	a.settleCreates(pctx)
-
-	instances, err := a.incus.ListInstances(pctx)
-	if err != nil {
-		a.log.Printf("member agents: %v (retrying next tick)", err)
-		return
-	}
-	i := slices.IndexFunc(instances, func(inst incuslocal.Instance) bool { return inst.Name == a.self })
-	if i < 0 {
-		a.note("app", fmt.Sprintf("member agents: own instance %s isn't listed (it needs the %s tag); creating none", a.self, incuslocal.AppTagKey))
-		a.pruneNotes(nil)
-		return
-	}
-	own := instances[i]
-	// The agents this one creates must be its peers: Peers groups agents by
-	// the tag on their own instance, so an agent tagged otherwise than
-	// app.Name (an App renamed in git, a throwaway agent) would create a
-	// second, separate set of agents, with a second leader among them.
-	if tag := own.Config[incuslocal.AppTagKey]; tag != app.Name {
-		a.note("app", fmt.Sprintf("member agents: own instance %s has %s=%q, but the declared agent App is %q; creating none (its agents would not be this agent's peers)",
-			a.self, incuslocal.AppTagKey, tag, app.Name))
-		a.pruneNotes(nil)
-		return
-	}
-	a.note("app", "")
-	// An unclustered daemon has no members to list (the call errors) and
-	// rejects any target. Its one host is a standalone host, whose agent is
-	// this one (§30), so there is nothing to create.
-	if own.Location == incuslocal.UnclusteredLocation {
+// ctx is the process's lifetime, pctx the tick's passTimeout under it.
+func (a *Agent) ensureAgents(ctx, pctx context.Context, v leaderView) {
+	// An unclustered daemon has no members to list and rejects any target.
+	// Its one host is a standalone host, whose agent is this one (§30), so
+	// there is nothing to create. (Its self-upgrade successor is
+	// upgradeAgents', which doesn't stop here.)
+	if !v.clustered() {
 		a.note("cluster", "member agents: Incus is not clustered; a standalone host's only agent is this one")
 		a.pruneNotes(nil)
 		return
 	}
 	a.note("cluster", "")
-
-	members, err := a.incus.ListMembers(pctx)
-	if err != nil {
-		a.log.Printf("member agents: %v (retrying next tick)", err)
-		return
-	}
+	app, instances, members, snap := v.app, v.instances, v.members, v.snap
 
 	// A member has an agent when an instance carries the agent App's tag
 	// and sits on that member. The name alone can't say: instance names are
@@ -171,7 +127,7 @@ func (a *Agent) ensureAgents(ctx context.Context, commit string) {
 			a.log.Printf("member agents: this pass's %v is spent; the remaining members wait for next tick", a.passTimeout)
 			return
 		}
-		req := agentdeploy.Desired(app, inst, a.repo)
+		req := a.desired(app, inst, agentdeploy.FirstGeneration)
 		// Logged every tick, not only on change: a create that keeps failing
 		// (an agent of this name on another member, an image this member
 		// can't pull) needs the operator.

@@ -73,7 +73,7 @@ func TestDesired(t *testing.T) {
 	app := sampleAgentApp()
 	inst := config.Instance{Name: "node0"}
 
-	got := Desired(app, inst, Repo{URL: "https://example.test/fleet.git", Ref: "prod"})
+	got := Desired(app, inst, Repo{URL: "https://example.test/fleet.git", Ref: "prod"}, FirstGeneration)
 
 	if got.Name != "agent-node0-g0" {
 		t.Errorf("Name = %q, want agent-node0-g0", got.Name)
@@ -106,18 +106,21 @@ func TestDesired(t *testing.T) {
 	}
 }
 
-// cmd/agent reads its generation from the name suffix, and #98/#109 key on
+// cmd/agent reads its generation from the name suffix, and #109 keys on
 // the tag: the two must name the same generation.
 func TestDesiredNameAndGenerationTagAgree(t *testing.T) {
 	app := config.App{Name: "agent"}
-	got := Desired(app, config.Instance{Name: "node0"}, Repo{})
+	got := Desired(app, config.Instance{Name: "node0"}, Repo{}, 7)
 	if want := "agent-node0-g" + got.Config[incuslocal.GenerationTagKey]; got.Name != want {
 		t.Errorf("name %q, but the generation tag says %q", got.Name, want)
+	}
+	if got.Name != "agent-node0-g7" || got.Config["environment.AGENT_INSTANCE_NAME"] != "agent-node0-g7" {
+		t.Errorf("generation 7: name %q, AGENT_INSTANCE_NAME %q; want agent-node0-g7 for both", got.Name, got.Config["environment.AGENT_INSTANCE_NAME"])
 	}
 }
 
 func TestDesiredOmitsEmptyRef(t *testing.T) {
-	got := Desired(sampleAgentApp(), config.Instance{Name: "node0"}, Repo{URL: "https://example.test/fleet.git"})
+	got := Desired(sampleAgentApp(), config.Instance{Name: "node0"}, Repo{URL: "https://example.test/fleet.git"}, FirstGeneration)
 	if _, ok := got.Config["environment.CONFIG_REPO_REF"]; ok {
 		t.Error("CONFIG_REPO_REF set for an empty Ref; the agent's own default (main) should apply")
 	}
@@ -127,8 +130,8 @@ func TestDesiredOmitsEmptyRef(t *testing.T) {
 // per-node value: §25 scopes peers by it (#203).
 func TestDesiredAppTagIsSharedAcrossMembers(t *testing.T) {
 	app := sampleAgentApp()
-	a := Desired(app, config.Instance{Name: "node0"}, Repo{})
-	b := Desired(app, config.Instance{Name: "node1"}, Repo{})
+	a := Desired(app, config.Instance{Name: "node0"}, Repo{}, FirstGeneration)
+	b := Desired(app, config.Instance{Name: "node1"}, Repo{}, FirstGeneration)
 	if a.Config[incuslocal.AppTagKey] != "agent" || b.Config[incuslocal.AppTagKey] != "agent" {
 		t.Fatalf("app tags = %q, %q; want the App name on both", a.Config[incuslocal.AppTagKey], b.Config[incuslocal.AppTagKey])
 	}

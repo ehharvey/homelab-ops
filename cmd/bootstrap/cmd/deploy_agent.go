@@ -110,7 +110,7 @@ func runDeployAgent(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	req := agentdeploy.Desired(app, inst, agentdeploy.Repo{URL: deployAgentRepoURL, Ref: deployAgentRepoRef})
+	req := agentdeploy.Desired(app, inst, agentdeploy.Repo{URL: deployAgentRepoURL, Ref: deployAgentRepoRef}, agentdeploy.FirstGeneration)
 	if err := nodeprovision.CreateInstanceNoRevoke(ctx, dial, deployAgentAddr, certPEM, keyPEM, req); err != nil {
 		return err
 	}

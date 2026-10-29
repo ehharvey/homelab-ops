@@ -91,15 +91,16 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   DHCP-only Instance skips clustering rather than erroring. Verified against
   a real booted node (`node-boots-and-trusts-bootstrap-cert.sh`); growing
   past one member is Phase 5: DONE; see #178, #315, `docs/Decisions.md` §26
-- [ ] Per-host app-manager agent with an operator-designated leader, managing
+- [x] Per-host app-manager agent with an operator-designated leader, managing
   only itself (`docs/Decisions.md` §30): one agent instance per managed host;
-  a single primary named in git (fenced by git commits and an acting handoff,
-  so a stale checkout stands down and a new primary waits for the old one,
+  a single primary per cluster, a standalone host's included, named in git
+  (fenced by git commits and an acting handoff, so a stale checkout stands
+  down and a new primary waits for the old one,
   `docs/Decisions.md` §25), proven by the agent's own blue-green self-upgrade.
   Reconciling other `kind: App` objects is Phase 8 (#92). Leader election is a
   pluggable interface, so the automated ranked-over-Incus election (specified
   in §25) can replace the designation later without touching the loop. Built
-  in dependency order:
+  in dependency order: DONE; see #109
   - [x] `kind: App` schema + store/configdiff plumbing — no runtime
     behaviour, pure parse/validate/store, prerequisite for every step
     below; `App` carries a cardinality field rather than a separate
@@ -141,28 +142,39 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
     agent App alone); a standalone host gets it from the web app's one-shot
     window or `bootstrap deploy-agent` (`docs/Decisions.md` §27, §30): DONE;
     see #203
-  - [ ] Agent self-upgrade: when the agent App's `image` in git changes, the
+  - [x] Agent self-upgrade: when the agent App's `image` in git changes, the
     primary's agent creates every host's successor, its own on its own host
     (#98's image-change handling, for the agent App alone). On the primary's
     host the old instance drains once its candidate is sustained-healthy, and
     the candidate takes over and retires it; the primary retires a follower's
-    old instance. The primary never moves, and a standalone host is its own
-    primary (`docs/Decisions.md` §25, §30) — see #109
+    old instance. The primary never moves, and a standalone host leads only
+    when a `kind: Designation` names it, like any one-member cluster
+    (`docs/Decisions.md` §25, §30): DONE; see #109
   - [x] Publish the agent image to GHCR; local registry for
     dev/validation: DONE; see #102
-  - [ ] `scripts/validate/` script proving the agent's self-upgrade + the
+  - [x] `scripts/validate/` script proving the agent's self-upgrade + the
     designation gate (a stale-checkout primary stands down; one acting
     instance per cluster through a self-upgrade) end-to-end, against this
-    phase's done-when — see #103
+    phase's done-when.
+    `agent-self-upgrades-blue-green-without-gap.sh` bumps the agent App's
+    image in git on a real standalone Incus host and shows the agent replaced
+    blue-green with no operator step: the candidate is marked healthy, the old
+    instance drains (`superseded`) only after the minimum healthy duration,
+    the candidate takes over and retires it, at most one instance acts at any
+    sample, and some agent's heartbeat stays fresh throughout. The
+    stale-checkout stand-down is `agents-act-one-at-a-time-through-failover.sh`'s
+    (#101, #212): DONE; see #103
 - [x] Decide whether `wg0` keeps the IncusOS management role: DONE (dropped;
   eth0 is the only `management` interface); see #342
 
 **Done when** (revised 2026-10-26, `docs/Decisions.md` §30): each managed
 host has a persistent WireGuard tunnel to the web app and runs one agent,
 deployed by the web app or `bootstrap deploy-agent`. Changing the agent image
-in git replaces every host's agent, each standalone host acting as its own
-primary and creating its successor on itself, with one acting instance per
-cluster throughout.
+in git replaces every host's agent, with one acting instance per cluster
+throughout. A standalone host is a one-member cluster: when a
+`kind: Designation` names it, its agent creates its successor on itself.
+(At most one Designation per repo, so one cluster or standalone host per repo
+upgrades unattended until #440.)
 
 The fleet-wide done-when (blue-green for every App, not only the agent) is
 #92's, and moved with it to Phase 8.
