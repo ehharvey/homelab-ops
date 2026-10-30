@@ -21,9 +21,10 @@
 #
 # Checks (a `FAIL` line each): the branch is eharvey/#<n>; the checkout is
 # clean; exactly one commit beyond the base; the message has `## Plan`,
-# `## Test plan` and `Closes #<n>`, plus, when #<n> is a /bundle parent, a
-# `Closes` line for each of its open sub-issues (Development Conventions
-# § Sizing and bundles); no bootstrap-output/ or *.img committed.
+# `## Test plan` and `Closes #<n>`, plus, when #<n> is a /bundle parent and
+# `make ship` has added its block, a `Closes` line for each of its open
+# sub-issues (Development Conventions § Sizing and bundles); no
+# bootstrap-output/ or *.img committed.
 # Then, for the calling skill to judge (nothing here decides whether the work
 # is done): the facts its convention checks need, the commit message, the
 # --stat, the issue's `### Done when` section and the Roadmap lines naming #<n>.
@@ -165,13 +166,18 @@ msg=""
 if [[ $count -gt 0 ]]; then
 	msg=$(git log -1 --format=%B "$head")
 	missing=()
-	grep -qE '^## Plan[[:space:]]*$' <<<"$msg" || missing+=("## Plan")
-	grep -qE '^## Test plan[[:space:]]*$' <<<"$msg" || missing+=("## Test plan")
+	# The sections are the author's, above make ship's block (#450): the
+	# issue text it copies can quote `## Plan` lines of its own.
+	authored=$(sed '/^<!-- ship:issue #[0-9]* -->$/,$d' <<<"$msg")
+	grep -qE '^## Plan[[:space:]]*$' <<<"$authored" || missing+=("## Plan")
+	grep -qE '^## Test plan[[:space:]]*$' <<<"$authored" || missing+=("## Test plan")
 	if [[ -n $n ]]; then
 		grep -qE "(^|[^[:alnum:]])Closes #$n([^0-9]|$)" <<<"$msg" || missing+=("Closes #$n")
 		# A bundle's commit lands its children's work too, so it closes them.
-		if gh issue view "$n" --json title | jq -e -L "$skills" 'include "lib"; .title | bundle_title' >/dev/null; then
-			for c in $(gh api "repos/{owner}/{repo}/issues/$n/sub_issues?per_page=100" --jq '.[] | select(.state == "open") | .number'); do
+		# make ship's block adds those lines, so before it has run there's
+		# nothing to check.
+		if [[ $authored != "$msg" ]] && gh issue view "$n" --json title | jq -e -L "$skills" 'include "lib"; .title | bundle_title' >/dev/null; then
+			for c in $(gh api "repos/{owner}/{repo}/issues/$n/sub_issues?per_page=100" | jq -r -L "$skills" 'include "lib"; open_sub_issues | .number'); do
 				grep -qE "(^|[^[:alnum:]])Closes #$c([^0-9]|$)" <<<"$msg" || missing+=("Closes #$c (sub-issue)")
 			done
 		fi

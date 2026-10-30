@@ -22,8 +22,26 @@
 # git hook on purpose: pre-push can't change what it pushes, and post-commit
 # also fires mid-rebase. pre-push and CI keep refusing multi-commit pushes.
 #
+# Then it copies the issue's details into the commit (#450), so the PR shows
+# what was asked for beside what was done. The issue is the <n> of a branch
+# named */#<n>, else SHIP_ISSUE (refused if it names another issue than the
+# branch); on any other branch it says so and leaves the message alone.
+# scripts/issue-block.sh renders the issue: its stripped title replaces the
+# subject (an author's `type(scope): ` prefix goes on purpose, so the PR title
+# is the issue's), and its delimited block (scope, Done-when, a bundle's open
+# sub-issues, `Closes #<n>`) goes after the author's text and before the
+# trailer paragraph. A block from an earlier ship, whichever issue it named, is
+# regenerated, not repeated, so an edited issue flows through on re-ship;
+# ## Plan and ## Test plan are never touched, and a `Closes #<n>` the author wrote
+# isn't repeated. It amends with `-F`, never a bare --amend, and only when the
+# message changed, so an unchanged re-ship keeps the SHA. The message is built
+# before the squash and rebase, so a bad SHIP_ISSUE or a failed issue or
+# sub-issue lookup refuses with the branch untouched and nothing pushed. Put
+# `[skip ci]` in the body: the subject gets replaced.
+#
 # Known gap until #281: a branch pushed earlier with no PR open that ship then
-# squashes or rebases is refused by the plain push below as non-fast-forward.
+# squashes, rebases or amends is refused by the plain push below as
+# non-fast-forward.
 set -euo pipefail
 
 branch=$(git branch --show-current)
@@ -51,6 +69,26 @@ if [ -n "$(git status --porcelain)" ]; then
 	echo "ship: working tree is dirty; commit or stash first." >&2
 	git status --short >&2
 	exit 1
+fi
+
+# The issue whose details go into the commit (#450): the <n> of a branch
+# named */#<n>, else SHIP_ISSUE; any other branch (the validate scripts'
+# validate-*/ ones) keeps its message. SHIP_ISSUE naming another issue than
+# the branch does is refused, since a leftover export would otherwise close
+# the wrong issue. Checked before anything is fetched or rewritten.
+issue=""
+[[ $branch =~ /#([0-9]+)$ ]] && issue=${BASH_REMATCH[1]}
+if [ -n "${SHIP_ISSUE:-}" ]; then
+	if ! [[ $SHIP_ISSUE =~ ^[0-9]+$ ]]; then
+		echo "ship: SHIP_ISSUE=$SHIP_ISSUE is not an issue number; nothing pushed." >&2
+		exit 1
+	fi
+	if [ -n "$issue" ] && [ "$SHIP_ISSUE" != "$issue" ]; then
+		echo "ship: SHIP_ISSUE=$SHIP_ISSUE, but $branch is #$issue's branch; nothing pushed." >&2
+		echo "      \`unset SHIP_ISSUE\` (or rename the branch), then \`make ship\` again." >&2
+		exit 1
+	fi
+	issue=$SHIP_ISSUE
 fi
 
 # FETCH_HEAD rather than origin/main: `git fetch origin main` always writes it,
@@ -93,6 +131,73 @@ if [ "${#stacked[@]}" -gt 0 ]; then
 	exit 1
 fi
 
+# last_para head|tail: the text (stdin) before its last paragraph, or that
+# paragraph itself, ignoring trailing blank lines.
+last_para() {
+	awk -v part="$1" '
+		{ l[++n] = $0 }
+		END {
+			while (n > 0 && l[n] ~ /^[ \t]*$/) n--
+			for (b = n; b > 0 && l[b] !~ /^[ \t]*$/; b--) ;
+			if (part == "head") for (i = 1; i < b; i++) print l[i]
+			else for (i = b + 1; i <= n; i++) print l[i]
+		}'
+}
+
+# Build the message with the issue's details (#450) BEFORE squashing or
+# rebasing, so a failed lookup refuses with the branch untouched. Neither
+# rewrite changes the message: the squash keeps the first commit's verbatim,
+# so that's the one to build from. The amend comes after them.
+new=""
+if [ -n "$issue" ]; then
+	old=$(git log -1 --format=%B "${commits[0]}")
+	rest=""
+	[[ $old == *$'\n'* ]] && rest=${old#*$'\n'}
+	# The trailer paragraph (Co-Authored-By: etc.) stays last, where GitHub
+	# and git look for it. --no-divider: a Markdown `---` rule isn't a patch.
+	author=$rest
+	trailers=""
+	if [ -n "$(git interpret-trailers --parse --no-divider <<<"$old")" ]; then
+		author=$(last_para head <<<"$rest")
+		trailers=$(last_para tail <<<"$rest")
+	fi
+	# Drop the block an earlier ship added, whichever issue it names (a ship
+	# under the wrong SHIP_ISSUE leaves one): from the first start marker
+	# outside a code fence to the LAST end marker, since an issue body may
+	# quote the end marker itself. A block the author quotes in a fence stays.
+	if ! author=$(awk '
+		{ l[++n] = $0 }
+		!s && /^ ? ? ?(```|~~~)/ { fence = !fence }
+		!s && !fence && /^<!-- ship:issue #[0-9]+ -->$/ { s = n }
+		s && $0 == "<!-- /ship:issue -->" { e = n }
+		END {
+			if (s && !e) exit 1
+			for (i = 1; i <= n; i++) if (!s || i < s || i > e) print l[i]
+		}' <<<"$author"); then
+		echo "ship: the commit message has a <!-- ship:issue --> line with no <!-- /ship:issue --> after it." >&2
+		echo "      Fix the message (\`git commit --amend -F <file>\`), then \`make ship\` again; nothing pushed." >&2
+		exit 1
+	fi
+	# A Closes line the author already wrote isn't repeated: the exact,
+	# case-sensitive match audit.sh uses.
+	omit=()
+	for k in $(grep -oE '(^|[^[:alnum:]])Closes #[0-9]+' <<<"$author"$'\n'"$trailers" | grep -oE '[0-9]+$' || true); do
+		omit+=(--omit-closes "$k")
+	done
+	if ! details=$("$(dirname "${BASH_SOURCE[0]}")/issue-block.sh" "${omit[@]}" "$issue"); then
+		echo "ship: couldn't read #$issue's details from GitHub; nothing pushed." >&2
+		exit 1
+	fi
+	new=${details%%$'\n'*}$'\n\n'
+	[ -z "$(tr -d '[:space:]' <<<"$author")" ] || new+=$author$'\n\n'
+	new+=${details#*$'\n'}
+	[ -z "$trailers" ] || new+=$'\n\n'$trailers
+	# stripspace applies the amend's whitespace cleanup up front, so an
+	# unchanged issue compares equal and keeps the SHA.
+	new=$(git stripspace <<<"$new")
+	[ "$new" != "$old" ] || new=""
+fi
+
 # More than one commit (#319): fold them into one that carries the FIRST
 # commit's message, where the ## Plan / ## Test plan / Closes #<n> body was
 # written. -C takes it verbatim: -c would open an editor, and its default
@@ -121,6 +226,19 @@ if [ "$behind" -eq 1 ]; then
 		echo "ship: nothing is left beyond main after the rebase; nothing pushed." >&2
 		exit 1
 	fi
+fi
+
+# Amend in the message built above, now that the squash and rebase are done.
+# `-F` with whitespace cleanup keeps the `## ` lines (Development Conventions
+# § Amending keeps the sections).
+if [ -z "$issue" ]; then
+	echo "ship: no issue number in $branch; message left as is."
+elif [ -n "$new" ]; then
+	msg_file=$(git rev-parse --git-path SHIP_EDITMSG)
+	printf '%s\n' "$new" >"$msg_file"
+	git commit -q --amend --cleanup=whitespace -F "$msg_file"
+	rm -f "$msg_file"
+	echo "ship: copied #$issue's details into the commit."
 fi
 
 # Look the PR up BEFORE pushing (#273): an amended commit needs a force-push,

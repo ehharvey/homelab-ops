@@ -37,7 +37,10 @@ Stop at the first failing step and fix it (or report it) before going on.
    one. If not, `make wt N=<n>` and work from the printed path.
 3. **Change, then amend.** Make the changes and `git add` them, then amend,
    never a fixup commit: the branch stays exactly one commit. Update `## Plan`
-   if the approach changed, and `## Test plan` to list what actually re-ran:
+   if the approach changed, and `## Test plan` to list what actually re-ran.
+   Leave the subject and the `<!-- ship:issue -->` block alone: `make ship`
+   regenerates both from the issue (#450), so an issue edit flows through on
+   re-ship, and a hand edit there is overwritten:
    `git log -1 --format=%B > <scratchpad>/msg`, edit that file, then
    `git commit --amend -F <scratchpad>/msg` (Development Conventions § PR body
    format; anything else that opens the message strips the `## ` lines). If
@@ -58,6 +61,8 @@ Stop at the first failing step and fix it (or report it) before going on.
    ```
 
    Use `%b`, not `%B`: `--fill` puts the subject in the title, not the body.
+   Run it after `make ship`, so the title and body carry the issue block ship
+   just regenerated.
 7. **Reply on every thread you addressed.** Say what changed, or why not:
    ```sh
    gh api graphql -f id=<thread-id> -f body='<reply>' -f query='mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{url}}}'
