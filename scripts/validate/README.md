@@ -284,7 +284,7 @@ absence causes a skip rather than a failure.
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
-| `github` | authenticated `gh` with repo admin; `bump-workflow-opens-pin-only-pr.sh` also needs `VALIDATE_GITHUB_WRITES=1` | no — opens real PRs, would recurse |
+| `github` | authenticated `gh` with repo admin (`amended-commit-reships-to-open-pr.sh` and `ship-copies-issue-details-into-commit.sh` open and close a real PR, the latter also reading a closed issue); `bump-workflow-opens-pin-only-pr.sh` also needs `VALIDATE_GITHUB_WRITES=1` | no — opens real PRs, would recurse |
 
 `run.sh` derives these from the scripts themselves rather than a list kept here,
 so a new script is covered without editing anything central.
@@ -376,10 +376,11 @@ image, which is a skip (below). The diagnostic names the script that fixes it.
 Two deliberate irregularities, both documented in the scripts themselves:
 
 - **The `github` scripts are fail-fast** (`multi-commit-pr-cannot-reach-main.sh`,
-  `amended-commit-reships-to-open-pr.sh`, `bump-workflow-opens-pin-only-pr.sh`).
+  `amended-commit-reships-to-open-pr.sh`, `ship-copies-issue-details-into-commit.sh`,
+  `bump-workflow-opens-pin-only-pr.sh`).
   Each drives one real PR through GitHub and each step depends on the last, so
   there is nothing to accumulate after a failure. They use the shared recorders
-  for output and exit codes but keep their own aborting `fail`. The third is
+  for output and exit codes but keep their own aborting `fail`. The bump one is
   fail-fast only until its workflow run has finished; its assertions about that
   run accumulate. It is also the only one that is opt-in
   (`VALIDATE_GITHUB_WRITES=1`), because it dispatches a workflow.

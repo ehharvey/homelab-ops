@@ -30,10 +30,14 @@ Exit 0 means steps 1–4 have no mechanical gap. Rerun it after any fix.
    the recipe it prints (Development Conventions § Branching & issues), keeping
    the fullest message.
 3. **Message.** Its message line checks for the sections. Their content is
-   yours to get right: a subject line, `## Plan` (what and why, with the
-   alternatives ruled out), `## Test plan` (`- [x]` items you actually ran,
-   each one checkable), `Closes #<n>`, and the Co-Authored-By trailer this
-   session gives you. `make ship` copies it into the PR verbatim.
+   yours to get right: `## Plan` (what and why, with the alternatives ruled
+   out), `## Test plan` (`- [x]` items you actually ran, each one checkable),
+   `Closes #<n>`, and the Co-Authored-By trailer this session gives you. Any
+   subject line will do: `make ship` replaces it with the issue's title, and
+   adds the issue's scope, Done-when and `Closes` lines as a block before the
+   trailer (#450). Don't copy those from the issue yourself. The audit still
+   wants your own `Closes #<n>`; the block then doesn't repeat it. `make ship`
+   copies the result into the PR verbatim.
 4. **Roadmap.** Its Roadmap section lists the lines naming `#<n>`. If this
    work finishes an item, it's checked off **in this commit** as
    `DONE; see #<n>`. If the issue isn't on the Roadmap, there's nothing to do.
