@@ -403,15 +403,23 @@ AGENT_IMAGE_ALIAS="homelab-ops-agent-validate"
 # type=oci, which import_agent_incus_image sets, is what makes it start an
 # application container (oci.entrypoint, volatile.container.oci).
 build_agent_incus_image() {
-	local root="$1" out="$2" tag="homelab-ops-agent:validate-$$" cid arch
-	mkdir -p "$out/agent-meta" || return 1
-	if ! docker build -q -f "$root/Dockerfile.agent" -t "$tag" "$root" >/dev/null 2>&1; then
-		fail_why "docker build" "Dockerfile.agent failed to build"
+	build_incus_oci_image "$1/Dockerfile.agent" "$1" "$2" agent
+}
+
+# build_incus_oci_image <dockerfile> <context> <out_dir> <name> — as
+# build_agent_incus_image, for any Dockerfile: <out_dir>/<name>-meta.tar.gz
+# and <out_dir>/<name>-rootfs.tar.gz. Import them with
+# `incus image import <meta> <rootfs>` and mark the image type=oci.
+build_incus_oci_image() {
+	local dockerfile="$1" context="$2" out="$3" name="$4" tag="homelab-ops-$4:validate-$$" cid arch
+	mkdir -p "$out/$name-meta" || return 1
+	if ! docker build -q -f "$dockerfile" -t "$tag" "$context" >/dev/null 2>&1; then
+		fail_why "docker build" "$dockerfile failed to build"
 		return 1
 	fi
 	# The image's USER isn't mapped: distroless/static runs as root, and a
 	# change there should fail here rather than run as the wrong user.
-	if ! docker image inspect "$tag" | jq -e '.[0].Config.User | . == "" or . == "0" or . == "root"' >/dev/null; then
+	if ! docker image inspect "$tag" | jq -e '.[0].Config.User // "" | . == "" or . == "0" or . == "root"' >/dev/null; then
 		fail_why "config.json" "image sets a non-root USER; map it into process.user"
 		return 1
 	fi
@@ -424,16 +432,16 @@ build_agent_incus_image() {
 			user: {uid: 0, gid: 0}
 		},
 		root: {path: "rootfs"}
-	}' >"$out/agent-meta/config.json" || return 1
+	}' >"$out/$name-meta/config.json" || return 1
 	case "$(docker image inspect -f '{{.Architecture}}' "$tag")" in
 	amd64) arch=x86_64 ;;
 	arm64) arch=aarch64 ;;
 	*) arch="$(docker image inspect -f '{{.Architecture}}' "$tag")" ;;
 	esac
-	printf '{"architecture":"%s","creation_date":%s}\n' "$arch" "$(date +%s)" >"$out/agent-meta/metadata.yaml"
-	tar -czf "$out/agent-meta.tar.gz" -C "$out/agent-meta" config.json metadata.yaml || return 1
+	printf '{"architecture":"%s","creation_date":%s}\n' "$arch" "$(date +%s)" >"$out/$name-meta/metadata.yaml"
+	tar -czf "$out/$name-meta.tar.gz" -C "$out/$name-meta" config.json metadata.yaml || return 1
 	cid=$(docker create "$tag") || return 1
-	docker export "$cid" | gzip >"$out/agent-rootfs.tar.gz"
+	docker export "$cid" | gzip >"$out/$name-rootfs.tar.gz"
 	local rc=$?
 	docker rm "$cid" >/dev/null 2>&1
 	docker image rm "$tag" >/dev/null 2>&1

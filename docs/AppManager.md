@@ -3,7 +3,8 @@
 > **Re-plan note (2026-10-26, `docs/Decisions.md` §30):** until Roadmap
 > Phase 8, the agent is the only App managed. It deploys, runs one per
 > managed host (#203) and upgrades itself by this document's blue-green
-> handoff (#109, #103, narrowed to the agent). Fleet-wide reconciliation of
+> handoff (#109, #103, narrowed to the agent; built, § Agent self-upgrade).
+> Fleet-wide reconciliation of
 > other Apps (#98), placement (#182) and the rest of this document's App
 > machinery are deferred to Phase 8, not near-term. Where the note below says
 > "paused" and "resumes", read "deferred to Phase 8"; the self-upgrade is no
@@ -30,9 +31,9 @@ Purpose
 
 This doc complements `docs/Architecture.md` (system-wide shape) and `docs/Ipam.md` (the sibling per-subsystem policy doc this one mirrors); `docs/AppClasses.md` is its companion reference, classifying the workloads this mechanism runs (which cutover shape a renderer implements, and why the registry is curated). Implementation-level detail lives in `internal/config` (schema), `internal/apprenderer` (registry + fleet reconcile algorithm), `internal/apprenderer/agentrenderer` (the built-in `agent` renderer), and `internal/leaderelection` (the pluggable `Elector`; `Designated` in 0.x). See `docs/Decisions.md` § App Manager HA for the full design rationale and the trade-offs accepted along the way.
 
-## What 0.x builds: one agent per member (#203)
+## What 0.x builds: one agent per member (#203), and its self-upgrade (#109)
 
-Of the machinery below, 0.x builds only the zero-match branch, for the agent App alone (`docs/Decisions.md` §27, §30). Each tick, the designated primary's agent (inside `MayAct`'s leader block, `internal/agent`):
+Of the machinery below, 0.x builds two pieces, both for the agent App alone (`docs/Decisions.md` §27, §30): the zero-match branch, and the image-change branch as the agent's own blue-green self-upgrade (§ Agent self-upgrade, below). Everything else, for other Apps, is Phase 8's. Each tick, the designated primary's agent (inside `MayAct`'s leader block, `internal/agent`):
 
 1. lists the cluster members (`GET /1.0/cluster/members`) and matches them to declared `Instance`s by name, since a joiner's `dns.hostname` sets its member name. Members no `Instance` declares, declared `Instance`s that aren't members yet, and members that aren't `Online` are skipped, logged, and looked at again next tick;
 2. counts a member as having an agent when an instance carries the agent App's `user.homelab-ops.app` tag **and** its `Location` is that member. Instance names are cluster-wide, so a name alone can't say where an agent runs;
@@ -40,17 +41,28 @@ Of the machinery below, 0.x builds only the zero-match branch, for the agent App
 
 The leader creates nothing unless its own instance's `user.homelab-ops.app` tag equals the declared agent App's name. Peers are grouped by that tag (`internal/incusregistry`), so an agent tagged otherwise (an App renamed in git) would otherwise create a second, separate set of agents with a leader of its own.
 
-There is no teardown and no image-change handling: an existing agent is left alone whatever its image, and an agent on the wrong member stays until the operator deletes it (the create for its member keeps failing on the name conflict meanwhile). Upgrades are #109's. On an unclustered daemon (the leader's own instance has `Location` `none`) there are no members to list, so a standalone host's only agent is the one already running.
+This creating loop never tears anything down: an agent on the wrong member stays until the operator deletes it (the create for its member keeps failing on the name conflict meanwhile), and an agent on a stale image is the self-upgrade's. On an unclustered daemon (the leader's own instance has `Location` `none`) there are no members to list, so a standalone host's only agent is the one already running; its self-upgrade still runs there.
 
-Every agent instance, whichever path created it (this loop, the web route or `bootstrap deploy-agent`), carries the same tags:
+### Agent self-upgrade (#109)
+
+When the agent App's `image` in git differs from an agent's `user.homelab-ops.image` tag, the primary's agent replaces that agent blue-green, for every host of its cluster, its own included (§30). It never moves for an upgrade: the designation names a node. A standalone host (an unclustered daemon, or a one-member cluster) is a one-member cluster, and it upgrades only if a `kind: Designation` names it (`docs/Config Schema.md`).
+
+1. **Create.** For a host whose one agent, generation g, is on a stale image, the primary creates generation g+1 on the declared image, with `target=<member>` on a multi-member cluster and none on a standalone host (an unclustered daemon rejects one). At most one candidate per host: one on an image git has since moved past is stopped, deleted and replaced. A failed create is retried next tick.
+2. **Health.** A candidate is healthy while its own `user.homelab-ops.agent.heartbeat` (written every tick, leader or not) is younger than `AGENT_HEARTBEAT_STALE_AFTER` (default 90s), and it could lead once handed over to: not `draining`, and its published `commit` is the one the primary decided on. The heartbeat alone only says its process ticks, whatever the tick decided; an agent that can't read its config never publishes a commit. The primary sets `user.homelab-ops.healthy-since` on it the first tick it's healthy and clears it on any tick it isn't; it is **sustained-healthy** once that streak reaches `AGENT_MIN_HEALTHY_DURATION` (default 2m).
+3. **Hand over.** On a follower's host, the acting primary retires the old instance. On the primary's own host, the old instance drains instead (reason `superseded`, which clears only if the candidate stops, is deleted or drains before it leads, so the old one leads again rather than leave the cluster leaderless), the candidate takes over through § Leader election's handoff, and the candidate, now leading, retires the old one. Retiring is a forced stop, then a delete; no instance stops or deletes itself, or one that is acting.
+4. **Give up, for a while.** A candidate not sustained-healthy within `AGENT_UPGRADE_HEALTH_DEADLINE` (default 10m) of its creation is deleted and the old instance kept. The attempt is counted on the old instance (`user.homelab-ops.upgrade-attempts`, with `user.homelab-ops.upgrade-image` naming the image), and retried next tick. After `AGENT_UPGRADE_MAX_ATTEMPTS` (default 3) failed attempts at one image, no more candidates are created for it, and the primary's `user.homelab-ops.agent.status` says why. A different image in git starts the count again.
+
+The four knobs are `cmd/agent` environment variables. It refuses to start with `AGENT_HEARTBEAT_STALE_AFTER` no longer than `AGENT_TICK_INTERVAL`, or `AGENT_UPGRADE_HEALTH_DEADLINE` within `AGENT_MIN_HEALTHY_DURATION` plus two ticks, since no candidate could pass either way. An agent passes its own tick, threshold and self-upgrade knobs on to every agent it creates, so an operator's tuning survives an upgrade. `scripts/validate/agent-self-upgrades-blue-green-without-gap.sh` proves the standalone host's upgrade against a real Incus; the multi-member proof is Phase 5's (#184).
+
+Every agent instance, whichever path created it (the creating loop, the self-upgrade, the web route or `bootstrap deploy-agent`), carries the same tags:
 
 | Tag | Value |
 |---|---|
 | `user.homelab-ops.app` | the declared App's name (`agent`), **the same on every agent**. §25 scopes an agent's peers by it, so an agent tagged otherwise is neither a peer nor fenced. Per-node synthesis below names *instances* per node; it never changes this tag. |
-| `user.homelab-ops.generation` | `0` for every create 0.x makes. |
+| `user.homelab-ops.generation` | `0` for an agent's first instance on a node; g+1 for the self-upgrade candidate of generation g. |
 | `user.homelab-ops.image` | the App's declared `image`, serialized as a compact JSON object of its non-empty fields under their YAML names, in the order `server`, `protocol`, `alias`, `fingerprint`, e.g. `{"server":"https://ghcr.io","protocol":"oci","alias":"ehharvey/homelab-ops/agent:latest"}`. Equal images give equal strings. `agentdeploy.ImageTag` writes it and `agentdeploy.ParseImageTag` reads it back, rejecting anything else, such as an unknown field. |
 
-Instances are named `<app.name>-<instance.name>-g0`, e.g. `agent-node1-g0`.
+Instances are named `<app.name>-<instance.name>-g<generation>`, e.g. `agent-node1-g0`.
 
 ## Deployment topology
 
@@ -142,7 +154,7 @@ Leader election is a **pluggable interface** (`internal/leaderelection.Elector`:
   - it's the one instance on its node that should act: not draining, with no older non-draining instance beside it.
 
   It publishes `acting: true`, then re-reads its peers before its first action. It publishes `acting: false` only after it has fully stopped.
-- **Self-upgrade hand-off.** The old leader creates its candidate as for any App. Once it sees the candidate sustained-healthy, it marks itself `draining` (#109), stops, and clears `acting`. The candidate then leads, runs `Promote`, and deletes the old instance; the old one never deletes itself.
+- **Self-upgrade hand-off** (built, #109; § Agent self-upgrade). The old leader creates its candidate on its own node. Once it sees the candidate sustained-healthy, it marks itself `draining` with reason `superseded`, stops, and clears `acting`. The candidate then leads and retires the old instance; the old one never deletes itself.
 - **An agent also self-drains if its own git sync fails persistently** (`Source()` errors after N consecutive failures, #101) — durable and `incus list`-visible, unlike silently returning not-leader each tick. A fleet-wide git outage then means zero leaders, not two, which this design treats as acceptable. Recovery means a sync that actually succeeds, not merely a failure count back under the threshold: a restarted agent's count starts at zero. Un-draining once sync recovers is only safe if no higher-generation peer on the same node has since gone non-draining (meaning a newer generation already took over while this one was down) — see `docs/Decisions.md` §25 for why that check belongs to the agent's drain/un-drain logic, not to `MayAct` itself.
 - **Failover is the operator's, and it's one commit: change `primary`.**
   - The new primary waits until the old one has seen that commit and cleared `acting`, so the two never overlap.
@@ -204,7 +216,7 @@ flowchart TD
 
 The "two matches" branch is what makes this restart-safe with zero external state: whether it's a genuine in-flight handoff or a leader that changed mid-handoff (the new leader picks up wherever `incus list` says the App is), "what step was I on" is always re-derivable from `incus list` alone — the tick just resumes the healthy/promote-or-revert logic directly. This applies identically to a synthesized per-node App member and to a real declared one; the algorithm doesn't know or care which kind produced the value it's looking at, or which member of a multi-member App it is.
 
-**Sustained health, not a single healthy tick, gates promotion.** A candidate that's merely healthy *at the instant it happens to be polled* isn't enough — a version flaky enough to crash-loop could still get a lucky poll. Each candidate carries a `user.homelab-ops.healthy-since` tag (RFC3339, unset until first observed healthy): the first tick `Renderer.Healthy` returns true, the leader sets it; every subsequent tick, if `Healthy` is still true and `now - healthy-since >= MinHealthyDuration` (an env-configurable knob, smaller than the overall health deadline above), the candidate is considered converged — eligible for promotion (gen N+1) or simply done (gen 0). If `Healthy` ever returns false again before that duration elapses, the tag is cleared: a flapping candidate never accumulates a continuous streak, so no number of individually-lucky healthy polls can satisfy the requirement. This is Nomad's `min_healthy_time` (§ Prior art), applied generically by the reconciler rather than by each renderer — `Renderer.Healthy` still only ever answers "healthy right now, yes or no"; the sustained-duration bookkeeping lives entirely in the tag, so it's restart-safe and leader-handoff-safe the same way everything else here is (re-derivable from `incus list` alone, nothing held in the reconciler's own memory).
+**Sustained health, not a single healthy tick, gates promotion.** A candidate that's merely healthy *at the instant it happens to be polled* isn't enough — a version flaky enough to crash-loop could still get a lucky poll. Each candidate carries a `user.homelab-ops.healthy-since` tag (RFC3339, unset until first observed healthy): the first tick `Renderer.Healthy` returns true, the leader sets it; every subsequent tick, if `Healthy` is still true and `now - healthy-since >= MinHealthyDuration` (an env-configurable knob, smaller than the overall health deadline above), the candidate is considered converged — eligible for promotion (gen N+1) or simply done (gen 0). If `Healthy` ever returns false again before that duration elapses, the tag is cleared: a flapping candidate never accumulates a continuous streak, so no number of individually-lucky healthy polls can satisfy the requirement. This is Nomad's `min_healthy_time` (§ Prior art), applied generically by the reconciler rather than by each renderer — `Renderer.Healthy` still only ever answers "healthy right now, yes or no"; the sustained-duration bookkeeping lives entirely in the tag, so it's restart-safe and leader-handoff-safe the same way everything else here is (re-derivable from `incus list` alone, nothing held in the reconciler's own memory). For the agent's self-upgrade (built, #109), `MinHealthyDuration` is `AGENT_MIN_HEALTHY_DURATION` (default 2m) and the health deadline is `AGENT_UPGRADE_HEALTH_DEADLINE` (default 10m) from the candidate's creation, with at most `AGENT_UPGRADE_MAX_ATTEMPTS` (default 3) candidates per image (§ Agent self-upgrade).
 
 **Self-recognition rule** (only applies to the one agent App member describing whichever node the current leader itself happens to be running on): before acting, the leader compares its own live instance name against N/N+1.
 - It is the older, superseded instance (N): stand down — no further create/health/promote action on this one member once N+1 already exists — unless N+1 has exceeded its health deadline without promoting, in which case revert as normal. Never delete itself.
@@ -213,7 +225,7 @@ The "two matches" branch is what makes this restart-safe with zero external stat
 
 One rule lets a single, unmodified reconcile function handle self-management as a special case of the general algorithm, and guarantees the leader never issues a delete against its own running container.
 
-**`Healthy` keeps its original meaning** — freshness of a heartbeat file the agent's own process writes on every tick. This write is independent of leader/follower status: every agent process writes its own heartbeat regardless of whether it currently leads, purely so the check works whenever the *leader* evaluates that instance during a blue-green transition. This is not a new liveness/watchdog concept layered on top — ordinary instance disappearance is already covered by the zero-match → recreate branch above, and day-to-day process liveness inside an already-converged instance is Incus's own restart policy's job, not the leader's.
+**`Healthy` keeps its original meaning** — freshness of a heartbeat the agent's own process writes on every tick. As built (#109), that's the `user.homelab-ops.agent.heartbeat` key on its own instance, not a file: healthy while younger than `AGENT_HEARTBEAT_STALE_AFTER` (default 90s), for an agent that also isn't draining and has published the decided commit (§ Agent self-upgrade). This write is independent of leader/follower status: every agent process writes its own heartbeat regardless of whether it currently leads, purely so the check works whenever the *leader* evaluates that instance during a blue-green transition. This is not a new liveness/watchdog concept layered on top — ordinary instance disappearance is already covered by the zero-match → recreate branch above, and day-to-day process liveness inside an already-converged instance is Incus's own restart policy's job, not the leader's.
 
 ## Fleet-wide blue-green upgrade: one mechanism, not two
 
@@ -221,28 +233,29 @@ The agent's own self-upgrade is **not** a separate mechanism from the reconcile 
 
 Followers never self-initiate anything, so a follower that crashes before ever getting a replacement is still covered — the leader's own fleet-wide scan finds and fixes it on the next tick, the same as any other App going from one match to zero.
 
+As built (#109, § Agent self-upgrade) this is the agent App's slice alone, in `internal/agent`'s upgrade pass; the generic `ReconcileFleet`/`Promote` path for other Apps stays Phase 8's. The primary's own host:
+
 ```mermaid
 sequenceDiagram
     participant Git as git config
-    participant Old as old leader (primary node, gen N)
-    participant Incus as cluster-wide Incus
+    participant Old as old primary (gen N)
+    participant Incus as Incus (its own member)
     participant New as candidate (same node, gen N+1)
 
     Git->>Old: agent App's image bump observed (next tick)
-    Old->>Incus: ReconcileFleet creates every stale member's<br/>candidate generation, including its own (gen N+1)
-    Note over Old,New: the primary node now has both gen N (leading) and gen N+1 (candidate)<br/>the Elector names only the older non-draining instance, so N+1 does nothing yet
-    Old->>Incus: polls N+1's heartbeat until sustained healthy
-    Old->>Old: own member is stale and candidate is sustained-healthy →<br/>set draining (never delete self)
-    New->>New: Elector: N is draining → N+1 leads
-    New->>Incus: ReconcileFleet resumes every in-flight App from live state alone
-    New->>Incus: this node's agent member is "two matches" (N, N+1) → Promote → delete N
-    Incus--)Old: gen N torn down as a side effect
-    New->>Incus: continues fleet-wide reconciliation alone, including cleanup<br/>of every other node's stale old-generation agent instances
+    Old->>Incus: create gen N+1 for every host whose agent is stale, its own included
+    Note over Old,New: the Elector names only the older non-draining instance, so N+1 only heartbeats
+    Old->>Incus: reads N+1's heartbeat each tick, marks healthy-since
+    Old->>Old: own image stale and N+1 sustained-healthy: drain (superseded), clear acting
+    New->>New: Elector: N is draining and not acting, so N+1 leads
+    New->>Incus: stop and delete N (N never deletes itself)
 ```
 
-The candidate's own `main()` never waits for a handoff signal — the moment the `Elector` names it, it resumes fleet reconciliation purely from what `incus list` shows, with no memory of what the old leader was doing. The old leader never deletes itself; its own instance is torn down as a side effect of the new leader's ordinary `Promote`/delete call, exactly the same as any other App's handoff. Because the designation names a *node*, no operator step is needed for a routine agent upgrade; a designation change is only for failover.
+On a follower's host there is no handoff: a follower never acts, so the acting primary itself stops and deletes the old instance once its candidate is sustained-healthy.
 
-If the candidate never becomes healthy the old leader is still leading and reverts as normal (deadline exceeded → delete the candidate, keep N). If a candidate passes the gate and then breaks once leading, the fleet is unmanaged until the operator reverts the agent's `image` in git or fails over; the web app's missing-heartbeat alert is what surfaces it.
+The candidate never waits for a handoff signal: the moment the `Elector` names it, it carries on purely from what `incus list` shows, with no memory of what the old leader was doing. Because the designation names a *node*, no operator step is needed for a routine agent upgrade; a designation change is only for failover.
+
+If the candidate never becomes healthy the old leader is still leading and reverts: deadline exceeded, delete the candidate, keep N, and count the attempt, giving up on that image after `AGENT_UPGRADE_MAX_ATTEMPTS`. If a candidate passes the gate and then breaks once leading, the fleet is unmanaged until the operator reverts the agent's `image` in git or fails over; the web app's missing-heartbeat alert is what surfaces it.
 
 ## Prior art
 

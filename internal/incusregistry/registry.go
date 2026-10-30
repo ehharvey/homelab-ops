@@ -68,8 +68,11 @@ const (
 	// KeyDrainReason says why KeyDraining is set (DrainSyncFailure, or
 	// whatever set it), because only some reasons are recoverable (#187).
 	KeyDrainReason = keyPrefix + "drain-reason"
-	// KeyHeartbeat is the RFC 3339 UTC time of the agent's last tick:
-	// observability only, never an election input.
+	// KeyHeartbeat is the RFC 3339 UTC time of the agent's last tick,
+	// written whether or not it leads. It is never an election input
+	// (leaderelection.MayAct doesn't read it), but it is the self-upgrade's
+	// health signal: the primary reads a candidate's to gate the handoff
+	// (#109, internal/agent).
 	KeyHeartbeat = keyPrefix + "heartbeat"
 	// KeyStatus is the agent's last leadership decision, human-readable, so
 	// `incus list` shows why each agent is or isn't acting.
@@ -79,12 +82,14 @@ const (
 // DrainSyncFailure is the drain reason for an agent whose git sync failed
 // FailureThreshold times in a row (#187). Unlike a self-upgrade drain it's
 // recoverable, subject to leaderelection.MayUndrain.
-const DrainSyncFailure = "sync-failure"
+const DrainSyncFailure = leaderelection.DrainSyncFailure
 
-// DrainSuperseded is the drain reason for an agent that drained on sync
-// failure and found, on recovering, that a newer generation on its node had
-// taken over. It stays drained until the leader retires it.
-const DrainSuperseded = "superseded"
+// DrainSuperseded is the drain reason for an instance a newer generation on
+// its node replaces: an old primary whose self-upgrade candidate is
+// sustained-healthy (#109), or an agent that drained on sync failure and
+// found, on recovering, that a newer generation had taken over. It's
+// permanent: it stays drained until the leader retires it.
+const DrainSuperseded = leaderelection.DrainSuperseded
 
 // Client is the slice of *incuslocal.Client the registry uses.
 type Client interface {

@@ -1,19 +1,22 @@
 // Package agent is the app-manager agent's tick loop (docs/AppManager.md):
 // sync the config repo, publish, decide who leads, and keep this instance's
 // acting and draining flags honest. The leader also creates the agent on
-// every declared cluster member that has none (#203, ensure_agents.go).
-// cmd/agent wires it to the environment, a real configsync.Clone, a real
-// incusregistry.Registry and a real incuslocal.Client.
+// every declared cluster member that has none (#203, ensure_agents.go), and
+// replaces every host's agent blue-green when the agent App's image changes
+// in git (#109, upgrade.go). cmd/agent wires it to the environment, a real
+// configsync.Clone, a real incusregistry.Registry and a real
+// incuslocal.Client.
 //
 // It lives here rather than in cmd/agent so the drain state machine (#187)
-// and the acting handoff (#212) can be reused by the self-upgrade handoff
-// (#109), which drains for a reason of its own.
+// and the acting handoff (#212) serve the self-upgrade handoff too, which
+// drains for a reason of its own (leaderelection.DrainSuperseded).
 package agent
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
@@ -44,11 +47,21 @@ type Registry interface {
 var _ Registry = (*incusregistry.Registry)(nil)
 
 // Agent is one app-manager agent's tick loop: sync, publish, decide, and,
-// when it leads, create the missing member agents (#203). Generic App
-// reconciliation (#98) is deferred to Phase 8 (docs/Decisions.md §30).
+// when it leads, create the missing member agents (#203) and upgrade every
+// host's agent to the declared image (#109). Generic App reconciliation (#98)
+// is deferred to Phase 8 (docs/Decisions.md §30).
 //
 // Not safe for concurrent use: one goroutine calls Tick, then Shutdown.
 type Agent struct {
+	// Upgrade tunes the self-upgrade; New sets DefaultUpgrade. Set it, and
+	// ChildEnv, before the first Tick.
+	Upgrade Upgrade
+	// ChildEnv is environment the agents this one creates inherit, as
+	// environment.<name> keys on their instances: cmd/agent passes its own
+	// tuning knobs, so an operator's tuning survives a self-upgrade. Desired's
+	// own keys (node, instance name, repo) win over it.
+	ChildEnv map[string]string
+
 	self, node string
 	generation int64
 
@@ -67,7 +80,7 @@ type Agent struct {
 
 	notes       map[string]string // leader-work skips as last logged; see note
 	creating    map[string]string // member -> ID of a create still running when its wait ended
-	passTimeout time.Duration     // bounds one ensureAgents pass; see defaultPassTimeout
+	passTimeout time.Duration     // bounds one ensureAgents or upgradeAgents pass; see defaultPassTimeout
 }
 
 // New returns the loop for agent instance self, generation generation, on
@@ -78,6 +91,7 @@ func New(self, node string, generation int64, s Syncer, r Registry, incus Incus,
 		self: self, node: node, generation: generation,
 		sync: s, reg: r, incus: incus, repo: repo, now: time.Now, log: logger,
 		notes: map[string]string{}, creating: map[string]string{}, passTimeout: defaultPassTimeout,
+		Upgrade: DefaultUpgrade(),
 		elector: &leaderelection.Designated{
 			Self: self, Node: node, Generation: generation,
 			Source: func() (leaderelection.Designation, error) {
@@ -127,7 +141,7 @@ func (a *Agent) Tick(ctx context.Context) {
 	}
 
 	synced := a.syncOnce(ctx)
-	a.drainOnSyncFailure(ctx, synced)
+	a.updateDrain(ctx, synced)
 	dec := a.decide(ctx)
 	if dec.Behind {
 		// A peer is on a commit we lack: fetch now rather than on the next
@@ -143,8 +157,19 @@ func (a *Agent) Tick(ctx context.Context) {
 		// this agent's own member: Incus quorum, not MayAct, is what stops a
 		// partitioned agent from completing them. Work outside Incus needs a
 		// fence of its own first (docs/Decisions.md §25).
-		a.ensureAgents(ctx, dec.Commit)
+		drained, holds := a.leaderWork(ctx, dec.Commit)
 		status = "leader: " + dec.Reason
+		if drained {
+			// This instance just handed over to its sustained-healthy
+			// candidate. Decide again now, which sees the drain and clears
+			// the acting flag, rather than leave the candidate waiting a
+			// tick for it.
+			dec = a.decide(ctx)
+			status = "superseded: " + dec.Reason
+		}
+		if len(holds) > 0 {
+			status += "; " + strings.Join(holds, "; ")
+		}
 	}
 	if err := a.reg.Heartbeat(ctx, a.now(), status); err != nil && ctx.Err() == nil {
 		a.log.Printf("heartbeat: %v", err)
@@ -192,19 +217,20 @@ func (a *Agent) decide(ctx context.Context) leaderelection.Decision {
 	return dec
 }
 
-// drainOnSyncFailure implements #187: once sync has failed
-// FailureThreshold times in a row, mark this instance draining, durably and
-// visibly; once a sync succeeds again, clear it — unless a newer generation
-// on this node took over meanwhile, in which case stay drained for good.
+// updateDrain implements #187: once sync has failed FailureThreshold times
+// in a row, mark this instance draining, durably and visibly; once a sync
+// succeeds again, clear it, unless a newer generation on this node took over
+// meanwhile, in which case the drain becomes DrainSuperseded.
 //
 // Recovery means synced, this tick's sync succeeding, not merely "not Failing
 // yet": a restarted agent's failure count starts at zero, so an agent that
 // restarts while drained and still can't reach git would otherwise un-drain
 // on its first tick and drain again a threshold later, on every restart.
 //
-// Only a sync-failure drain is ever cleared here. A drain for any other
-// reason (a self-upgrade handoff, #109) is permanent.
-func (a *Agent) drainOnSyncFailure(ctx context.Context, synced bool) {
+// A DrainSuperseded drain (a self-upgrade handoff, #109) clears the same way
+// once the newer generation it yielded to is gone or draining. Whether any
+// drain may clear is MayUndrain's to say, and only it.
+func (a *Agent) updateDrain(ctx context.Context, synced bool) {
 	switch {
 	case a.sync.Failing() && !a.draining:
 		if err := a.reg.SetDraining(ctx, true, incusregistry.DrainSyncFailure); err != nil {
@@ -214,23 +240,27 @@ func (a *Agent) drainOnSyncFailure(ctx context.Context, synced bool) {
 		a.draining, a.drainReason = true, incusregistry.DrainSyncFailure
 		a.log.Printf("draining: git sync keeps failing")
 
-	case synced && a.draining && a.drainReason == incusregistry.DrainSyncFailure:
+	case synced && a.draining:
 		peers, err := a.reg.Peers(ctx)
 		if err != nil {
 			a.log.Printf("un-drain: reading peers: %v", err)
 			return
 		}
-		ok, why := leaderelection.MayUndrain(a.self, a.node, a.generation, peers)
+		ok, why := leaderelection.MayUndrain(a.self, a.node, a.generation, a.drainReason, peers)
 		reason := ""
-		if !ok {
-			reason = incusregistry.DrainSuperseded
+		switch {
+		case ok:
+		case a.drainReason == incusregistry.DrainSyncFailure:
+			reason = incusregistry.DrainSuperseded // a newer generation took over meanwhile
+		default:
+			return // still superseded, or a drain this loop didn't set: nothing changes
 		}
 		if err := a.reg.SetDraining(ctx, !ok, reason); err != nil {
 			a.log.Printf("un-drain: %v", err)
 			return
 		}
+		a.log.Printf("drain (%s) re-checked after a successful sync; draining=%v: %s", a.drainReason, !ok, why)
 		a.draining, a.drainReason = !ok, reason
-		a.log.Printf("git sync recovered; draining=%v: %s", !ok, why)
 	}
 }
 

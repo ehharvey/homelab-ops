@@ -77,12 +77,14 @@ it is tracked separately, and the "runs in CI" column below states intent, not
 current fact.
 
 Tags in use: `base-image`, `ct-image`, `flasher-tool`, `incus-cluster`, `incus-instances`,
-`incus-socket`, `opt-in`, `upstream`. Five describe a prerequisite the environment
+`incus-remote`, `incus-socket`, `opt-in`, `upstream`. Six describe a prerequisite the environment
 didn't supply — an IncusOS image, a container image, the `flasher-tool`
-binary, a readable/writable Incus unix socket, or (`incus-cluster`) a
+binary, a readable/writable Incus unix socket, (`incus-cluster`) a
 clustered daemon, for a check that needs cluster members or a create's
 `target=` (at least two Online members for the targeted create, so that an
-ignored target would land elsewhere). `incus-instances` is a
+ignored target would land elsewhere), or (`incus-remote`) a reachable
+standalone Incus remote, for `agent-self-upgrades-blue-green-without-gap.sh`,
+which upgrades a standalone host's agent. `incus-instances` is a
 *probe* rather than a named cause: a script that needs to create instances
 asks the daemon to create one and skips with the daemon's own words if it
 can't, which covers an uninitialized daemon (no storage pool) and a
@@ -282,7 +284,7 @@ absence causes a skip rather than a failure.
 |---|---|---|
 | `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` needs `jq`, `git` (a stub `gh`), and `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos) | yes |
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss` | yes |
-| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq` | no — needs the host |
+| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images) | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
 | `github` | authenticated `gh` with repo admin; `bump-workflow-opens-pin-only-pr.sh` also needs `VALIDATE_GITHUB_WRITES=1` | no — opens real PRs, would recurse |
 

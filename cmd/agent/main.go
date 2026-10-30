@@ -5,21 +5,34 @@
 // It keeps a persistent clone of the config repo, publishes its commit and
 // acting state on its own Incus instance, runs the #212 handoff, and writes a
 // heartbeat (#101). When it leads, it creates the agent on every declared
-// cluster member that has none (#203), syncing the same CONFIG_REPO_URL and
-// CONFIG_REPO_REF as itself. Generic App reconciliation (#98) is deferred to
-// Phase 8 (docs/Decisions.md §30).
+// cluster member that has none (#203), and replaces every host's agent
+// blue-green when the agent App's image changes in git (#109), each new agent
+// syncing the same CONFIG_REPO_URL and CONFIG_REPO_REF as itself. Generic App
+// reconciliation (#98) is deferred to Phase 8 (docs/Decisions.md §30).
 //
 // Configuration is environment variables only, in cmd/web's style:
 //
-//	AGENT_NODE_NAME               required: this node's Instance name in git config
-//	AGENT_INSTANCE_NAME           this agent's Incus instance name (default: hostname)
-//	AGENT_GENERATION              blue-green generation (default: parsed from a -g<N> instance-name suffix)
-//	CONFIG_REPO_URL               required: the config repo
-//	CONFIG_REPO_REF               branch to follow (default: main)
-//	AGENT_REPO_DIR                where the persistent clone lives (default: /var/lib/homelab-ops-agent/config-repo)
-//	AGENT_INCUS_SOCKET            Incus unix socket (default: seed.IncusSocketPath)
-//	AGENT_TICK_INTERVAL           e.g. 30s (default: 30s)
-//	AGENT_SYNC_FAILURE_THRESHOLD  consecutive failed syncs before the designation is distrusted and the agent drains (default: 10)
+//	AGENT_NODE_NAME                required: this node's Instance name in git config
+//	AGENT_INSTANCE_NAME            this agent's Incus instance name (default: hostname)
+//	AGENT_GENERATION               blue-green generation (default: parsed from a -g<N> instance-name suffix)
+//	CONFIG_REPO_URL                required: the config repo
+//	CONFIG_REPO_REF                branch to follow (default: main)
+//	AGENT_REPO_DIR                 where the persistent clone lives (default: /var/lib/homelab-ops-agent/config-repo)
+//	AGENT_INCUS_SOCKET             Incus unix socket (default: seed.IncusSocketPath)
+//	AGENT_TICK_INTERVAL            e.g. 30s (default: 30s)
+//	AGENT_SYNC_FAILURE_THRESHOLD   consecutive failed syncs before the designation is distrusted and the agent drains (default: 10)
+//	AGENT_HEARTBEAT_STALE_AFTER    a self-upgrade candidate is healthy while its heartbeat is younger than this (default: 90s)
+//	AGENT_MIN_HEALTHY_DURATION     how long a candidate stays healthy before it replaces the old agent (default: 2m)
+//	AGENT_UPGRADE_HEALTH_DEADLINE  a candidate not sustained-healthy this long after its creation is deleted, and the attempt counted (default: 10m)
+//	AGENT_UPGRADE_MAX_ATTEMPTS     counted attempts at one image before a host's upgrade is held, saying so in the status key (default: 3)
+//
+// AGENT_HEARTBEAT_STALE_AFTER must exceed the tick, and the deadline
+// AGENT_MIN_HEALTHY_DURATION plus two ticks, or no candidate could ever pass
+// (upgradeTimingErrs).
+//
+// The tick, threshold and four self-upgrade knobs are inherited: each agent
+// this one creates gets this agent's own values (inheritedEnv), so an
+// operator's tuning survives a self-upgrade.
 package main
 
 import (
@@ -69,6 +82,31 @@ type settings struct {
 	socket           string
 	tick             time.Duration
 	failureThreshold int
+	upgrade          agent.Upgrade
+}
+
+// inherited lists the knobs an agent passes on to the agents it creates.
+// Not the identity ones (node, instance, generation), nor where it finds its
+// clone and socket: those are each instance's own.
+var inherited = []string{
+	"AGENT_TICK_INTERVAL",
+	"AGENT_SYNC_FAILURE_THRESHOLD",
+	"AGENT_HEARTBEAT_STALE_AFTER",
+	"AGENT_MIN_HEALTHY_DURATION",
+	"AGENT_UPGRADE_HEALTH_DEADLINE",
+	"AGENT_UPGRADE_MAX_ATTEMPTS",
+}
+
+// inheritedEnv is the inherited knobs set in this agent's environment, for
+// agent.Agent.ChildEnv. loadSettings has already validated them.
+func inheritedEnv(getenv func(string) string) map[string]string {
+	out := map[string]string{}
+	for _, k := range inherited {
+		if v := getenv(k); v != "" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func run() error {
@@ -92,6 +130,8 @@ func run() error {
 	reg := &incusregistry.Registry{Client: client, Self: s.instance, Node: s.node, Generation: s.generation}
 	repo := agentdeploy.Repo{URL: s.repoURL, Ref: s.repoRef}
 	a := agent.New(s.instance, s.node, s.generation, clone, reg, client, repo, logger)
+	a.Upgrade = s.upgrade
+	a.ChildEnv = inheritedEnv(os.Getenv)
 
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()
@@ -196,7 +236,55 @@ func loadSettings(getenv func(string) string, hostname func() (string, error)) (
 		}
 		s.failureThreshold = n
 	}
+
+	s.upgrade = agent.DefaultUpgrade()
+	for _, d := range []struct {
+		key string
+		dst *time.Duration
+	}{
+		{"AGENT_HEARTBEAT_STALE_AFTER", &s.upgrade.HeartbeatStaleAfter},
+		{"AGENT_MIN_HEALTHY_DURATION", &s.upgrade.MinHealthy},
+		{"AGENT_UPGRADE_HEALTH_DEADLINE", &s.upgrade.HealthDeadline},
+	} {
+		if raw := getenv(d.key); raw != "" {
+			v, err := time.ParseDuration(raw)
+			if err != nil || v <= 0 {
+				errs = append(errs, fmt.Errorf("%s %q: want a positive duration", d.key, raw))
+			}
+			*d.dst = v
+		}
+	}
+	if raw := getenv("AGENT_UPGRADE_MAX_ATTEMPTS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			errs = append(errs, fmt.Errorf("AGENT_UPGRADE_MAX_ATTEMPTS %q: want a positive integer", raw))
+		}
+		s.upgrade.MaxAttempts = n
+	}
+	if len(errs) == 0 {
+		errs = append(errs, upgradeTimingErrs(s.tick, s.upgrade)...)
+	}
 	return s, errors.Join(errs...)
+}
+
+// upgradeTimingErrs rejects tuning that is valid knob by knob but makes every
+// self-upgrade fail, since the agents this one creates inherit it. A
+// candidate heartbeats once a tick, so a stale-after no longer than a tick
+// reads it stale between beats. And its healthy streak starts at the first
+// leader tick that sees it, a tick or so after it boots, and is only seen to
+// reach MinHealthy at a leader tick, up to a tick after that: a deadline
+// within MinHealthy plus two ticks of its creation deletes it first.
+func upgradeTimingErrs(tick time.Duration, u agent.Upgrade) []error {
+	var errs []error
+	if u.HeartbeatStaleAfter <= tick {
+		errs = append(errs, fmt.Errorf("AGENT_HEARTBEAT_STALE_AFTER (%v) must be longer than AGENT_TICK_INTERVAL (%v): a candidate heartbeats once a tick, so it would read stale between beats",
+			u.HeartbeatStaleAfter, tick))
+	}
+	if u.MinHealthy+2*tick >= u.HealthDeadline {
+		errs = append(errs, fmt.Errorf("AGENT_UPGRADE_HEALTH_DEADLINE (%v) must be longer than AGENT_MIN_HEALTHY_DURATION (%v) plus two AGENT_TICK_INTERVALs (%v): every candidate would be deleted before its healthy streak could be seen to reach the minimum",
+			u.HealthDeadline, u.MinHealthy, 2*tick))
+	}
+	return errs
 }
 
 func orDefault(v, def string) string {

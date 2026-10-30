@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	lxcapi "github.com/lxc/incus/v7/shared/api"
 )
@@ -71,6 +72,10 @@ type Instance struct {
 	// Left whole rather than narrowed to user.* so that nothing is silently
 	// unavailable to a later caller.
 	Config map[string]string
+	// CreatedAt is when Incus created the instance, as it reports it. The
+	// self-upgrade's health deadline counts from it (#109), so the deadline
+	// is re-derived from the listing rather than held in the agent's memory.
+	CreatedAt time.Time
 }
 
 // ListInstances returns every instance carrying AppTagKey.
@@ -107,10 +112,11 @@ func (c *Client) ListInstances(ctx context.Context) ([]Instance, error) {
 			continue
 		}
 		out = append(out, Instance{
-			Name:     inst.Name,
-			Status:   inst.Status,
-			Location: inst.Location,
-			Config:   inst.Config,
+			Name:      inst.Name,
+			Status:    inst.Status,
+			Location:  inst.Location,
+			Config:    inst.Config,
+			CreatedAt: inst.CreatedAt,
 		})
 	}
 	return out, nil
@@ -155,10 +161,45 @@ func (c *Client) CreateInstance(ctx context.Context, req lxcapi.InstancesPost, t
 	return nil
 }
 
+// StopInstance force-stops name (PUT /1.0/instances/<name>/state, action
+// stop) and waits for the operation to finish. Incus refuses to stop an
+// instance that isn't running, so callers stop only what the listing shows
+// Running.
+//
+// The stop is forced, not a clean shutdown: its caller (#109's self-upgrade)
+// stops only an instance that isn't acting, a non-acting candidate or an old
+// generation that has published acting: false, so there is no leader work in
+// it to wind down.
+func (c *Client) StopInstance(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("incuslocal: instance name is required")
+	}
+
+	body, err := json.Marshal(lxcapi.InstanceStatePut{Action: "stop", Force: true, Timeout: -1})
+	if err != nil {
+		return fmt.Errorf("marshal stop request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, baseURL+"/1.0/instances/"+url.PathEscape(name)+"/state", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build stop request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	envelope, err := c.do(req)
+	if err != nil {
+		return fmt.Errorf("stop instance %q: %w", name, err)
+	}
+	if err := c.awaitEnvelope(ctx, envelope); err != nil {
+		return fmt.Errorf("stop instance %q: %w", name, err)
+	}
+	return nil
+}
+
 // DeleteInstance deletes name and waits for the operation to finish.
 //
 // Incus refuses to delete a running instance, so callers that mean "remove
-// this generation" stop it first; this package does not stop it for them,
+// this generation" stop it first (StopInstance); this package does not stop
+// it for them,
 // because the reconcile loop's self-recognition rule (docs/AppManager.md)
 // makes "which instance may be destroyed" a decision that must stay with
 // the caller.
@@ -214,7 +255,12 @@ func (c *Client) DeleteInstance(ctx context.Context, name string) error {
 //     ever writes whole values.)
 //
 // Using this method against an instance other than the caller's own breaks
-// the single-writer premise, and concurrent writers will lose updates.
+// the single-writer premise, and concurrent writers will lose updates. The
+// one exception keeps it per key: the acting primary's self-upgrade (#109)
+// writes its own bookkeeping keys (internal/agent's KeyHealthySince,
+// KeyUpgradeAttempts, KeyUpgradeImage) on other agents' instances. Only the
+// acting primary writes them, at most one agent acts at a time, and a PATCH
+// leaves the instance's own keys alone, so each key still has one writer.
 func (c *Client) SetUserKeys(ctx context.Context, name string, keys map[string]string) error {
 	if name == "" {
 		return fmt.Errorf("incuslocal: instance name is required")
