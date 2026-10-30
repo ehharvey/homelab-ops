@@ -41,6 +41,10 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 # The operator's git config (aliases, pull.rebase, signing, hooks) must not
 # change what these repos do; each repo gets its own identity below.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=true
+# The stub gh answers only `pr view` / `pr create`, so a caller's SHIP_ISSUE
+# would send ship's #450 copy step to it and make ship refuse. Its branches
+# carry no #<n>, so with it unset ship leaves their messages alone.
+unset SHIP_ISSUE
 
 STUB="$WORK_DIR/stub"
 mkdir -p "$STUB"

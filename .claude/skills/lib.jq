@@ -16,6 +16,10 @@ def bundle_title: test("^\\[Task\\]: *Bundle:");
 # reverted bundle) holds nothing back.
 def bundled: .parent != null and .parent.state == "OPEN" and (.parent.title | bundle_title);
 
+# The open children in a REST `issues/<n>/sub_issues` listing, the ones a
+# bundle's commit closes (audit.sh, issue-block.sh). Input: that array.
+def open_sub_issues: .[] | select(.state == "open");
+
 # The decisions an issue's body cites: each `§<digit>…`, and `Decisions.md`
 # when it mentions the file. Any one makes /run-chain's lane `full`.
 def cites: (.body // "") | [scan("§[0-9]+"), (if test("Decisions\\.md") then "Decisions.md" else empty end)] | unique;
