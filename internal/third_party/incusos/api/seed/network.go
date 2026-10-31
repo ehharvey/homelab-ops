@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ 52be018875caeac870266db38d9c509e7ff9e5c3
+// Vendored from github.com/lxc/incus-os @ 1f4162b9865ea6963d744663503b53d8be11abee
 // (incus-osd/api/seed/network.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Modified: import path rewritten to this module's vendored api package.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
