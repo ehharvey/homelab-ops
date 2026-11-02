@@ -78,9 +78,13 @@ This resolves both questions left open on #37's review thread: key custody (moot
 - Any integration with an existing DHCP/DNS setup (e.g., reserve the address there too), or does this app become the sole source of truth?
 
 ### Answers
-Just assignment bookkeeping: track `Network` CIDRs to help with IP generation, with basic duplicate detection, and account for existing DHCP by tracking usable static-IP ranges outside the DHCP range. The app configures the node's network by writing `network.yaml`, not just recording it for a human to apply elsewhere. IPv4-only for now; the app is the sole source of truth, no DHCP/DNS write-back.
+Just assignment bookkeeping: track `Network` CIDRs to help with IP generation, with basic duplicate detection, and account for existing DHCP by tracking usable static-IP ranges outside the DHCP range. The app configures the node's network by writing `network.yaml`, not just recording it for a human to apply elsewhere. IPv4-only for now; the app is the sole source of truth. IPAM now also drives DHCP reservations and DNS records, with the DHCP mode an operator choice per `Network` (§31; first decided as no DHCP/DNS write-back, see History).
 
 Implemented in `internal/ipam` (#35): operator-supplied `static_ip` is honored and validated against the network's CIDR and `dhcp_excluded_range`; when omitted, the app auto-assigns the next free IPv4 from `dhcp_excluded_range`, reusing the same instance's prior persisted address across re-syncs so it doesn't churn. Duplicates and out-of-range values are rejected per network (two different networks may reuse the same address), and the sync that produced them is hard-failed — including an explicit `static_ip` that collides with a *different* instance's prior-assigned address, which is rejected rather than silently relocating that instance to a new one. Full policy: `docs/Ipam.md`.
+
+### History
+
+- **2026-11-02 (#466, §31):** the answer was "no DHCP/DNS write-back". The appliance and then the cluster now serve DHCP and DNS (Kea), so IPAM's reservations feed them, and the mode (`off`, `proxy`, `reservations`, `full`) is an operator choice per `Network`.
 
 ## 6. TPM / Secure Boot (note 10) — flagging a likely misunderstanding
 
@@ -95,6 +99,12 @@ IncusOS binds **disk encryption** to measured boot via TPM PCRs, and Secure Boot
 
 ### Answers
 Both TPM presence and Secure Boot are configurable per-instance, since homelab hardware genuinely may lack a TPM and that tradeoff is accepted.
+
+**On Talos and the own distro (§31), the keys are the project's.** Nodes boot in Setup Mode and the first boot enrolls the project's PK, KEK and db, with Microsoft's UEFI CA enrolled by default as an operator choice. PK and KEK private keys stay offline; images are signed on the appliance laptop. The per-instance TPM and Secure Boot choices above still hold.
+
+### History
+
+- **2026-11-02 (#466, §31):** added own-key enrollment for Talos and the own distro. IncusOS hosts are unchanged.
 
 ## 7. Remote logging to Grafana / Tailscale (note 8)
 
@@ -202,8 +212,8 @@ bus" addendum immediately above, and doesn't reopen that rejection:
   no command semantics — sitting on top of the WireGuard tunnel once it
   exists, closer to a bastion/jump host than a control plane.
 
-**Expected sequencing:** with the web app as a bastion (#399, Phase 6 in
-`docs/Roadmap.md` since §30). WireGuard node connectivity is in place
+**Expected sequencing:** with the web app as a bastion (#399, Phase 5 in
+`docs/Roadmap.md` since §31). WireGuard node connectivity is in place
 (#91). Not designed or built now — captured here so the shape of the
 options survives until then.
 
@@ -315,9 +325,9 @@ Surfaced by #46 (no `Network`-level validation) and tracked as the decision #47.
 
 Implementation (the `netip` type rework + `config.Validate` pass, which also closes #46) lands under #46; dev-facing conventions for it are in `Development Conventions.md` § Config validation.
 
-## 14. Metrics (added to the logging work, now Phase 8)
+## 14. Metrics (added to the logging work, now Phase 9)
 
-The logging work (then Phase 3; Phase 8 since §30) was originally scoped as Tailscale + logging only (§7 above). Folding in node/infra resource metrics (host + Incus-instance CPU/memory/disk/network) alongside logging raised three questions: where do metrics come from, how do they get shipped, and how does the shipping agent authenticate.
+The logging work (then Phase 3; Phase 8 since §30, Phase 9 on Kubernetes since §31) was originally scoped as Tailscale + logging only (§7 above). Folding in node/infra resource metrics (host + Incus-instance CPU/memory/disk/network) alongside logging raised three questions: where do metrics come from, how do they get shipped, and how does the shipping agent authenticate.
 
 ### Source
 
@@ -343,24 +353,25 @@ This means "local Grafana instance" and "Grafana Cloud" aren't an either/or choi
 
 **Local dev/test stack:** requiring live Grafana Cloud credentials for every `scripts/validate/` run (or every dev loop) is exactly the friction the repo's other dev fixtures avoid (`dev/git-fixture` for config sync). So a local stack — Grafana + Loki + Prometheus (with `--web.enable-remote-write-receiver`) under `docker-compose.yml`, mirroring the existing `web`/`config-repo` services — is always at least one of the configured destinations for `scripts/validate/`'s logging and metrics checks (Phase 8): no cloud credentials needed for that destination, fully automatable, torn down after each run. A real Grafana Cloud check (with the local stack configured as an *additional* destination, or on its own) remains available as a separate, credential-gated step (same gate-and-skip pattern as `INCUSOS_BASE_IMAGE`/`BASE_IMAGE_PATH` for real-VM tests) rather than the thing CI/every contributor has to run.
 
-## 15. Multi-OS support (Debian, NixOS, Talos) — Phase 6, not yet built
+## 15. Multi-OS support (Debian, NixOS, Talos) — Talos is the main line, the rest parked
 
-Explored 2026-07-03: the plan is to manage more than IncusOS nodes. None of
-the other targets is built. They are `docs/Roadmap.md` Phase 6 (§30), after
-the agent (Phase 3), the web app appliance (Phase 4) and same-OS clusters
-(Phase 5).
+Explored 2026-07-03: the plan is to manage more than IncusOS nodes. Since
+§31, **Talos is the main line** (`docs/Roadmap.md` Phases 6 and 7, after the
+runtime-agnostic seams in Phase 4 and the appliance in Phase 5), and Debian
+and NixOS with Incus are parked with the Incus runtime. None of the non-IncusOS
+targets is built.
 
-### Order: IncusOS → Debian → NixOS → Talos
+### Order
 
 - **IncusOS** is done.
-- **Debian + Incus** comes next, by the declared-disk path first
-  (Prerequisite 4 below). #398 is the first step.
-- **NixOS + Incus** follows. It is an Incus host like Debian, so the agent
-  runs there and joins clusters. Its install mechanism isn't covered below and
-  needs its own decision before it's built.
-- **Talos** comes last. It isn't an Incus host (below), so the agent can't
-  run there, and "the agent handles clustering" stops at NixOS. Talos needs
-  its own management path.
+- **Talos** comes first among the rest, as bare-metal Kubernetes (§31). It
+  isn't an Incus host (below), so the agent can't run there; its management
+  path is §31's.
+- **Debian** (with Incus or Kubernetes, §31's allowed pairs) and **NixOS +
+  Incus** are parked. Debian keeps the declared-disk path first (Prerequisite
+  4 below). NixOS's install mechanism isn't covered below and needs its own
+  decision before it's built.
+- **An own mkosi-built distro** replaces Talos later (§31).
 
 A cluster's members all run the same OS (§30): Incus rejects a joiner whose
 version differs from the cluster's at `Accept` (§27). A host in no cluster is
@@ -397,8 +408,9 @@ identical struct. The open question was the install mechanism:
   still the right tool for building the *helper* boot environment itself.
   The web app's own mkosi-built appliance image (§29, #393) is folded into
   this work as another role for the same build, with its design open. The
-  Roadmap keeps #393 as a `(later)` item in Phase 4, beside the other
-  appliance forms.
+  Roadmap keeps #393 as a `(later)` item in Phase 5, beside the other
+  appliance forms. Per §31, the same mkosi pipeline later builds the own
+  distro's node OS.
 
 ### Helper OS: pre-install hardware registration/confirmation
 
@@ -420,12 +432,11 @@ Talos nodes aren't Incus hosts — they're Kubernetes nodes — so
 `applications: [incus]`, the break-glass-cert-into-Incus trust model, and
 Alloy-as-an-Incus-instance for observability don't transfer. Talos has its
 own machine-config format (one YAML, a reasonable analog to today's seed)
-and its own PKI bootstrap (`talosctl gen config`), implemented in parallel
-rather than reused. Phased the same way Incus multi-node itself is (§0,
-`Architecture.md`'s 0.x framing): single-node install first; full cluster
-lifecycle (control-plane/worker roles, `talosctl bootstrap`, etcd quorum)
-deferred further behind that, mirroring the existing Operations Center
-deferral.
+and its own PKI bootstrap, generated with the `machinery` Go module rather
+than `talosctl gen config` (§31), implemented in parallel rather than reused.
+Single-node install first (Phase 6); full cluster lifecycle (control-plane
+roles, the Talos bootstrap run once from the appliance, etcd quorum) next
+(Phase 7). Omni, Talos's management plane, is ruled out (§31).
 
 ### Prerequisites (why this isn't buildable yet)
 
@@ -435,7 +446,8 @@ deferral.
    single-disk/single-NIC-only checks). Before any second OS backend
    lands, this needs a discriminator (e.g. an `os`/`target` field on
    `Instance`) and a renderer-selection seam — one `Render`/image-build
-   implementation per OS behind a shared interface.
+   implementation per OS behind a shared interface. This is §31's
+   `internal/hostos` seam, Roadmap Phase 4 (#398).
 2. **Node → web app networking**, currently fully unresolved
    (`Architecture.md` § "Incus Node networking to Web App", `Decisions.md`
    §11). The helper-OS registration/confirmation flow *requires* this — a
@@ -443,11 +455,11 @@ deferral.
    "node talks back to the app" problem §11 defers. This has to be decided
    before the helper-OS flow is buildable at all, not just nice-to-have.
    §11 has since been resolved by the seeded WireGuard tunnel (#91), which
-   a helper OS could reuse; Tailscale (Phase 7) is no longer the expected
+   a helper OS could reuse; Tailscale (Phase 10) is no longer the expected
    answer.
-3. **Ordering.** Phase 6 comes before Tailscale (Phase 7). The declared-disk
-   path (4) needs no node-to-web-app round-trip, so Debian doesn't wait on
-   the confirmation flow's networking.
+3. **Ordering.** The OS phases come before Tailscale (Phase 10). The
+   declared-disk path (4) needs no node-to-web-app round-trip, so Debian,
+   when it's unparked, doesn't wait on the confirmation flow's networking.
 4. A smaller intermediate milestone is worth considering before the full
    confirmation-flow UX: a "declared-disk" Debian+Incus path (operator
    pre-specifies the target disk in config, no helper-OS round-trip) as a
@@ -463,6 +475,12 @@ deferral.
   read "Phase 3 (Tailscale/logging/metrics) is already in progress and likely
   lands first regardless of this direction"; Prerequisite 2 expected
   Tailscale to answer §11.
+- **2026-11-02 (#466, §31):** the pivot to bare-metal Kubernetes on Talos.
+  The order was IncusOS → Debian → NixOS → Talos, with Talos last and outside
+  "the agent handles clustering"; Talos is now the main line, and Debian and
+  NixOS with Incus are parked. The Talos subsection used `talosctl gen config`
+  and deferred cluster lifecycle behind single-node install, mirroring the
+  Operations Center deferral.
 
 ## 16. `internal/incuslocal` vs. `internal/nodeprovision`: accepted duplication (#92)
 
@@ -890,6 +908,14 @@ built now. This records the shape they'd take and what actually blocks them,
 so the design isn't accidentally foreclosed. See `docs/AppClasses.md` for the
 class vocabulary used throughout.
 
+**Since §31, Kubernetes is the cluster runtime, not a workload.** Stateful
+apps on it are Roadmap Phase 9: a `StatefulSet` with `replicas: 1` and a local
+volume by default, and databases through an operator that implements the
+three layers below (CloudNativePG, say). The layering, the proxy-as-a-separate-
+App rule and the member-level blue-green analysis still hold there. What's
+specific to the App Manager (the class renderers, `kind: App` volumes, the
+prerequisites below) is parked with the Incus runtime.
+
 ### Direction
 
 **Three layers, and the boundary between them is the whole design.**
@@ -952,7 +978,7 @@ proxy         →  routing, health-checked against the DB layer  (seconds)
   candidate member is itself a quorum event and version skew, not health, is
   what makes a member unsafe to admit.
 
-### Prerequisites (why this isn't buildable yet)
+### Prerequisites on the Incus runtime (parked, §31)
 
 - **Real multi-member Incus clustering.** Three replicas on one physical node
   is theater — the same critique § App Manager HA already levels at 0.x's own
@@ -971,6 +997,13 @@ proxy         →  routing, health-checked against the DB layer  (seconds)
 - **Backup.** Replication is not backup — a `DROP TABLE` replicates
   perfectly. Orthogonal to all of the above (a sidecar plus `params`), but it
   has to exist before anything real depends on a managed database.
+
+### History
+
+- **2026-11-02 (#466, §31):** Kubernetes moved from a workload this section
+  planned to host (classes 4 and 5) to the cluster runtime itself. The
+  prerequisites, then "why this isn't buildable yet", now apply only to the
+  parked Incus runtime.
 
 ## 20. The validation suite: bash, tailnet CI, and no OVN (#115, #127)
 
@@ -1802,13 +1835,13 @@ incus:
 
 **Verified against a real boot**, not just source-reading (#315): `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` passes 16/0/0. A freshly installed node reports `environment.server_clustered: true`, and `GET /1.0`'s `config` carries both keys exactly as seeded, not normalised: `core.https_address` is `":8443"` and `cluster.https_address` is `"192.168.1.201:8443"`. `GET /1.0/cluster/members?recursion=1` has exactly one member, with `url` `https://192.168.1.201:8443`. `scripts/validate/node-tunnel-survives-nat-and-provisions.sh` reaches the same node's API over `wg0` (`10.100.0.2:8443`) and provisions through it, passing 44/0/0. Before this fix, its section 6 got `connection was refused` on that address.
 
-**§27's joiner seed is not covered.** Its incus.yaml (Phase 5, not built) still sets `core.https_address: "<static_ip>:8443"`, so a joiner would bind its LAN address only and be unreachable over its own tunnel, the bug #315 fixed here. Revisit it when §27's seed is built.
+**§27's joiner seed is not covered.** Its incus.yaml (parked, §31; not built) still sets `core.https_address: "<static_ip>:8443"`, so a joiner would bind its LAN address only and be unreachable over its own tunnel, the bug #315 fixed here. Revisit it when §27's seed is built.
 
 **Scope stayed deliberately small.** One member is still Incus's whole scheduler decision (§17's "no placement field" reasoning is unaffected — `Target`/cluster groups still buy nothing with one member). No join token, no membership config, no networks/storage-pool parity work: all of that is Tier B.
 
-### Tier B: real multi-member clustering (Phase 5)
+### Tier B: real multi-member clustering (parked, §31)
 
-Growing to N≥2 members is a materially bigger project — Architecture.md's "explicitly out of scope for 0.x" framing was right about *this* half of clustering, just conflated with Tier A under one sentence. It gets its own roadmap phase: Phase 5, after the agent (Phase 3) and the web app appliance (Phase 4), per §30.
+Growing to N≥2 members is a materially bigger project — Architecture.md's "explicitly out of scope for 0.x" framing was right about *this* half of clustering, just conflated with Tier A under one sentence. It got its own roadmap phase (§30), and is parked with the Incus runtime since §31 moved the main line to Talos.
 
 What it needs, roughly in dependency order:
 
@@ -1819,26 +1852,27 @@ What it needs, roughly in dependency order:
 - **Member add/remove and quorum-loss recovery** as an operator workflow.
 - **Revisit `leaderelection`.** §25's `Designated` and the deferred ranked-over-Incus election are both node-scoped already and don't need rework to keep working across real members; N≥3 real Incus members are what would make automated (ranked) election worth its cost over `Designated`'s operator step, per §25's own trade-off.
 
-Tier B is filed as a tracking issue (#179) plus its workstreams, all `later` — nothing here blocks Phase 3 or 4.
+Tier B is filed as a tracking issue (#179) plus its workstreams, all `later` — nothing here blocks the main line.
 
 ### History
 
 - **2026-09-21, #178: concrete `core.https_address`, wildcard rejected.** The source-reading spike planned `core.https_address: ":8443"` (a wildcard bind, and the value every `scripts/validate/*.sh` script dials) with `cluster.https_address` unset. A real boot caught the problem: the config applied fine (it showed in `GET /1.0`'s `config`), but `UpdateCluster` failed with `Cannot use wildcard core.https_address "" for cluster.https_address. Please specify a new cluster.https_address or core.https_address`. That was found by replaying `ApplyServerPreseed`'s `PUT /1.0/cluster` by hand against the booted node, since the VM console log carries no `incus-osd` application output. The fix then bound `core.https_address` to the instance's static IP. The conclusion drawn, "Incus rejects a wildcard bind outright", was too broad: the `""` in that error is the empty *cluster* address the `%q` prints, and the check runs only when `cluster.https_address` is empty. `node-boots-and-trusts-bootstrap-cert.sh` passed 12/0/0.
 - **2026-10-17, #315: split the API bind from the member address.** Binding the API to the LAN IP alone left nothing listening on `wg0`'s `10.100.0.2`, so `node-tunnel-survives-nat-and-provisions.sh` section 6 failed with `connection was refused` (found while verifying #268). The seed now sets `core.https_address: ":8443"` plus a concrete `cluster.https_address`, per the body above.
 - **2026-10-26, #401: Tier B is Phase 5.** §30's re-plan put the web app appliance at Phase 4, so Tier B renumbered from Phase 4 to Phase 5, and its clusters are same-OS. The body used to say Tier B took Phase 4 while the old Phase 4 ("Tailscale, logging + metrics") renumbered to Phase 5 as pure renumbering, and that nothing in Tier B blocked Phase 3, which was then that Tailscale and logging phase.
+- **2026-11-02, #466: Tier B is parked.** §31 moved the main line to bare-metal Kubernetes on Talos; Tier B (then Phase 5) is kept but parked with the Incus runtime.
 
 ## 27. Pivot to a real 3-member cluster; the agent joins members; App reconciliation deferred to Phase 8 (2026-09-28)
 
-A real 3-member Incus cluster (Phase 5) comes ahead of the rest of #92. §30 narrows the agent to managing itself and its cluster, and keeps every cluster to one host OS.
+**Parked by §31 (see History):** the main line is now bare-metal Kubernetes on Talos, and this section's Incus cluster work is kept but parked with the Incus runtime. A real 3-member Incus cluster came ahead of the rest of #92. §30 narrows the agent to managing itself and its cluster, and keeps every cluster to one host OS.
 
-**Why.** An operational cluster now matters more than AppManager. Work so far has run into problems that came from not having a real cluster, and the operator needs a working cluster in any case. AppManager's app reconciliation is deferred to Phase 8 (§30), after host management, where its HA can be tested on a real physical cluster rather than on one member.
+**Why.** An operational cluster now matters more than AppManager. Work so far has run into problems that came from not having a real cluster, and the operator needs a working cluster in any case. AppManager's app reconciliation is deferred (§30) and parked with the Incus runtime (§31), where its HA can be tested on a real physical cluster rather than on one member.
 
 The app-manager agent still ships, but its first real jobs are **cluster membership**, not app deployment:
 
 - joining new members (#180);
 - making sure every member runs an agent (#203).
 
-Generic App reconciliation (#98, beyond #203's slice) and cluster-group placement (#182) are deferred to Phase 8 (§30). #109 and #103 are narrowed to the agent's own self-upgrade and stay in Phase 3 (§30).
+Generic App reconciliation (#98, beyond #203's slice) and cluster-group placement (#182) are parked (§30, §31). #109 and #103 are narrowed to the agent's own self-upgrade and stay in Phase 3 (§30).
 
 What follows was first read from `lxc/incus/v7` v7.5.1 and IncusOS source, then checked by hand on `homelab-host` in the #193 spike (evidence below). The web app's interim security posture was raised at the same time but is independent of this pivot; it is §28.
 
@@ -1920,7 +1954,7 @@ A joiner booted this way comes up with an empty Incus: no pools, no networks, an
 
 - Needed: #99, #100 (both the web app route and the `bootstrap deploy-agent` CLI path), #101, #102, #160 and #203.
 - Narrowed to the agent's own self-upgrade (§30): #103 and #109.
-- Deferred to Phase 8 (§30): #98 (apart from #203's slice) and #182.
+- Parked (§30, §31): #98 (apart from #203's slice) and #182.
 
 ### Decision: every member runs an agent (#203)
 
@@ -2002,7 +2036,7 @@ The web app is a provisioning and observation plane, never on the cluster's runt
 - **Lost while the web app is down, by design:**
   - rendering seeds and images for new nodes;
   - the web app's `deploy-agent` route (the CLI path still works);
-  - the missing-primary-heartbeat alert (`docs/AppManager.md`). That one is monitoring, not function; Phase 8's observability App (Alloy, #77–#80) is its longer-term home.
+  - the missing-primary-heartbeat alert (`docs/AppManager.md`). That one is monitoring, not function; Phase 9's observability on Kubernetes (#77–#80, §31) is its longer-term home.
 - **Rule for future work:** nothing on a node or in the agent may call the web app synchronously. If a feature seems to need that, it belongs in git or in the agent.
 
 ### Operations Center, again
@@ -2056,10 +2090,11 @@ Also found:
 - **2026-09-29 (#193):** the spike confirmed the source reading, except that no physical network needs `member_config`. It added what a join body needs beyond the token, how the token is assembled, the wait for `initialized`, `dns.hostname` on joiners, and the four-call fix-up.
 - **2026-10-03 (#223):** the spike addendum folded into the body above; its evidence kept as its own subsection.
 - **2026-10-26 (#401, §30):** the re-plan around host management. The "paused" App items stopped being paused-to-resume: #98's generic reconciliation and #182 moved to Phase 8, and #103/#109 were narrowed to the agent's self-upgrade, replacing "agent upgrades stay an operator step until #98 and #109 resume". The cluster phase renumbered from 4 to 5, multi-node now means same-OS clusters, and standalone hosts got their deploy path. The body used to say an agent "that is deployed and does little else is an acceptable Phase 3 end state"; Phase 3 now ends with agent self-upgrade.
+- **2026-11-02 (#466, §31):** the pivot to bare-metal Kubernetes on Talos parked this section's Incus cluster work (then Phase 5) and the App items deferred to Phase 8. Observability moved to Phase 9, on Kubernetes.
 
 ## 28. The web app's interim security posture: WireGuard API by default, one operator-held key (2026-09-28)
 
-Raised alongside §27 but independent of it: none of this blocks the cluster work (Phase 5). It is scheduled in `docs/Roadmap.md` Phase 4, the web app appliance and hardening (#195–#200, #397; folded in by §30). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
+Raised alongside §27 but independent of it: none of this blocks the cluster work. It is scheduled in `docs/Roadmap.md` Phase 5, the web app appliance (#195–#200, #397; folded in by §30, renumbered by §31). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
 
 **The problem.**
 
@@ -2168,7 +2203,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 - **Proper auth and a JS client** (sized 2026-09-28).
   - Auth alone is roughly three to four issues: TLS; OIDC login (Authorization Code + PKCE via `coreos/go-oidc`, with the server holding the login so the browser only ever gets a session cookie); session and CSRF middleware; an identity provider (Dex) in compose for validation; and device-code or mTLS access for the CLI.
   - The JS client is the larger cost. The repo has no Node toolchain, build stage or CI job yet, and every screen adds to it.
-  - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 7).
+  - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 10).
 - **Asymmetric encryption (GPG or age X25519).** This would let the web app write backups it can't read, and snapshot signing belongs with it.
   - GPG fits best if the operator already has a key, especially on a hardware token: one key both decrypts backups and verifies signatures. Its Go dependency is the cost. `golang.org/x/crypto/openpgp` is frozen and deprecated, and the maintained `github.com/ProtonMail/go-crypto` is heavier than this repo usually accepts (Development Conventions' "small dependency" rule).
   - age X25519 plus stdlib `crypto/ed25519` is lighter, and age can encrypt to an SSH key the operator already has.
@@ -2182,6 +2217,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 ### History
 
 - **2026-10-03 (#247, #195).** The tunnel-only API became the default rather than the only mode. An explicit, opt-in host listener on an operator-chosen address replaced the earlier dev-only localhost flag, and TLS was named as a later third mode. Why: the web app now runs on appliance machines in several topologies (§29), and every deployment setting is an operator choice with a safe default.
+- **2026-11-02 (#466, §31).** Renumbered only: the appliance phase is now Phase 5 (it was Phase 4), and the cluster work this never blocked (then Phase 5, multi-member Incus clusters) is parked.
 
 ## 29. The web app runs on an appliance machine; every deployment setting is an operator choice (2026-10-03)
 
@@ -2191,6 +2227,8 @@ Resolves §9's open question for 0.x. The web app runs on its own machine, outsi
 - **a spare machine on the same LAN as the nodes,** such as a laptop.
 
 The operator reaches it in both cases.
+
+**The bootstrap and break-glass appliance is the LAN form, a dedicated laptop (§31).** It holds the signing key and operator credentials, runs DHCP and DNS from IPAM until the cluster takes them over, runs the Talos bootstrap once, and is the break-glass boot and DHCP source after a full power cut. Those roles need the nodes' LAN, so an internet-reachable VM can host the web app but can't fill them. The web app later moves into the cluster as Talos static pods (§31), which replaces `bootstrap deploy-web` (#386) as the route into the fleet.
 
 ### Decision: one image; a cloud-init Debian box first
 
@@ -2203,7 +2241,7 @@ Every host form runs the same published OCI image (#240) with the same deploymen
 - **Parked: an IncusOS turnkey host (#246)** (first planned as the second form; see History). An IncusOS seed can't create instances: the Incus preseed it carries (`InitLocalPreseed`, Incus v7.5.2 `shared/api/init.go`) declares networks, pools, volumes, profiles, projects, certificates and cluster groups, but no instances.
   - So this form always needs `bootstrap deploy-web` after boot, over the Incus API, from a client the host already trusts. On an internet VM, that means exposing the Incus API to finish the install.
   - Its seed (#394) and hardware runbook (#387) wait on #246. They hold the open hardware questions: TPM 2.0 and Secure Boot (§6), Wi-Fi, and cloud-provider boot.
-  - **`bootstrap deploy-web` itself (#386) isn't parked.** Pointed at a cluster member, it is how the web app later moves into the fleet (§9).
+  - **`bootstrap deploy-web` (#386) is parked too**, with the Incus runtime (§31; first kept as the route into the fleet, see History).
 - **Later and undecided: an mkosi-built appliance image (#393)** (first rejected; see History). It's the fancier form: self-contained, with the OS contents under our control. It's folded into §15's multi-OS work, the same tool family as §15's helper OS, rather than built as a one-off. Its design is open: read-only root, update model, where secrets come from, and outputs.
 
 ### Decision: every deployment setting is an operator choice, with a safe default
@@ -2220,6 +2258,8 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 | node0 provisioning | By the web app over the tunnel (#244) | Bootstrap CLI, offline, no tunnel (today's Flow A) |
 | WireGuard endpoint | No default; the operator supplies it. Recommended: a DNS name | An IP address |
 | Snapshots | Local | Local plus off-cluster S3 (#200) |
+| DHCP, per `Network` (§31) | `off`: the router does DHCP | `proxy`, `reservations` or `full`, served by Kea from IPAM |
+| Microsoft UEFI CA in enrolled Secure Boot keys (§31) | Enrolled | Left out, on hardware known to need no Microsoft-signed option ROMs |
 
 - **Install media.** On an internet VM, server-side builds mean a multi-GB transfer across the internet per node, plus VM disk for each copy. The seed is a few KB.
   - IncusOS reads a user-provided FAT or ISO volume labelled `SEED_DATA` beside an unmodified install image (upstream `doc/reference/seed.md`). The stick must be removed after install.
@@ -2258,14 +2298,15 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
   - **The Docker box became a cloud-init Debian box, with automatic OS updates.** That removes both the manual setup and the manual patching.
   - **The IncusOS host was parked.** Its plan assumed the seed could set up the web app. It can't create instances, so the form always needs a post-boot `deploy-web`.
   - **The mkosi image moved from rejected to later and undecided (#393).** Folded into §15's multi-OS work, it shares a build with the helper OS rather than costing a one-off.
+- **2026-11-02 (#466, §31).** The LAN laptop became the bootstrap and break-glass appliance, with DHCP, DNS and Secure Boot settings added to the operator-choice table, and the appliance phase moved ahead of the first Talos node. `bootstrap deploy-web` (#386) used to be kept as how the web app moves into the fleet; with the fleet on Talos that route is static pods, so #386 is parked with the Incus runtime.
 
 ## 30. Re-plan around host management: the agent manages only itself and its cluster (2026-10-26)
 
-The project's goal moves from App management to **host support and management**. Until a deferred App management phase (Phase 8), **the agent is the only App managed**. `docs/Roadmap.md` is re-laid as Phases 3–8 to match (#401).
+The project's goal moves from App management to **host support and management**. **The agent is the only App managed**; App management for the Incus runtime is parked (§31). `docs/Roadmap.md` was re-laid as Phases 3–8 to match (#401), and re-laid again by §31.
 
 ### The agent manages only itself, and clusters
 
-The agent deploys (#100), upgrades itself (#109, #103), runs one per host (#203) and joins members of its cluster (#180). Nothing beyond that. Generic App reconciliation (#98), blue/green for other Apps, placement (#182) and stateful apps (§19) are deferred to Phase 8. §27's "paused" items are deferred, not paused-to-resume.
+The agent deploys (#100), upgrades itself (#109, #103), runs one per host (#203) and joins members of its cluster (#180). Nothing beyond that. Generic App reconciliation (#98), blue/green for other Apps, placement (#182) and stateful apps (§19) are parked with the Incus runtime (§31; on Kubernetes they are Phase 9). §27's "paused" items are deferred, not paused-to-resume.
 
 **One agent per host, by two paths:**
 
@@ -2274,14 +2315,14 @@ The agent deploys (#100), upgrades itself (#109, #103), runs one per host (#203)
 
 ### Leadership is per cluster; a standalone host is its own primary
 
-A standalone host is treated as a one-member cluster, whether its Incus is a Tier A one-member cluster (static IP) or a bare, unclustered daemon (DHCP-only, which skips clustering, §26). **Its one host is its primary:** the agent takes its own node as primary, with no `kind: Designation` needed. A multi-member cluster's primary is the node `kind: Designation` names. This amends §25 rule 1 from one primary per repo to one per cluster. §25's other rules stand, and its single acting instance holds per cluster, which was already its reach: an agent reads its peers from its own member's Incus, so it never sees another cluster's agents. Taking a standalone host as its own primary is #109's; scoping `kind: Designation` to a cluster is #181's (Phase 5). On a standalone host, creates omit `target=`, as `internal/agentdeploy` already does; only a multi-member cluster needs it.
+A standalone host is treated as a one-member cluster, whether its Incus is a Tier A one-member cluster (static IP) or a bare, unclustered daemon (DHCP-only, which skips clustering, §26). **Its one host is its primary:** the agent takes its own node as primary, with no `kind: Designation` needed. A multi-member cluster's primary is the node `kind: Designation` names. This amends §25 rule 1 from one primary per repo to one per cluster. §25's other rules stand, and its single acting instance holds per cluster, which was already its reach: an agent reads its peers from its own member's Incus, so it never sees another cluster's agents. Taking a standalone host as its own primary is #109's; scoping `kind: Designation` to a cluster is #181's (parked, §31). On a standalone host, creates omit `target=`, as `internal/agentdeploy` already does; only a multi-member cluster needs it.
 
 ### Agent upgrade is agent-driven
 
 When the agent App's `image` in git differs from the running agents', **the primary's agent creates every host's successor** (generation g+1) over its Incus socket: the same leader loop as #203's. **The primary never moves for an upgrade.** The designation names a node, not an instance (§25), so the primary host stays the same throughout.
 
 - **On the primary's host, the primary's agent creates its own successor on that same host.** §25's handoff follows: the old instance marks itself `draining` once its candidate is sustained-healthy, the candidate takes over as the acting instance, and **the candidate retires the old instance**. The old instance never deletes itself. On a standalone host, this is the whole upgrade.
-- **On a follower's host** (a multi-member cluster, Phase 5), the primary's agent creates the follower's successor, placed with `target=<member>`. A follower's candidate is a follower and never acts (§25 rule 1), so **the acting primary retires the old follower instance** once its candidate is sustained-healthy.
+- **On a follower's host** (a multi-member cluster, parked by §31), the primary's agent creates the follower's successor, placed with `target=<member>`. A follower's candidate is a follower and never acts (§25 rule 1), so **the acting primary retires the old follower instance** once its candidate is sustained-healthy.
 
 There is one acting instance per cluster throughout, §25's invariant unchanged. This is #109 (which takes the agent-only slice of #98's image-change handling) plus #103's proof, narrowed to the agent.
 
@@ -2292,15 +2333,11 @@ There is one acting instance per cluster throughout, §25's invariant unchanged.
 
 ### Clusters are same-OS, joined by the agent
 
-A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The check that a cluster's members declare one `os` arrives with that field, in #398 (Phase 6). Until then every host is IncusOS, so #181 (Phase 5) has nothing to check.
+A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The check that a cluster's members declare one `os` arrives with that field, in #398 (Phase 4, §31). Until then every host is IncusOS, so #181 (parked) has nothing to check.
 
-### Host OS order: IncusOS → Debian → NixOS → Talos
+### Host OS order
 
-Phase 6, detailed in §15.
-
-- IncusOS is done. Debian is next, by §15's declared-disk path first; #398 is the first step.
-- NixOS isn't in §15's original exploration, and needs its own decision.
-- Talos is not an Incus host (§15), so the agent can't run there, and "the agent handles clustering" stops at NixOS. Talos needs its own management path.
+Superseded by §31 (see History): Talos is the main line, and Debian and NixOS with Incus are parked with the Incus runtime. Talos is still not an Incus host (§15), so the agent can't run there; its management path is §31's.
 
 ### Node access
 
@@ -2317,14 +2354,113 @@ Phase 6, detailed in §15.
 
 ### Roadmap layout
 
+Superseded by §31's layout (see History). Phase 3 is unchanged and is finished before the Incus runtime is parked.
+
+### History
+
+- **2026-11-02 (#466, §31):** the pivot to bare-metal Kubernetes on Talos. This section's rules now describe the Incus runtime, which is kept building but parked after Phase 3. Superseded: the host OS order (IncusOS → Debian → NixOS → Talos, Phase 6) and the Roadmap layout (3: the agent; 4: web app appliance and hardening; 5: same-OS Incus clusters; 6: multi-OS hosts; 7: Tailscale; 8: App management). Node access and auth stand; the SSH CA for Debian and NixOS hosts is parked with them.
+
+## 31. Pivot to bare-metal Kubernetes on Talos; the project becomes runtime-agnostic (2026-11-02)
+
+The main line moves from IncusOS hosts, with Kubernetes later on top, to **bare-metal Kubernetes on Talos**. The Incus code is **kept building, not deleted**: IncusOS becomes one host-OS backend and Incus one cluster runtime. Phase 3 (agent self-upgrade: #109, #103) is finished first. Multi-member Incus clustering (§26 Tier B, §27) and Incus App management (§17, §18) are parked, not closed. `docs/Roadmap.md` is re-laid to match (#466).
+
+**Why.** IncusOS plus Kubernetes is two orchestrators: two cluster stores (dqlite and etcd), two network layers, two storage layers, two PKIs, two upgrade cycles and two HA designs. The repo was already rebuilding Kubernetes primitives on Incus: a leader lease (§25 vs `Lease`), one agent per host (§30 vs `DaemonSet`), blue-green behind a health gate (vs rollouts and readiness), placement (#182 vs the scheduler) and §19's stateful classes (vs `StatefulSet` and operators). The runtime cost of the extra layer is mostly RAM held by VMs, not CPU; the cost that decided this is running and maintaining both. What's lost is VMs and moving stateful workloads between nodes (VMs, below).
+
+### Runtime-agnostic seams
+
+- **Config.** `Instance.os` (`incusos | talos | debian | <own distro>`; #398's field) and a per-cluster `runtime` (`incus | kubernetes`), with an allowed-pairs table checked at parse:
+
+  | `os` | allowed `runtime` |
+  |---|---|
+  | `incusos` | `incus` |
+  | `talos` | `kubernetes` |
+  | `debian` | `incus` or `kubernetes` |
+  | own distro | `kubernetes`, and `incus` if chosen |
+
+- **Code.** `internal/hostos` validates an `Instance`, renders its install media and config, and upgrades the OS. `internal/clusterruntime` bootstraps, joins, upgrades and reports health. IncusOS and Incus go behind them first, behaviour-neutral, by wrapping `seed`/`flasher` and `agent`/`agentdeploy`/`leaderelection` rather than moving them. The existing validate scripts passing proves the seams before Talos arrives.
+- **No Talos lock-in.** The `kubernetes` runtime talks to the Kubernetes API (`client-go`). The Talos API is used only for OS operations: applying config, upgrading, rebooting. Kubernetes has two bootstrap providers: the Talos API now, `kubeadm` for an own distro later.
+- **Workloads stay native to each runtime:** Flux and manifests on Kubernetes, Incus instances on Incus. No runtime-neutral `kind: App` until one app must run on both; until then `kind: App` stays the Incus agent's.
+- **Validate scripts** stay named for behaviour (#138) and take the backend as a parameter (`VALIDATE_OS`). Every backend passes the same set.
+
+### No commercial dependencies; an own distro later
+
+- **Omni is ruled out** (BSL: free for a homelab, a paid licence for production). Talos itself is MPL-2.0. Install media are built with Talos's `imager` locally, not the hosted Image Factory. Machine config is generated with the `siderolabs/talos/pkg/machinery` Go module, not by shelling out to `talosctl`; its dependency weight is unverified until it's added (`go mod graph`).
+- **An own mkosi-built distro replaces Talos later, gated on a written list of what Talos can't do.** It has to provide: an immutable image (mkosi, a UKI, dm-verity); A/B updates (`systemd-sysupdate`); the disk layout and TPM-bound encryption (`systemd-repart`, `Encrypt=tpm2`); Secure Boot with the project's keys; containerd and kubelet with `kubeadm`; and a remote node-management API in place of Talos's, the largest piece. Security patching becomes the project's, permanently. One mkosi pipeline builds §15's helper OS and the #393 appliance image first, and the node OS last.
+
+### Boot
+
+- **Talos installs to the node's single disk.** Its root filesystem is a read-only image loaded into RAM even when installed; the disk holds BOOT, META, STATE (machine config, node identity) and EPHEMERAL (`/var`). `VolumeConfig` caps EPHEMERAL with `maxSize`, and `UserVolumeConfig` carves the rest into partitions for local volumes.
+- **Every phase keeps a local boot path.** iPXE for every boot is the eventual goal, deferred. The cluster can't serve the boot files its own nodes need after a full power cut, so then the appliance laptop is the break-glass boot source.
+
+### Secure Boot
+
+Refines §6 for Talos and the own distro.
+
+- **Nodes boot in Setup Mode, and the first boot enrolls the project's own keys.** Start with USB or disk install media, where systemd-boot auto-enrolls. Enrolling during a network boot is a later spike. Clearing the factory keys is a manual firmware step per machine; record which hardware is tested.
+- **The key hierarchy (PK, KEK, db) belongs to the project, not to Talos** (`internal/secureboot`). Talos's `imager` signs with the db key now; mkosi and `ukify` use the same key later.
+- **Microsoft's UEFI CA is enrolled by default**, as an operator choice. Option ROMs on many GPUs, NICs and storage controllers are signed by it, and leaving it out can stop a machine booting.
+- **Custody.** PK and KEK private keys live offline on USB flash storage, later a YubiKey. Images are signed on the appliance laptop, not in CI.
+- **iPXE**, when it arrives, is signed with the db key, so firmware verifies the image iPXE chainloads.
+- **Spike:** TPM-bound disk encryption (Talos binds PCR 7 and a signed PCR 11 policy) across the disk and iPXE boot paths. Expected to measure the same when one db key verified both; unverified.
+
+### The appliance: bootstrap and break-glass, before the first Talos node
+
+§29's appliance is kept, and its LAN form is a **dedicated laptop on the nodes' LAN**. It comes before the first Talos node, since Talos's bootstrap is what it's for. It:
+
+- holds the signing key and the operator credentials (`talosconfig`, `kubeconfig`);
+- runs DHCP and DNS from IPAM until the cluster takes them over (below);
+- is the only actor before a cluster exists, and runs the Talos bootstrap exactly once, through the Talos API;
+- is the break-glass boot and DHCP source after a full power cut. Its cached boot files, configs and IPAM state are synced from the cluster, and break-glass checks how old they are.
+
+### DHCP and DNS from IPAM
+
+Supersedes §5's "no DHCP/DNS write-back". **IPAM decides what DHCP hands out:** each `Instance`'s `mac` and static IP becomes a reservation, and the same data produces DNS records. The mode is an operator choice per `Network`:
+
+| `dhcp.mode` | Hands out | Beside another DHCP server? |
+|---|---|---|
+| `off` | nothing; the router does DHCP and nodes use static IPs | n/a |
+| `proxy` | boot options only | yes |
+| `reservations` | IPAM's reservations, no dynamic pool | yes, when both serve the same IPAM data: they give identical answers |
+| `full` | reservations plus a dynamic pool | no: one authority |
+
+In `full` mode IPAM owns the whole subnet and the pool is configured explicitly, which changes how `dhcp_excluded_range` works (`docs/Ipam.md`).
+
+- **Server: Kea 3.0 LTS.** Every hook used (`lease_cmds`, HA, Host Commands, Ping Check) is open source since 3.0. Use each server's own HTTP control socket; 3.0 deprecated the separate Control Agent.
+- **In the cluster:** a Kea hot-standby pair on two nodes, host networking, lease files on local volumes. **Kea's own HA chooses which server answers, not the Kubernetes `Lease`**, so DHCP doesn't get two leader mechanisms. Kea and DNS run as ordinary pinned Kubernetes workloads, since the laptop covers a cold start.
+- **Handoff, laptop ↔ cluster, v1: stop, copy, start.** The web app makes sure only one server serves the pool; exports leases with `lease4-get-all`; stops the old server; imports with `lease4-add`; starts the new one. The gap is seconds: clients' renewals fail quietly and they rebind by broadcast. It runs in both directions.
+- **The laptop is a permanent HA backup peer while connected,** so its break-glass copy of the leases stays current. Unverified: whether a backup that was offline catches up on reconnect; if not, it pulls `lease4-get-all`.
+- **After a power cut** the laptop starts from its last copy. Clients decline addresses they find in use, and Ping Check tests an address before it's offered.
+- **Deferred:** v2, a no-gap handoff through a temporary HA pair.
+- **Risks to carry:** clock sync between peers (reported as a cause of HA sync failures), TLS between peers (its issuer is #400), host networking for raw sockets.
+
+### The web app in the cluster, and leadership
+
+- **The web app moves into the cluster as Talos static pods.** They're declared in machine config, run before the Kubernetes API is up, and upgrade by a config patch with no reboot. (Talos system extensions were considered: they're built into the Talos image, so every upgrade would mean a rebuild and a reboot.)
+- **No cluster yet:** the appliance is the only actor and needs no lease.
+- **Kubernetes API up:** the in-cluster web app copies **and the appliance** compete for one `coordination.k8s.io` `Lease`. The holder does fleet-wide work (upgrades, applying config to other nodes); the others do only node-local work.
+- **API unreachable:** the appliance does **not** take over automatically, because a network partition looks the same as an outage. The operator triggers break-glass. §25's fenced single actor carries over.
+
+### Stateful apps and VMs
+
+- **Default for anything with state: a `StatefulSet` with `replicas: 1` and a local volume.** Kubernetes won't run a `StatefulSet` pod twice: on node loss it isn't recreated elsewhere until the node is confirmed gone. A `Deployment` with `Recreate` works too, but a rolling update deadlocks on a single-node volume.
+- **Databases through an operator** (CloudNativePG, say). §19's three-layer analysis still holds; the operator implements it.
+- **Replicated storage** (Longhorn or Rook-Ceph) is later and optional. Shipped as Helm or Kustomize through GitOps, not as new config kinds.
+- **VMs.** Windows VMs are nice-to-have. KubeVirt is deferred, together with replicated storage, since its main advantage on local volumes, live migration, needs shared storage. For one VM: a separate Incus host beside the cluster (the kept Incus runtime), or QEMU in a pod with `/dev/kvm` from a device plugin.
+
+### Roadmap layout
+
 | Phase | Scope |
 |---|---|
-| 3 | The agent and node connectivity: agent deploy, one per host, agent self-upgrade |
-| 4 | Web app appliance and hardening (the former "Web app deployment" and "Web app hardening" sections) |
-| 5 | Multi-node: same-OS Incus clusters, joined by the agent (formerly Phase 4) |
-| 6 | Multi-OS hosts |
-| 7 | Tailscale (the Tailscale half of the former Phase 5) |
-| 8 | App management, deferred: #92's umbrella, generic reconciliation, placement, stateful apps, and observability (Alloy) as a supported App |
+| 3 | The agent and node connectivity (unchanged; finished before the Incus runtime is parked) |
+| 4 | Runtime-agnostic seams: `os` and `runtime`, `internal/hostos` and `internal/clusterruntime` with IncusOS behind them, validate scripts per backend, `internal/secureboot`, `dhcp.mode` |
+| 5 | Web app appliance: bootstrap and break-glass (the former Phase 4, plus the laptop, Kea and DNS from IPAM, key custody) |
+| 6 | First Talos node, with Secure Boot enrolled |
+| 7 | Talos cluster: three control-plane nodes, upgrades from git |
+| 8 | The web app in the cluster: static pods, the `Lease` handoff, Kea HA, DHCP handoff |
+| 9 | Workloads on Kubernetes: Flux, local volumes, the single-replica `StatefulSet`, a database operator, observability |
+| 10 | Tailscale (the former Phase 7) |
+| Parked | The Incus runtime: the former Phase 5, Debian and NixOS with Incus, the Incus half of the former Phase 8 |
+| Deferred | iPXE for every boot, KubeVirt with replicated storage, the own distro, the no-gap Kea handoff |
 
 ## Sources consulted
 

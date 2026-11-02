@@ -1,5 +1,7 @@
 # IPAM — IP Allocation & Conflict-resolution (0.x)
 
+> **Direction (2026-11-02, `docs/Decisions.md` §31, §5):** IPAM will also drive DHCP reservations (Kea) and DNS records, with a DHCP mode per `Network` (`off`, `proxy`, `reservations`, `full`). In `full` mode IPAM owns the whole subnet and the dynamic pool is explicit, which changes the role of the DHCP excluded range below. Not built yet (Roadmap Phase 4 for the `dhcp.mode` field, Phase 5 for serving DHCP and DNS from the appliance); the policy below is what's built today.
+
 Purpose
 - Track Network definitions (CIDR + DHCP excluded range).
 - Assign stable IPv4 addresses to Instances when `static_ip` is omitted.
