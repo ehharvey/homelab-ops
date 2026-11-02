@@ -1,5 +1,11 @@
 # App Manager — per-node agents, leader/follower HA, fleet-wide blue-green (0.x)
 
+> **Parked (2026-11-02, #466, `docs/Decisions.md` §31):** the main line moved
+> to bare-metal Kubernetes on Talos, where Kubernetes's own primitives and
+> Flux do this document's job. After Phase 3 (the agent's self-upgrade) the
+> App Manager is kept building but parked with the Incus runtime. Where the
+> notes below say "Phase 8", read "parked".
+
 > **Re-plan note (2026-10-26, `docs/Decisions.md` §30):** until Roadmap
 > Phase 8, the agent is the only App managed. It deploys, runs one per
 > managed host (#203) and upgrades itself by this document's blue-green

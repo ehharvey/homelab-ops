@@ -41,6 +41,11 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
 
 ## Phase 3 — The agent and node connectivity
 
+> **Pivot note (2026-11-02, #466, `docs/Decisions.md` §31):** the main line
+> moved to bare-metal Kubernetes on Talos. This phase is unchanged and is
+> finished first; after it, the agent and the rest of the Incus runtime are
+> kept building but parked (see "Parked — Incus runtime" below).
+
 > **Re-plan note (2026-10-26, #401, `docs/Decisions.md` §30):** the goal moved
 > from App management to host support and management. The agent manages only
 > itself and its cluster: it deploys, runs one per managed host (#203, moved
@@ -90,13 +95,13 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   IP (`cluster.https_address`), which Incus requires at bootstrap; a
   DHCP-only Instance skips clustering rather than erroring. Verified against
   a real booted node (`node-boots-and-trusts-bootstrap-cert.sh`); growing
-  past one member is Phase 5: DONE; see #178, #315, `docs/Decisions.md` §26
+  past one member is parked (`docs/Decisions.md` §31): DONE; see #178, #315, `docs/Decisions.md` §26
 - [ ] Per-host app-manager agent with an operator-designated leader, managing
   only itself (`docs/Decisions.md` §30): one agent instance per managed host;
   a single primary named in git (fenced by git commits and an acting handoff,
   so a stale checkout stands down and a new primary waits for the old one,
   `docs/Decisions.md` §25), proven by the agent's own blue-green self-upgrade.
-  Reconciling other `kind: App` objects is Phase 8 (#92). Leader election is a
+  Reconciling other `kind: App` objects is parked (#92, `docs/Decisions.md` §31). Leader election is a
   pluggable interface, so the automated ranked-over-Incus election (specified
   in §25) can replace the designation later without touching the loop. Built
   in dependency order:
@@ -130,7 +135,7 @@ Goal: get one IncusOS machine up and trusted, with nothing else running yet.
   - [x] `cmd/agent` binary tying the `Elector` and the designation's git
     parsing to a loop; every node runs the same binary and the `Elector`
     decides which is active each tick. Its first loop is cluster membership
-    (Phase 5), not App reconciliation — see `docs/Decisions.md` §27. Built
+    (parked, §31), not App reconciliation — see `docs/Decisions.md` §27. Built
     minimal: `kind: Designation`, commit fencing and the acting handoff
     (§25), a persistent full clone, `user.*` keys on each
     agent's own instance, #187's sync-failure threshold and self-drain, and a
@@ -165,7 +170,7 @@ primary and creating its successor on itself, with one acting instance per
 cluster throughout.
 
 The fleet-wide done-when (blue-green for every App, not only the agent) is
-#92's, and moved with it to Phase 8.
+#92's, and moved with it to Phase 8, now parked (`docs/Decisions.md` §31).
 
 ## Phase 3.5 — The validate suite made runnable
 
@@ -221,7 +226,45 @@ what it proves and what it needs without being read. (Reached. What
 remains is *enforcement* — nothing runs the suite automatically yet; that
 work is tracked separately and is not part of this section.)
 
-## Phase 4 — Web app appliance and hardening
+## Phase 4 — Runtime-agnostic seams
+
+> **New phase (2026-11-02, #466, `docs/Decisions.md` §31):** IncusOS and Incus
+> go behind a host-OS seam and a cluster-runtime seam, behaviour-neutral,
+> before Talos arrives. #398 moved here from the old Phase 6.
+
+- [ ] An `os` field on `Instance` and the `internal/hostos` seam (validate,
+  render install media and config, upgrade the OS), with IncusOS behind it,
+  wrapping `seed` and `flasher` (`docs/Decisions.md` §15 Prerequisite 1, §31)
+  — see #398
+- [ ] A per-cluster `runtime` (`incus | kubernetes`) and the allowed-pairs
+  table of `os` and `runtime`, checked at parse (`docs/Decisions.md` §31). To
+  file.
+- [ ] The `internal/clusterruntime` seam (bootstrap, join, upgrade, health),
+  with Incus behind it, wrapping `agent`, `agentdeploy` and `leaderelection`
+  (`docs/Decisions.md` §31). To file.
+- [ ] Validate scripts take the backend as a parameter (`VALIDATE_OS`), still
+  named for behaviour (`docs/Decisions.md` §31). To file.
+- [ ] `internal/secureboot`: the project's PK, KEK and db, with Microsoft's
+  UEFI CA enrolled by default as an operator choice (`docs/Decisions.md` §6,
+  §31). To file.
+- [ ] `dhcp.mode` on `Network` (`off`, `proxy`, `reservations`, `full`) and
+  IPAM's reservations as an output (`docs/Decisions.md` §5, §31). To file.
+
+**Done when:** IncusOS provisioning and the agent work unchanged behind both
+seams, proven by the existing validate scripts (e.g.
+`scripts/validate/node-boots-and-trusts-bootstrap-cert.sh`) run with
+`VALIDATE_OS=incusos`.
+
+## Phase 5 — Web app appliance: bootstrap and break-glass
+
+> **Renumbered (2026-11-02, #466, `docs/Decisions.md` §31):** this was Phase
+> 4, "Web app appliance and hardening", and moved after the seams and before
+> the first Talos node, since Talos's bootstrap is what it's for. The LAN form,
+> a dedicated laptop, is the bootstrap and break-glass appliance: DHCP and DNS
+> from IPAM until the cluster takes them over (Phase 8), the signing key, and
+> the boot source after a full power cut. `bootstrap deploy-web` (#386) and the
+> IncusOS turnkey appliance (#246, #394) moved to Parked. The note below is
+> kept as history.
 
 > **New phase (2026-10-26, #401, `docs/Decisions.md` §30):** the former "Web
 > app deployment" and "Web app hardening" sections, which sat alongside the
@@ -246,18 +289,28 @@ Appliance (from "Web app deployment", added 2026-10-03, #247, §29):
   unified config (one place for config, failing fast on missing required
   values) — see #67
 - [ ] Build install media client-side: a local image build from a downloaded
-  seed, or a `SEED_DATA` stick beside a stock IncusOS image — see #242
+  seed, or a `SEED_DATA` stick beside a stock IncusOS image; per OS behind
+  Phase 4's `internal/hostos` — see #242
 - [ ] Provision node0 from the web app by default; the bootstrap CLI as the
   alternative — see #244
 - [ ] Migrate the web app between hosts without reflashing nodes, including
   the endpoint DNS re-resolution probe — see #245
-- [ ] *(later)* `bootstrap deploy-web`: the web image as an Incus OCI
-  container on any Incus host, which is the path into the fleet — see #386
-- [ ] *(parked)* IncusOS turnkey appliance: an appliance seed and a hardware
-  runbook. An IncusOS seed can't create instances, so it always needs
-  `deploy-web` after boot (`docs/Decisions.md` §29) — see #246, #394
-- [ ] *(later)* mkosi-built appliance image, sharing a build with Phase 6's
-  helper OS (`docs/Decisions.md` §15); design open — see #393
+- [ ] *(later)* mkosi-built appliance image, sharing a build with §15's
+  helper OS and, later, the own distro's node OS (`docs/Decisions.md` §15); design open — see #393
+
+Bootstrap and break-glass (added 2026-11-02, #466, §31):
+
+- [ ] The LAN laptop as the bootstrap and break-glass appliance: it holds the
+  Secure Boot db signing key and the operator credentials (`talosconfig`,
+  `kubeconfig`) and signs install media; PK and KEK private keys stay offline
+  on USB flash storage, later a YubiKey (`docs/Decisions.md` §31). To file.
+- [ ] Kea 3.0 on the appliance, its config rendered from IPAM in
+  `reservations` and `full` modes, leases in a local file
+  (`docs/Decisions.md` §31). To file.
+- [ ] DNS records from IPAM, served by the appliance (`docs/Decisions.md`
+  §31). To file.
+- [ ] The web app as a bastion (`docs/Decisions.md` §11, §30). A decision
+  first — see #399
 
 Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
 
@@ -279,20 +332,131 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
 - [ ] One operator client cert for both Incus and the web app's tunnel API;
   its custody is #397's to decide (`docs/Decisions.md` §30) — see #397
 
-**Done when:** both former sections' done-whens hold.
+**Done when:** both former sections' done-whens hold, and the laptop appliance
+serves DHCP and DNS from IPAM and holds the signing key.
 
 - *Appliance:* the web app runs from the published image on a dedicated
   appliance machine, either an internet VM or a LAN machine. The operator
   chooses each deployment setting, and it can be moved to another host without
   reflashing any node. HA, as a warm standby, is decided after that
   (`docs/Decisions.md` §29).
+- *Bootstrap and break-glass:* on the nodes' LAN, the laptop hands out
+  IPAM's reservations (and, in `full` mode, a pool) and answers DNS for every
+  `Instance`, proven by a new `scripts/validate/appliance-serves-dhcp-and-dns-from-ipam.sh`.
 - *Hardening:* by default, the web app's API is reachable only by operator
   peers over WireGuard; nothing it stores or serves exists in plaintext outside
   its own memory, apart from its WireGuard identity (operator-supplied
   deployment config, `docs/Decisions.md` §28); and its state survives the loss
   of its host.
 
-## Phase 5 — Multi-node: same-OS Incus clusters
+## Phase 6 — First Talos node
+
+> **New phase (2026-11-02, #466, `docs/Decisions.md` §31, §15):** one Talos
+> node, provisioned from the appliance, before any cluster.
+
+- [ ] Talos `hostos` backend: machine config from `Instance` and `Network`
+  via the `siderolabs/talos/pkg/machinery` Go module, IPAM's static IP,
+  WireGuard to the web app in machine config, and install media built with
+  Talos's `imager` locally (`docs/Decisions.md` §31). To file.
+- [ ] Secure Boot: the node boots in Setup Mode and its first boot, from USB
+  or disk media, enrolls the project's keys; images are signed on the
+  appliance (`docs/Decisions.md` §6, §31). To file.
+- [ ] Spike: TPM-bound disk encryption (PCR 7 plus the signed PCR 11 policy)
+  across the disk and iPXE boot paths (`docs/Decisions.md` §31). To file.
+- [ ] A validate script proving a Talos node, provisioned from the appliance
+  with Secure Boot enrolled, reaches `Ready`. To file.
+
+**Done when:** one Talos node, provisioned from the appliance with the
+project's Secure Boot keys enrolled, reaches `Ready`.
+
+## Phase 7 — Talos cluster
+
+> **New phase (2026-11-02, #466, `docs/Decisions.md` §31):** three
+> control-plane nodes on one disk each, bootstrapped once from the appliance.
+
+- [ ] A cluster declaration with `runtime: kubernetes`: three control-plane
+  nodes, workloads allowed on them (`docs/Decisions.md` §31). To file.
+- [ ] The Talos bootstrap run exactly once, by the appliance through the
+  Talos API (`docs/Decisions.md` §31). To file.
+- [ ] Talos's shared VIP for the Kubernetes API. To file.
+- [ ] Talos and Kubernetes upgrades driven from git. To file.
+- [ ] A validate script proving the cluster survives losing one node. To file.
+
+**Done when:** a 3-node Talos cluster survives losing any one node and
+upgrades Talos and Kubernetes from git.
+
+## Phase 8 — The web app in the cluster
+
+> **New phase (2026-11-02, #466, `docs/Decisions.md` §31):** the web app,
+> DHCP and DNS move from the laptop into the cluster, and leadership moves to
+> a Kubernetes `Lease`.
+
+- [ ] The web app as Talos static pods, declared in machine config
+  (`docs/Decisions.md` §31). To file.
+- [ ] Leadership: the in-cluster copies and the appliance compete for one
+  `coordination.k8s.io` `Lease`; with the API unreachable, break-glass is
+  operator-triggered, never automatic (`docs/Decisions.md` §25, §31). To file.
+- [ ] Kea hot-standby pair on two nodes, Kea's HA choosing who answers, with
+  the laptop as a backup peer while connected (`docs/Decisions.md` §31). To
+  file.
+- [ ] DHCP handoff v1, laptop ↔ cluster, both directions: stop, copy leases
+  with `lease_cmds`, start (`docs/Decisions.md` §31). To file.
+- [ ] DNS served in the cluster (`docs/Decisions.md` §31). To file.
+- [ ] The web app as a CA, the issuer for Kea's peer TLS among others. A
+  decision first — see #400
+
+**Done when:** the web app and DHCP hand off laptop → cluster → laptop with
+no lease lost, proven by a new
+`scripts/validate/dhcp-hands-off-without-losing-leases.sh`.
+
+## Phase 9 — Workloads on Kubernetes
+
+> **New phase (2026-11-02, #466, `docs/Decisions.md` §31, §19):** apps come
+> from git through Flux; no app reconciler of our own. Observability (#77–#80)
+> moved here from the old Phase 8, to be re-targeted from an Incus instance to
+> Kubernetes.
+
+- [ ] Flux, bootstrapped against the fleet repo. To file.
+- [ ] Local volumes on Talos user volumes (`UserVolumeConfig`). To file.
+- [ ] The single-replica `StatefulSet` pattern for stateful apps, as a Helm
+  chart or Kustomize base (`docs/Decisions.md` §31). To file.
+- [ ] A database through an operator (CloudNativePG, say;
+  `docs/Decisions.md` §19). To file.
+- [x] Add a local Grafana + Loki + Prometheus dev stack under `docker-compose.yml`, so log/metric forwarding can be validated without live Grafana Cloud credentials (see #82)
+- [ ] Alloy collecting node logs, re-targeted to Kubernetes — see #77
+- [ ] Alloy → Grafana forwarding confirmed end-to-end (local stack by default; Grafana Cloud is the real production destination, checked separately) — see #78
+- [ ] Metrics scrape credentials, re-targeted from a `metrics`-typed Incus cert to Kubernetes — see #79
+- [ ] Host and workload metrics scraped and remote-written to Grafana — see #80
+
+**Done when:** a stateful single-replica app and an operator-managed database
+run from git, and a node's logs and resource metrics show up in Grafana.
+
+## Phase 10 — Tailscale
+
+> **Renumbered (2026-11-02, #466, `docs/Decisions.md` §31):** this was Phase
+> 7. On Talos, the authkey goes to Talos's Tailscale extension rather than an
+> IncusOS seed service; #76 is re-scoped to match.
+
+- [ ] Accept an operator-supplied Tailscale authkey per instance; bake it into Talos's Tailscale extension config (IncusOS's seed service is blocked upstream) — see #76
+
+**Done when:** a freshly provisioned node is reachable over Tailscale.
+
+## Parked — Incus runtime
+
+> **New section (2026-11-02, #466, `docs/Decisions.md` §31):** the Incus code
+> is kept building, not deleted: IncusOS is one host-OS backend and Incus one
+> cluster runtime behind Phase 4's seams. What follows is kept, with its
+> history, but nothing here is scheduled. It's also where a VM host for
+> Windows guests would come from (§31). This heading deliberately doesn't
+> start with "Phase", so `/next` never treats it as the current phase.
+
+- [ ] *(parked)* `bootstrap deploy-web`: the web image as an Incus OCI
+  container on any Incus host — see #386
+- [ ] *(parked)* IncusOS turnkey appliance: an appliance seed and a hardware
+  runbook. An IncusOS seed can't create instances, so it always needs
+  `deploy-web` after boot (`docs/Decisions.md` §29) — see #246, #394
+
+### Multi-node: same-OS Incus clusters (was Phase 5)
 
 > **Re-plan note (2026-10-26, #401, `docs/Decisions.md` §30):** this was
 > Phase 4; the web app appliance took that number. A cluster's members all run
@@ -356,13 +520,14 @@ member. Incus keeps quorum and the remaining agents keep running, with no
 operator intervention beyond eventually replacing the member — plus, if it
 was the designated primary, the operator's §25 failover (commit a new
 `primary`, #212) before the replacement can be joined. (Placement of `kind: App`
-workloads across members is Phase 8, with #182; see `docs/Decisions.md` §30.)
+workloads across members is parked too, with #182; see `docs/Decisions.md` §30, §31.)
 `docs/Decisions.md` §25's `leaderelection.Designated` is re-weighed against the deferred
 ranked-over-Incus election once real membership exists to make the automated
 option's cost worth paying.
 
 
-## Phase 6 — Multi-OS hosts
+
+### Debian and NixOS with Incus (was Phase 6, "Multi-OS hosts")
 
 > **New phase (2026-10-26, #401, `docs/Decisions.md` §30, §15):** multi-OS
 > moved here from "direction, not yet built" and `docs/Out of Scope.md`. Order:
@@ -370,34 +535,20 @@ option's cost worth paying.
 > so the agent runs there and joins same-OS clusters. Talos isn't an Incus
 > host: the agent can't run there, and it needs its own management path.
 
-- [ ] An `os` field on `Instance` and a per-OS seed/image renderer seam,
-  behaviour-neutral, IncusOS only, plus the check that a cluster's members
-  declare one `os` (`docs/Decisions.md` §15, Prerequisite 1; §30) — see #398
 - [ ] Debian + Incus host, by §15's declared-disk path first (the operator
   names the target disk; no helper-OS round-trip). To file.
 - [ ] NixOS + Incus host. Needs its own install-mechanism decision first. To
   file.
-- [ ] Talos host, with its own management path (machine config and PKI, no
-  agent). Needs its own decision. To file.
-- [ ] SSH-CA host access to Debian and NixOS hosts, with the web app as a
-  bastion. The bastion (#399) and the CA (#400) are decisions to settle first;
-  instances keep Incus's own websocket exec — see #399, #400
+- [ ] SSH-CA host access to Debian and NixOS hosts, through the bastion
+  (#399, Phase 5) with the CA (#400, Phase 8); instances keep Incus's own
+  websocket exec. To file.
 
 **Done when:** a Debian host and a NixOS host are each provisioned and run an
-agent joined to a same-OS cluster. Talos is filed with its own decision and
-doesn't gate this phase, since it isn't an Incus host.
+agent joined to a same-OS cluster. (Talos, first listed here, is the main line
+since §31: Phases 6 and 7.)
 
-## Phase 7 — Tailscale
 
-> **Renumbered (2026-10-26, #401, `docs/Decisions.md` §30):** this was Phase
-> 5, "Tailscale, logging + metrics". Logging and metrics moved to Phase 8 as an
-> observability App (Alloy), so this phase's done-when drops their half.
-
-- [ ] Accept an operator-supplied Tailscale authkey per instance; bake into seed via IncusOS's Tailscale service (blocked on upstream seed support — see #76, deferred)
-
-**Done when:** a freshly provisioned node is reachable over Tailscale.
-
-## Phase 8 — App management (deferred)
+### Incus App management (was Phase 8, "App management (deferred)")
 
 > **New phase (2026-10-26, #401, `docs/Decisions.md` §30):** until this phase,
 > the agent is the only App managed. Generic App reconciliation, blue/green for
@@ -419,17 +570,23 @@ doesn't gate this phase, since it isn't an Incus host.
     App) — see #340
   - [ ] Cluster-group placement: a `Target` field on `kind: App`, since Incus's
     scheduler stops being a trivial decision once members > 1 — see #182
-  - [ ] Stateful apps (databases, Kubernetes), a direction only
-    (`docs/Decisions.md` §19). To file.
-- [x] Add a local Grafana + Loki + Prometheus dev stack under `docker-compose.yml`, so log/metric forwarding can be validated without live Grafana Cloud credentials (see #82)
-- [ ] Stand up an Alloy Incus instance; point node syslog at it — a renderer registered with the agent's App registry (see #92) rather than built from scratch — see #77
-- [ ] Alloy → Grafana forwarding confirmed end-to-end (local stack by default; Grafana Cloud is the real production destination, checked separately) — see #78
-- [ ] Mint a per-instance `metrics`-typed Incus cert at seed-render time (shared `internal/cert`+`internal/seed` code, used by both the bootstrap CLI and the web app) and preseed it via `incus.yaml` for Alloy's local scrape — invisible to the operator, distinct from the break-glass client cert — see #79
-- [ ] Extend the per-node Alloy instance to scrape Incus's native `/1.0/metrics` endpoint and remote_write to Grafana, alongside its existing syslog forwarding — see #80
 
-**Done when:** #92's done-when above holds, and a freshly provisioned node's
-logs and resource metrics (host + instance, CPU/memory/disk/network) show up
-in Grafana Cloud.
+**Done when:** #92's done-when above holds.
+
+## Deferred — after the Talos main line
+
+> **New section (2026-11-02, #466, `docs/Decisions.md` §31).**
+
+- [ ] *(later)* iPXE for every boot, signed with the project's db key, the
+  laptop serving a cold start after a full power cut, and boot files, configs
+  and IPAM state synced from the cluster to the laptop. To file.
+- [ ] *(later)* Enrolling Secure Boot keys during a network boot. To file.
+- [ ] *(later)* DHCP handoff v2, with no gap, through a temporary Kea HA pair.
+  To file.
+- [ ] *(later)* KubeVirt, together with replicated storage (Longhorn or
+  Rook-Ceph), since live migration needs shared storage. To file.
+- [ ] *(later)* An own mkosi-built distro replacing Talos, gated on a written
+  list of what Talos can't do; Kubernetes bootstrapped with `kubeadm`. To file.
 
 ## Deferred / post-1.0 — tooling and dev-host health
 
