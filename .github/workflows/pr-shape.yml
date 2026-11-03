@@ -1,10 +1,27 @@
 name: PR shape
 
-# Enforces the "one GitHub issue, one commit on main" invariant from #119.
+# Enforces the "one GitHub issue, one commit on main" invariant from #119, and
+# that the commit's message carries the PR body (#405).
 #
 # The main ruleset merges PRs with rebase only (never squash), so a branch with
 # N commits lands as N commits — the branch itself has to be the single commit,
 # and nothing checked that before (#87, #107, #110, #111 landed 2-7 commits).
+#
+# `gh pr create --fill` copies the commit message into the PR body, so the
+# message step runs scripts/check-commit-msg.sh on the PR's head commit: it
+# needs `## Plan`, `## Test plan` and `Closes #<n>` (a bundle's open
+# sub-issues' too), the check `make ship` makes before it pushes, here for a
+# push that bypassed ship. It runs the BASE branch's copy of the script, so a
+# PR can't loosen the rules it is checked against and a branch from before
+# #405 still gets them. Bot PRs are exempt: dependabot's, and the branches
+# bump-incusos.yml opens, whose one-line messages auto-merge as they are:
+# chore/bump-incus-os by name (its PR is opened with the operator's PAT, so
+# its author is the operator), and chore/bump-incusos-base and
+# chore/bump-incusos-base-test-<run_id> only when github-actions[bot] opened
+# them. A step skipped by `if:` leaves the job green.
+#
+# Both steps live in the one `one-commit` job, not a new one, so the
+# ruleset's required-check list doesn't change.
 #
 # Unlike ci.yml this cannot also run on push: the commit count is only defined
 # relative to a base branch, which exists solely in the pull_request payload.
@@ -19,6 +36,8 @@ on:
 
 permissions:
   contents: read
+  # check-commit-msg.sh reads the issue's title and a bundle's sub-issues.
+  issues: read
 
 jobs:
   # Job id is the status check context named in the ruleset's
@@ -30,10 +49,11 @@ jobs:
       # GitHub recomputes it on every `synchronize` event, so squashing the
       # branch and force-pushing re-runs this green.
       #
-      # Counting with git instead would need a checkout: on pull_request events
-      # actions/checkout defaults to the synthetic refs/pull/N/merge ref, whose
-      # HEAD is a merge commit that exists on neither branch, and the default
-      # fetch-depth: 1 shallow clone makes `origin/main..HEAD` fail outright.
+      # Counting with git instead would need a deep checkout: on pull_request
+      # events actions/checkout defaults to the synthetic refs/pull/N/merge
+      # ref, whose HEAD is a merge commit that exists on neither branch, and
+      # the default fetch-depth: 1 shallow clone makes `origin/main..HEAD` fail
+      # outright.
       - name: PR is exactly one commit
         env:
           COMMITS: ${{ github.event.pull_request.commits }}
@@ -58,4 +78,62 @@ jobs:
           Keep the ## Plan and ## Test plan sections in the commit message body
           — \`gh pr create --fill\` copies them into the PR description.
           EOF
+          exit 1
+
+      # The merge ref, whose parents are the base (HEAD^1) and the PR's head
+      # commit (HEAD^2): fetch-depth 2 brings both. No credentials are
+      # persisted, since the next step may run the PR's own script (below).
+      # This step and the next carry the same bot exemption (an `if:` without
+      # a status function also implies success(), so neither runs after a
+      # failed count).
+      - name: Check out the PR's merge ref
+        if: >-
+          !(github.event.pull_request.user.login == 'dependabot[bot]'
+          || github.head_ref == 'chore/bump-incus-os'
+          || (startsWith(github.head_ref, 'chore/bump-incusos-base')
+          && github.event.pull_request.user.login == 'github-actions[bot]'))
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # check-commit-msg.sh derives the issue from the head branch (passed
+      # through env:, never `${{ }}` inside run:, since a branch name is
+      # attacker-controlled) or from make ship's block in the message. Exit 1
+      # lists what's missing; any other non-zero exit is the check breaking,
+      # reported as such.
+      - name: "Commit message has ## Plan, ## Test plan and Closes #<n>"
+        if: >-
+          !(github.event.pull_request.user.login == 'dependabot[bot]'
+          || github.head_ref == 'chore/bump-incus-os'
+          || (startsWith(github.head_ref, 'chore/bump-incusos-base')
+          && github.event.pull_request.user.login == 'github-actions[bot]'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # The base's copy of the script and the jq it includes. Only a base
+          # from before #405, i.e. #405's own PR, lacks it and runs the PR's.
+          check=scripts/check-commit-msg.sh
+          if git cat-file -e HEAD^1:scripts/check-commit-msg.sh 2>/dev/null; then
+            git archive HEAD^1 scripts/check-commit-msg.sh .claude/skills/lib.jq >"$RUNNER_TEMP/base.tar"
+            tar -xf "$RUNNER_TEMP/base.tar" -C "$RUNNER_TEMP"
+            check=$RUNNER_TEMP/scripts/check-commit-msg.sh
+            echo "Checking $(git rev-parse --short HEAD^2) with the base's check-commit-msg.sh"
+          else
+            echo "Checking $(git rev-parse --short HEAD^2) with the PR's check-commit-msg.sh (the base has none)"
+          fi
+          rc=0
+          lacks=$("$check" --hint --branch "$HEAD_REF" HEAD^2) || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "The message has them."
+            exit 0
+          fi
+          if [ "$rc" -eq 1 ]; then
+            echo "The commit message lacks what the PR body needs:" >&2
+            sed '/./s/^/    /' <<<"$lacks" >&2
+          else
+            echo "check-commit-msg.sh failed (exit $rc), so the message wasn't checked." >&2
+          fi
           exit 1

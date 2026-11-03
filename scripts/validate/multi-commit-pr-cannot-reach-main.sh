@@ -221,7 +221,11 @@ pass "gh pr merge was refused while one-commit was red"
 # --- 4. squashing to 1 commit clears it ------------------------------------
 echo "=== squashing to 1 commit and force-pushing"
 git reset -q --soft "$BASE_REF"
-git commit -qm "chore: validate-119 throwaway (squashed)"
+# The message carries what one-commit's message step needs (#405): the
+# sections, and a Closes, since the validate-119/ branch names no issue.
+git commit -qm "chore: validate-119 throwaway (squashed)" \
+	-m "## Plan" -m "Throwaway commit; the PR is closed automatically." \
+	-m "## Test plan" -m "- [x] one-commit goes green" -m "Closes #0"
 git push -q --force-with-lease origin "$BRANCH"
 
 await_check "$(git rev-parse HEAD)" success

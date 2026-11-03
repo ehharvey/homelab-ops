@@ -58,7 +58,12 @@ Exit 0 means steps 1–4 have no mechanical gap. Rerun it after any fix.
    `git commit --amend -F <scratchpad>/msg` (Development Conventions § PR body
    format). If the message doesn't change, `git commit --amend --no-edit`.
 8. **Ship.** `make ship`. It re-checks the branch, cleanliness and commit
-   count, pushes, and opens the PR with `--fill`. Report the PR URL.
+   count, and the message (`## Plan`, `## Test plan` and `Closes #<n>`, via
+   `scripts/check-commit-msg.sh`, the check the audit in steps 1–4 and CI's
+   `one-commit` run; a bundle's sub-issue `Closes` lines come from ship's
+   block, and CI checks them too), then pushes and
+   opens the PR with `--fill`. It refuses, pushing nothing, a message missing
+   any of them. Report the PR URL.
 
 **Stop there.** `make lgtm` is the operator's call after reading the diff.
 Don't run it, don't enable auto-merge another way, and don't offer to unless

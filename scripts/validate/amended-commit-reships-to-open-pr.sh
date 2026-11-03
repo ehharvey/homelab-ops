@@ -114,8 +114,12 @@ cmp -s "$hook" "$ROOT_DIR/.githooks/pre-push" \
 
 echo "validate-273 v1" >.validate-273-scratch
 git add .validate-273-scratch
+# ship refuses a message without the sections and a Closes (#405); the
+# validate-273/ branch names no issue, so any Closes will do.
 git commit -qm "DO NOT MERGE: validate #273 [skip ci]" \
-	-m "Throwaway PR opened by scripts/validate/amended-commit-reships-to-open-pr.sh. Closed automatically."
+	-m "## Plan" \
+	-m "Throwaway PR opened by scripts/validate/amended-commit-reships-to-open-pr.sh. Closed automatically." \
+	-m "## Test plan" -m "- [x] ship re-ships the amended commit" -m "Closes #0"
 v1=$(git rev-parse HEAD)
 
 PR_OPEN=1
