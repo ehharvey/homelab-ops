@@ -8,6 +8,9 @@
 # prints. The old one soft-reset straight to FETCH_HEAD, which silently
 # reverted whatever landed on main since the branch forked, and reused the
 # message with `commit -c`, whose editor cleanup deletes `## Plan` headings.
+# And it refuses (#405), pushing nothing, a message without `## Plan`,
+# `## Test plan` or a `Closes` line (#402 shipped `Plan:` / `Test plan:`), then
+# ships the same branch once the message is fixed.
 #
 # `make test` can't see any of this: it is git history, pushes and hooks. Every
 # case runs in a throwaway repo with a bare "origin" under mktemp, so nothing
@@ -24,7 +27,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib.sh
 . "$ROOT_DIR/scripts/validate/lib.sh"
 
-VALIDATE_PROVES="make ship squashes to the first commit's message, rebases onto main, and refuses mid-rebase, conflicting or stacked branches; the pre-push squash hint keeps main's changes (#319)"
+VALIDATE_PROVES="make ship squashes to the first commit's message, rebases onto main, and refuses mid-rebase, conflicting or stacked branches; the pre-push squash hint keeps main's changes (#319); it refuses a message without ## Plan, ## Test plan or Closes (#405)"
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="git"
 VALIDATE_DURATION="~3s"
@@ -187,6 +190,37 @@ check_eq "stack-c's history is unchanged" "$before" "$(git -C "$W" rev-parse HEA
 check "stack-c is still 3 commits beyond main" \
 	test "$(git -C "$W" rev-list --count origin/main..HEAD)" -eq 3
 check "nothing was pushed" bash -c "! git --git-dir='$O' rev-parse -q --verify refs/heads/stack-c"
+[ "$RC" -ne 0 ] || show_out
+
+echo "== malformed message: #402's Plan: / Test plan: headings, squashed (#405) =="
+new_world malformed
+git -C "$W" switch -q -c feat
+commit_file "$W" c1 one "$(printf 'feat: first commit\n\nPlan:\n\n- did it\n\nTest plan:\n\n- ran it\n\nCloses #0')"
+commit_file "$W" c2 two
+ship
+check "ship refuses the message without the sections" test "$RC" -ne 0
+check "ship names ## Plan as missing" grep -q '^      ## Plan$' <<<"$OUT"
+check "ship names ## Test plan as missing" grep -q '^      ## Test plan$' <<<"$OUT"
+check "ship points at § Amending keeps the sections" grep -q 'Amending keeps the sections' <<<"$OUT"
+check "nothing was pushed" bash -c "! git --git-dir='$O' rev-parse -q --verify refs/heads/feat"
+check "ship opened no PR" bash -c "! grep -q '^pr create' '$GH_LOG'"
+[ "$RC" -ne 0 ] || show_out
+printf '%s\n' "$M1" >"$WORK_DIR/malformed/msg"
+git -C "$W" commit -q --amend -F "$WORK_DIR/malformed/msg"
+ship
+[ "$RC" -eq 0 ] || show_out
+check_eq "the same branch with the sections ships" 0 "$RC"
+check_eq "origin/feat is the fixed commit" "$(git -C "$W" rev-parse HEAD)" \
+	"$(git --git-dir="$O" rev-parse feat 2>/dev/null)"
+
+echo "== no Closes line on a branch naming no issue (#405) =="
+new_world noclose
+git -C "$W" switch -q -c feat
+commit_file "$W" c1 one "$(printf 'feat: first commit\n\n## Plan\n\nx\n\n## Test plan\n\n- [x] y')"
+ship
+check "ship refuses a message with no Closes line" test "$RC" -ne 0
+check "ship names Closes #<n> as missing" grep -q '^      Closes #<n>$' <<<"$OUT"
+check "nothing was pushed" bash -c "! git --git-dir='$O' rev-parse -q --verify refs/heads/feat"
 [ "$RC" -ne 0 ] || show_out
 
 echo "== pre-push hint: run the hook's printed squash on a behind 2-commit branch =="

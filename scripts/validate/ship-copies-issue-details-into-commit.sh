@@ -108,6 +108,8 @@ await_pr_head() {
 }
 
 # The author's text, exactly as written, and the trailer paragraph after it.
+# Its `Closes #0` is for step 4, which ships it with no issue: ship then wants
+# some `Closes #<k>` (#405).
 AUTHOR=$(printf '%s\n' \
 	'## Plan' '' \
 	'Throwaway PR opened by scripts/validate/ship-copies-issue-details-into-commit.sh.' \
@@ -115,6 +117,7 @@ AUTHOR=$(printf '%s\n' \
 	'- one' '  - nested' '' \
 	'## Test plan' '' \
 	'- [x] ship keeps this byte-for-byte' '' \
+	'Closes #0' '' \
 	'[skip ci]')
 TRAILER="Co-Authored-By: validate-450 <validate-450@example.invalid>"
 SUBJECT="feat(validate): DO NOT MERGE, validate #450"
