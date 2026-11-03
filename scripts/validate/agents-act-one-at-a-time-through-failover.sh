@@ -45,6 +45,7 @@ VALIDATE_PROVES="exactly one cmd/agent acts; a commit changing primary hands ove
 VALIDATE_GROUP="incus"
 VALIDATE_NEEDS="read/write access to the Incus unix socket, an Incus that can create instances, go, git, curl, jq, [a container image]"
 VALIDATE_DURATION="~45s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 

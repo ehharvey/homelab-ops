@@ -42,6 +42,7 @@ VALIDATE_PROVES="a restarted web app answers a provisioned node's tunnel handsha
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose jq go curl"
 VALIDATE_DURATION="~60s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 require_compose

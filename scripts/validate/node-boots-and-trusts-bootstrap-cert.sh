@@ -60,6 +60,7 @@ VALIDATE_PROVES="a node boots from a seeded .img, installs IncusOS, trusts the b
 VALIDATE_GROUP="incus-vm"
 VALIDATE_NEEDS="incus go jq docker pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~10m"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 default_incusos_base_image

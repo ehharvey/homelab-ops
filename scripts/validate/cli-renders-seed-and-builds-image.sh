@@ -21,6 +21,7 @@ VALIDATE_PROVES="the bootstrap CLI renders a seed and injects it into a .img (#4
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="go [flasher-tool]"
 VALIDATE_DURATION="~3s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 

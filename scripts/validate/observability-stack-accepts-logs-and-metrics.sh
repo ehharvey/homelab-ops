@@ -26,6 +26,7 @@ VALIDATE_PROVES="the local Grafana/Loki/Prometheus stack accepts logs and metric
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose curl jq"
 VALIDATE_DURATION="~1m"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 require_compose

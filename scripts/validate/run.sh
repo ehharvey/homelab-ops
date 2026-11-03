@@ -8,6 +8,7 @@
 #   run.sh --list --group compose                 names only
 #   run.sh --list --group compose --json          CI's job list
 #   run.sh --describe                             the prerequisite matrix
+#   VALIDATE_OS=incusos run.sh                    the host-OS backend (default incusos)
 #
 # Groups come from each script's own VALIDATE_GROUP declaration, read via
 # --describe, rather than a list maintained here. A suite whose coverage depends
@@ -17,10 +18,15 @@
 # Exit codes aggregate the children's (see lib.sh): any 1 → 1; else any 2 → 2;
 # else any 3 → 3; else 0. So "something is broken" always outranks "something
 # couldn't run", which always outranks "everything that ran, passed".
+#
+# An unknown VALIDATE_OS exits 2 here, once, before any script is asked
+# anything; lib.sh holds the list of known backends (#486).
 
 set -uo pipefail
 
 SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/validate/lib.sh
+. "$SUITE_DIR/lib.sh"
 
 GROUP=""
 JOBS=1
@@ -51,7 +57,7 @@ while [ $# -gt 0 ]; do
 		;;
 	--allow-skip=*) PASSTHRU+=("$1") ;;
 	-h | --help)
-		sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -61,6 +67,8 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+
+validate_os_known || exit 2
 
 # script_group <path> — the script's declared group, or "" if it doesn't declare
 # one (which means it isn't part of the suite proper: the lib*.sh files).

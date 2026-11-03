@@ -27,6 +27,7 @@ VALIDATE_PROVES="POST /sync reports a visible diff, and rejects invalid config w
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose jq curl"
 VALIDATE_DURATION="~15s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 require_compose

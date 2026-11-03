@@ -29,6 +29,7 @@ VALIDATE_PROVES="the SubagentStop hook records issue-worker Noticed bullets in t
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="jq, flock, git"
 VALIDATE_DURATION="~3s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

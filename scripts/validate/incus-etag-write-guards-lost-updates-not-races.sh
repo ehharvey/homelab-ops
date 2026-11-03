@@ -45,6 +45,7 @@ VALIDATE_PROVES="Incus's If-Match rejects stale writes but is not a compare-and-
 VALIDATE_GROUP="incus"
 VALIDATE_NEEDS="read/write access to the Incus unix socket, curl, jq"
 VALIDATE_DURATION="~10s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 

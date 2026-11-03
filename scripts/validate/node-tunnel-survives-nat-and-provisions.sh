@@ -123,6 +123,7 @@ VALIDATE_PROVES="a node's WireGuard tunnel survives a NAT hop and carries provis
 VALIDATE_GROUP="incus-vm"
 VALIDATE_NEEDS="incus go git python3 jq docker pinned-base-images [flasher-tool] [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~13m"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 default_incusos_base_image

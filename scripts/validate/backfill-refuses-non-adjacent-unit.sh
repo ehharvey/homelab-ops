@@ -22,6 +22,7 @@ VALIDATE_PROVES="backfill-history.sh refuses to fold non-adjacent commits of one
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="git, jq"
 VALIDATE_DURATION="~2s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

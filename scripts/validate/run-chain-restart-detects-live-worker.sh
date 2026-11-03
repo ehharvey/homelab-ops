@@ -27,6 +27,7 @@ VALIDATE_PROVES="/run-chain's root-alive.sh reports the old root live while its 
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="sleep; /proc"
 VALIDATE_DURATION="~1s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

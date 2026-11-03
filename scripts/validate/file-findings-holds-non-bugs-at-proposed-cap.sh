@@ -35,6 +35,7 @@ VALIDATE_PROVES="/file-findings comments on an open origin and holds non-bug fin
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="jq, flock, git, sha256sum"
 VALIDATE_DURATION="~3s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

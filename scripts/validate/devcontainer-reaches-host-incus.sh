@@ -18,6 +18,7 @@ VALIDATE_PROVES="the devcontainer has its tooling and can drive the host's Incus
 VALIDATE_GROUP="incus"
 VALIDATE_NEEDS="an Incus remote, jq"
 VALIDATE_DURATION="~1s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

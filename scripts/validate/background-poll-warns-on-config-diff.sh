@@ -27,6 +27,7 @@ VALIDATE_PROVES="the background config-sync poller surfaces diff warnings withou
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose curl jq"
 VALIDATE_DURATION="~17s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 require_compose

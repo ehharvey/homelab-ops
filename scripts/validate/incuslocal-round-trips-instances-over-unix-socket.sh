@@ -64,6 +64,7 @@ VALIDATE_PROVES="internal/incuslocal round-trips instances, user.* config and fi
 VALIDATE_GROUP="incus"
 VALIDATE_NEEDS="read/write access to the Incus unix socket, an Incus that can create instances, go, incus, curl, jq, [a container image], [a clustered Incus]"
 VALIDATE_DURATION="~30s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 

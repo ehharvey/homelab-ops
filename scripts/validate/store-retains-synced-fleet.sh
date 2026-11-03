@@ -24,6 +24,7 @@ VALIDATE_PROVES="the store retains last-synced state and replaces rather than me
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose jq curl"
 VALIDATE_DURATION="~15s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 require_compose

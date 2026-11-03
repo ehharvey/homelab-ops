@@ -39,6 +39,7 @@ VALIDATE_PROVES="a worktree's push runs its own pre-push hook under an absolute 
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="git, timeout"
 VALIDATE_DURATION="~2s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

@@ -31,6 +31,7 @@ VALIDATE_PROVES="make ship squashes to the first commit's message, rebases onto 
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="git"
 VALIDATE_DURATION="~3s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

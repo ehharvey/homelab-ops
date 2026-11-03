@@ -37,6 +37,7 @@ VALIDATE_PROVES="make ship force-pushes an amended commit to its open PR, leased
 VALIDATE_GROUP="github"
 VALIDATE_NEEDS="gh authenticated with push access (opens and closes a real PR)"
 VALIDATE_DURATION="~1m"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

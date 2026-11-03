@@ -35,6 +35,7 @@ VALIDATE_PROVES="compose refuses to start a stack publishing a host port missing
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose jq python3 ss"
 VALIDATE_DURATION="~10s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 cd "$ROOT_DIR" || exit 2

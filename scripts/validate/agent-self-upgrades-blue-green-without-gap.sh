@@ -60,6 +60,7 @@ VALIDATE_PROVES="bumping the agent App's image in git replaces a standalone host
 VALIDATE_GROUP="incus"
 VALIDATE_NEEDS="a standalone Incus remote (VALIDATE_INCUS_REMOTE; default project), go, docker, jq"
 VALIDATE_DURATION="~2m"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 
