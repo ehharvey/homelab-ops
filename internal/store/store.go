@@ -106,6 +106,16 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 		}
 		seen[i.Name] = true
 
+		// There's no os column yet, so a stored Instance reads back with os
+		// omitted, meaning config.DefaultOS. Storing any other host OS would
+		// silently turn it into the default, and the web app would render
+		// that OS's machine an IncusOS seed. config.Validate accepts only the
+		// default today; this refusal is what fails if it accepts another OS
+		// before the store gains the column.
+		if hostOS := i.HostOS(); hostOS != config.DefaultOS {
+			return fmt.Errorf("store instance %q: os %q can't be stored (the store keeps no os column, so it would read back as %q)", i.Name, hostOS, config.DefaultOS)
+		}
+
 		apps, err := json.Marshal(i.Applications)
 		if err != nil {
 			return fmt.Errorf("marshal instance %q applications: %w", i.Name, err)

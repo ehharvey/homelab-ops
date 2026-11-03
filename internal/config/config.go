@@ -96,11 +96,69 @@ type Instance struct {
 	NIC          string     `yaml:"nic"`
 	Security     Security   `yaml:"security"`
 	Applications []string   `yaml:"applications"`
+	// OS is the host operating system this machine runs, as written in the
+	// fleet YAML: empty when omitted. Read it through HostOS, which applies
+	// the DefaultOS default. The raw value is kept, not defaulted at parse,
+	// so an omitted os and the store's round-trip (which has no os column
+	// yet) compare equal in configdiff. omitempty keeps GET /instances
+	// unchanged for the default.
+	OS string `yaml:"os" json:",omitempty"`
 	// TunnelIP is this instance's assigned address on the WireGuard overlay
 	// (internal/wireguard.OverlayCIDR) — always app-assigned
 	// (internal/wireguard.AssignTunnelIPs), never accepted from synced
 	// fleet YAML, unlike StaticIP.
 	TunnelIP netip.Addr `yaml:"-"`
+}
+
+// Host OS names an Instance's os field accepts (docs/Decisions.md §31). Every
+// name here is known to the config format, but only those in
+// implementedHostOSes have an internal/hostos backend; Validate rejects the
+// rest with a message distinct from an unknown name's.
+const (
+	OSIncusOS = "incusos"
+	OSTalos   = "talos"
+	OSDebian  = "debian"
+)
+
+// DefaultOS is the host OS of an Instance whose os is omitted: every machine
+// was IncusOS before the field existed.
+const DefaultOS = OSIncusOS
+
+// hostOSes lists the known host OS names, in the order messages name them.
+var hostOSes = []string{OSIncusOS, OSTalos, OSDebian}
+
+// implementedHostOSes are the host OSes with an internal/hostos backend.
+// hostos's tests check this set against its registered backends, so the two
+// can't drift: a backend lands together with its entry here.
+var implementedHostOSes = map[string]bool{OSIncusOS: true}
+
+// implementedHostOSList is implementedHostOSes in hostOSes order, for
+// messages. It's derived once from the two above, so editing either keeps it
+// in step.
+var implementedHostOSList = func() []string {
+	var out []string
+	for _, name := range hostOSes {
+		if implementedHostOSes[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}()
+
+// HostOSes returns every host OS name the config format knows, implemented
+// or not.
+func HostOSes() []string { return append([]string(nil), hostOSes...) }
+
+// HostOSImplemented reports whether name has an internal/hostos backend.
+func HostOSImplemented(name string) bool { return implementedHostOSes[name] }
+
+// HostOS returns the instance's host OS: its os field, or DefaultOS when
+// that's omitted.
+func (i Instance) HostOS() string {
+	if i.OS == "" {
+		return DefaultOS
+	}
+	return i.OS
 }
 
 // Replicas is an App's cardinality: a fixed count, or one per known Instance

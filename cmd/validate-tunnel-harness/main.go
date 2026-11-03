@@ -135,7 +135,7 @@ func runPatchSeed(networkYAMLPath, routeTo, routeVia, peerPublicKeyB64, peerAllo
 	if err != nil {
 		return fmt.Errorf("marshal patched network.yaml: %w", err)
 	}
-	if err := os.WriteFile(networkYAMLPath, out, 0o644); err != nil { //nolint:gosec // G306: seed YAML is not secret, matching internal/seed.Write's existing convention
+	if err := os.WriteFile(networkYAMLPath, out, 0o644); err != nil { //nolint:gosec // G306: seed YAML is not secret, matching internal/hostos.WriteFiles's convention
 		return fmt.Errorf("write patched network.yaml: %w", err)
 	}
 	return nil

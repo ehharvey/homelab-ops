@@ -23,7 +23,8 @@ import (
 )
 
 // seedFiles are the exact entry names flasher-tool's --seed tar expects,
-// matching what internal/seed.Write produces in a seed directory.
+// matching the files internal/seed.Marshal names (written to a seed directory
+// by internal/hostos.WriteFiles).
 var seedFiles = []string{"install.yaml", "network.yaml", "applications.yaml", "incus.yaml"}
 
 // Options configures a Run invocation.

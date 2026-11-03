@@ -244,10 +244,9 @@ work is tracked separately and is not part of this section.)
 > go behind a host-OS seam and a cluster-runtime seam, behaviour-neutral,
 > before Talos arrives. #398 moved here from the old Phase 6.
 
-- [ ] An `os` field on `Instance` and the `internal/hostos` seam (validate,
-  render install media and config, upgrade the OS), with IncusOS behind it,
-  wrapping `seed` and `flasher` (`docs/Decisions.md` §15 Prerequisite 1, §31)
-  — see #398
+- [x] An `os` field on `Instance` and the `internal/hostos` seam (validate,
+  render install media and config), with IncusOS behind it, wrapping `seed`
+  and `flasher` (`docs/Decisions.md` §15 Prerequisite 1, §31): DONE; see #398
 - [ ] A per-cluster `runtime` (`incus | kubernetes`) and the allowed-pairs
   table of `os` and `runtime`, checked at parse (`docs/Decisions.md` §31). To
   file.
@@ -506,7 +505,7 @@ run from git, and a node's logs and resource metrics show up in Grafana.
 - [ ] Cluster membership config model: declare which `Instance` bootstraps
   the cluster vs. joins it, with no addresses required in git, and scope
   `kind: Designation` to a cluster (`docs/Decisions.md` §30). The same-OS
-  check arrives with the `os` field, in #398 — see #181
+  check arrives in #487, with the per-cluster `runtime` — see #181
 - [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
   the two cannot drift from one another: Incus rejects a joiner whose version
   differs from the cluster's. IncusOS's own updates are the larger source of

@@ -1,0 +1,3 @@
+version: ""
+applications:
+    - name: incus

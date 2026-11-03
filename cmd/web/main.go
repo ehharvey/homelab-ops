@@ -20,8 +20,9 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
+	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
-	"github.com/ehharvey/homelab-ops/internal/flasher"
+	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
@@ -344,19 +345,27 @@ func newImageBuilder() server.ImageBuilder {
 	return flasherBuilder{basePath: base, binPath: os.Getenv("FLASHER_TOOL_PATH")}
 }
 
-// flasherBuilder implements server.ImageBuilder by shelling out to flasher-tool
-// via internal/flasher.Run. Force is always set: the output path is a fresh
-// per-request temp file the handler owns, so there is nothing to protect from
-// overwrite.
+// flasherBuilder implements server.ImageBuilder with internal/hostos's IncusOS
+// backend, which shells out to flasher-tool via internal/flasher.Run. Force is
+// always set: the output path is a fresh per-request temp file the handler
+// owns, so there is nothing to protect from overwrite.
 type flasherBuilder struct{ basePath, binPath string }
 
-func (b flasherBuilder) Build(ctx context.Context, seedDir, outputPath string, logs io.Writer) error {
-	return flasher.Run(ctx, flasher.Options{
-		SeedDir:     seedDir,
+func (b flasherBuilder) Build(ctx context.Context, hostOS, seedDir, outputPath string, logs io.Writer) error {
+	// No dispatch on hostOS yet: a deployment supplies one base image and one
+	// image tool (BASE_IMAGE_PATH, FLASHER_TOOL_PATH), and both are IncusOS's.
+	// Building for another OS needs that OS's own base image and tool, which
+	// arrive with its backend; until then any other OS is refused rather than
+	// baked into an IncusOS image.
+	if hostOS != config.OSIncusOS {
+		return fmt.Errorf("no base image for host OS %q: BASE_IMAGE_PATH is an IncusOS image", hostOS)
+	}
+	return hostos.IncusOS.RenderImage(ctx, hostos.ImageInput{
+		ConfigDir:   seedDir,
 		BaseImage:   b.basePath,
 		OutputImage: outputPath,
 		Force:       true,
-		BinPath:     b.binPath,
+		ToolPath:    b.binPath,
 		Stdout:      logs,
 		Stderr:      logs,
 	})

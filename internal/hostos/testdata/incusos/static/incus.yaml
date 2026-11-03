@@ -1,0 +1,40 @@
+version: ""
+apply_defaults: true
+preseed:
+    config:
+        cluster.https_address: 192.168.1.201:8443
+        core.https_address: :8443
+    networks: []
+    storage_pools: []
+    storage_volumes: []
+    profiles:
+        - config: {}
+          description: This host's Incus API socket, at /dev/incus-host.sock inside the instance
+          devices:
+            incus-socket:
+                bind: instance
+                connect: unix:/var/lib/incus/unix.socket
+                listen: unix:/dev/incus-host.sock
+                type: proxy
+          name: incus-socket
+          project: default
+    projects: []
+    certificates:
+        - name: node0
+          type: client
+          restricted: false
+          projects: []
+          certificate: MIIByTCCAVCgAwIBAgIQCHTMjCEFCP1hEjMbd3jmZjAKBggqhkjOPQQDAzAtMRQwEgYDVQQKEwtob21lbGFiLW9wczEVMBMGA1UEAxMMbm9kZTAtY2xpZW50MB4XDTI2MTEwMzE1MDgyMFoXDTI2MTEwNDE1MDgyMFowLTEUMBIGA1UEChMLaG9tZWxhYi1vcHMxFTATBgNVBAMTDG5vZGUwLWNsaWVudDB2MBAGByqGSM49AgEGBSuBBAAiA2IABKw1T0dsiCgGNe9OlgYfdFRVz0VOtzXeqzYmZuIMm3aFdg5a+TsNF/ruA7hWEq9n1wHGMMHhvg0onyJAW08Kg7mYRSYoKYX4qsBUgeuTbDAhyPXEsxCJGv6PLTib1NSNA6M1MDMwDgYDVR0PAQH/BAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMCMAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwMDZwAwZAIwdu+QfkWbAVaYybHWg9lPsLv0s6qNIpi5ON3EkHUvVrkf2jfw2BfCMbcjTcvVA67jAjAiITS+7r9jVl3xijkHCZideYcvkkhzdRPsQ8xDOz9HmI0hbpNxOutOE5wAKnIX8RM=
+          description: ""
+          trust_token: ""
+          token: false
+    cluster_groups: []
+    cluster:
+        server_name: node0
+        enabled: true
+        member_config: []
+        cluster_address: ""
+        cluster_certificate: ""
+        server_address: ""
+        cluster_token: ""
+        cluster_certificate_path: ""

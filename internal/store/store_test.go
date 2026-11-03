@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -359,5 +360,38 @@ func TestReplaceDuplicateAppNameLastWins(t *testing.T) {
 	}
 	if len(apps) != 1 || !reflect.DeepEqual(apps[0], cfg.Apps[1]) {
 		t.Errorf("Apps = %+v, want only %+v (last duplicate wins)", apps, cfg.Apps[1])
+	}
+}
+
+// TestReplaceRefusesNonDefaultHostOS pins that the store, which keeps no os
+// column, refuses an Instance it would read back as a different host OS,
+// rather than storing it as the default. An explicit default is stored and
+// reads back with os omitted, which configdiff treats as the same.
+func TestReplaceRefusesNonDefaultHostOS(t *testing.T) {
+	s, ctx := openTestStore(t)
+	net := config.Network{Name: "lan", CIDR: netip.MustParsePrefix("10.0.0.0/24")}
+
+	talos := config.Config{
+		Networks:  []config.Network{net},
+		Instances: []config.Instance{{Name: "node0", Network: "lan", OS: config.OSTalos}},
+	}
+	err := s.Replace(ctx, talos, "deadbeef", time.Now())
+	if err == nil || !strings.Contains(err.Error(), `os "talos" can't be stored`) {
+		t.Fatalf("Replace(os: talos) = %v, want a refusal naming the os", err)
+	}
+
+	incusos := config.Config{
+		Networks:  []config.Network{net},
+		Instances: []config.Instance{{Name: "node0", Network: "lan", OS: config.OSIncusOS}},
+	}
+	if err := s.Replace(ctx, incusos, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace(os: incusos): %v", err)
+	}
+	i, ok, err := s.Instance(ctx, "node0")
+	if err != nil || !ok {
+		t.Fatalf("Instance(node0) = %+v, %v, %v", i, ok, err)
+	}
+	if i.HostOS() != config.OSIncusOS {
+		t.Errorf("stored os: incusos reads back as HostOS %q", i.HostOS())
 	}
 }
