@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 )
 
 // Designation is the operator's statement of who leads — a primary node —
@@ -49,6 +50,10 @@ type Peer struct {
 	// recovers: a leader handing over to its sustained-healthy candidate
 	// (#109), or an agent whose git sync keeps failing (#187).
 	Draining bool
+	// Heartbeat is the time of the instance's last tick, by its own host's
+	// clock, or zero if it has none. MayAct never reads it; MayUndrain does,
+	// only for instances on the caller's own node, so on the same clock.
+	Heartbeat time.Time
 }
 
 // Publication is what an agent writes about itself on each Record.
@@ -288,24 +293,58 @@ func (d *Designated) evaluate(des Designation, peers map[string]Peer) (Decision,
 	return Decision{Leader: true, Commit: des.Commit, Reason: fmt.Sprintf("designated primary at commit %s", short(des.Commit))}, nil
 }
 
-// MayUndrain reports whether an instance that drained itself for a
-// recoverable reason — its git sync failing persistently (#187) — may clear
-// its Draining flag now that sync has recovered.
+// The reasons an agent drains for. Peer.Draining is one bool behind both;
+// the agent loop tracks which applies (docs/Decisions.md §25), and MayUndrain
+// is where the difference is enforced.
+const (
+	// DrainSyncFailure is the drain of an agent whose git sync failed
+	// FailureThreshold times in a row (#187). It is recoverable, subject to
+	// MayUndrain.
+	DrainSyncFailure = "sync-failure"
+	// DrainSuperseded is the drain of an instance a newer generation on its
+	// node replaces: an old primary whose self-upgrade candidate is
+	// sustained-healthy (#109), or a sync-failure drain that, on recovering,
+	// found a newer generation had taken over. It holds while that newer
+	// generation is live and undrained, until the leader retires this
+	// instance; if the newer one stops, is deleted, drains or hangs first, it
+	// clears (MayUndrain), so a handover to a candidate that never leads
+	// doesn't leave the cluster leaderless.
+	DrainSuperseded = "superseded"
+)
+
+// MayUndrain reports whether an instance that drained itself for reason may
+// clear its Draining flag, sync having succeeded.
 //
-// It may not if a higher-generation instance on its node is non-draining:
-// that one took over while this one was drained (rule 4 let it), so this one
-// has been superseded and must stay drained until the leader retires it. The
-// check lives here, on the write side, rather than in MayAct, because MayAct's
-// same-node rule is deliberately one-sided: an old instance keeps acting
-// through a self-upgrade while its brand-new, non-draining candidate waits.
-func MayUndrain(self, node string, generation int64, peers map[string]Peer) (bool, string) {
+// Only this package's reasons are recoverable, DrainSyncFailure and
+// DrainSuperseded alike: a drain for any other reason was set by something
+// else, and MayUndrain says no whatever the peers show. Nor may it while a
+// higher-generation instance on its node is live and non-draining: that one
+// took over (rule 4 let it), or is the candidate this one handed over to, so
+// this one stays drained until the leader retires it. Once none is, nothing
+// on this node would lead but this one. The check lives here, on the write
+// side, rather than in MayAct, because MayAct's same-node rule is
+// deliberately one-sided: an old instance keeps acting through a
+// self-upgrade while its brand-new, non-draining candidate waits.
+//
+// Live means acting, or with a heartbeat at or after staleBefore. A newer
+// instance that is neither is Running but stuck (#109's review): it never
+// leads, so it must not hold this one drained. Clearing is safe even if it
+// recovers: MayAct then defers it to this older, undrained instance, and
+// were it acting after all, this one waits for that flag (rule 3).
+func MayUndrain(self, node string, generation int64, reason string, peers map[string]Peer, staleBefore time.Time) (bool, string) {
+	if reason != DrainSyncFailure && reason != DrainSuperseded {
+		return false, fmt.Sprintf("a %q drain is not this agent's to clear; only %q and %q drains are", reason, DrainSyncFailure, DrainSuperseded)
+	}
 	for _, name := range slices.Sorted(maps.Keys(peers)) {
 		p := peers[name]
-		if name != self && p.Node == node && !p.Draining && p.Generation > generation {
+		if name == self || p.Node != node || p.Draining || p.Generation <= generation {
+			continue
+		}
+		if p.Acting || !p.Heartbeat.Before(staleBefore) {
 			return false, fmt.Sprintf("superseded by %s (generation %d) on this node", name, p.Generation)
 		}
 	}
-	return true, "no newer generation on this node took over"
+	return true, "no newer generation on this node is live and took over"
 }
 
 // short abbreviates a commit hash for reasons and logs.

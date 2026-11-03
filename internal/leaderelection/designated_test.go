@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // world is the shared record every fake agent publishes to: one entry per
@@ -726,24 +727,49 @@ func (r recordHook) Record(ctx context.Context, p Publication) error {
 }
 
 func TestMayUndrain(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	staleBefore := now.Add(-90 * time.Second)
+	fresh, stale := now.Add(-time.Second), staleBefore.Add(-time.Second)
 	tests := []struct {
 		name  string
 		peers map[string]Peer
 		want  bool
 	}{
 		{"alone", map[string]Peer{"self": {Node: "node0", Generation: 1, Draining: true}}, true},
-		{"a newer non-draining generation took over", map[string]Peer{"g2": {Node: "node0", Generation: 2}}, false},
-		{"a newer generation that is itself draining", map[string]Peer{"g2": {Node: "node0", Generation: 2, Draining: true}}, true},
-		{"an older non-draining generation", map[string]Peer{"g0": {Node: "node0", Generation: 0}}, true},
-		{"a newer generation on another node", map[string]Peer{"x": {Node: "node1", Generation: 5}}, true},
+		{"a newer non-draining generation took over", map[string]Peer{"g2": {Node: "node0", Generation: 2, Heartbeat: fresh}}, false},
+		{"a newer generation that is itself draining", map[string]Peer{"g2": {Node: "node0", Generation: 2, Draining: true, Heartbeat: fresh}}, true},
+		// Running but stuck before it led: nothing else would ever lead.
+		{"a newer generation whose heartbeat is stale", map[string]Peer{"g2": {Node: "node0", Generation: 2, Heartbeat: stale}}, true},
+		{"a newer generation that never heartbeat", map[string]Peer{"g2": {Node: "node0", Generation: 2}}, true},
+		// Acting, it took over, however long its tick is taking.
+		{"a newer acting generation whose heartbeat is stale", map[string]Peer{"g2": {Node: "node0", Generation: 2, Acting: true, Heartbeat: stale}}, false},
+		{"an older non-draining generation", map[string]Peer{"g0": {Node: "node0", Generation: 0, Heartbeat: fresh}}, true},
+		{"a newer generation on another node", map[string]Peer{"x": {Node: "node1", Generation: 5, Heartbeat: fresh}}, true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, reason := MayUndrain("self", "node0", 1, tt.peers)
-			if got != tt.want {
-				t.Errorf("MayUndrain = %v (%s), want %v", got, reason, tt.want)
-			}
-		})
+	// A superseded drain clears on the same terms as a sync-failure one: once
+	// no newer generation on the node is there to lead, as when the
+	// candidate an old primary handed over to stopped or hung before taking
+	// over.
+	for _, reason := range []string{DrainSyncFailure, DrainSuperseded} {
+		for _, tt := range tests {
+			t.Run(reason+"/"+tt.name, func(t *testing.T) {
+				got, why := MayUndrain("self", "node0", 1, reason, tt.peers, staleBefore)
+				if got != tt.want {
+					t.Errorf("MayUndrain = %v (%s), want %v", got, why, tt.want)
+				}
+			})
+		}
+	}
+}
+
+// A drain for a reason this package doesn't define wasn't set by the agent
+// loop, so nothing on the node, not even being alone there, lets it clear.
+func TestMayUndrainNeverClearsAnotherReasonsDrain(t *testing.T) {
+	for _, reason := range []string{"", "something-else"} {
+		alone := map[string]Peer{"self": {Node: "node0", Generation: 1, Draining: true}}
+		if ok, why := MayUndrain("self", "node0", 1, reason, alone, time.Time{}); ok {
+			t.Errorf("MayUndrain with reason %q = true (%s), want false", reason, why)
+		}
 	}
 }
 

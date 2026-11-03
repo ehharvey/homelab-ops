@@ -1660,7 +1660,7 @@ Requirement: **at most one agent performs leader-only writes at a time.** Idle p
 
 Leader election is an interface, `internal/leaderelection.Elector`, answering `MayAct(ctx) (Decision, error)`. Callers ask before every leader-only action and treat an error as "not leader". 0.x ships one implementation, `Designated`; a second (ranked) can replace it with no change to the reconcile loop.
 
-**Designated.** Git config names a `primary` node, and nothing else (`docs/Config Schema.md`). Leadership is per cluster (§30): a standalone host is its own primary, and `primary` names a multi-member cluster's. The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself.
+**Designated.** Git config names a `primary` node, and nothing else (`docs/Config Schema.md`). Leadership is per cluster (§30): `primary` names a cluster's primary node, a standalone host's included, which is then its one host. There is no implicit primary: an agent with no Designation naming its node doesn't act. The designation names a node, not an instance, so a blue-green self-upgrade needs no designation change: the old leader steps aside (`draining`, #109) once it sees its candidate sustained-healthy, the candidate leads and retires it, and the old instance never has to delete itself.
 
 Each agent publishes two `user.*` keys on its own instance, each written by that agent alone (no CAS, no contention):
 
@@ -1710,7 +1710,7 @@ There's no overlap and no timer. The handoff takes as long as node0's next tick.
 
 An agent may act iff, all at once:
 
-1. its designation, from its own last successful sync (within the sync-failure threshold, below), names its node as its cluster's primary, or its node is standalone and so its own primary (§30);
+1. its designation, from its own last successful sync (within the sync-failure threshold, below), names its node as its cluster's primary (§30: a standalone host is a one-member cluster, and needs a Designation too);
 2. every running, non-draining peer's published commit is in its own history;
 3. no other running peer shows `acting: true`;
 4. it isn't draining, and no older non-draining instance runs on its node.
@@ -1725,9 +1725,9 @@ It re-checks all four after publishing `acting: true`, before its first action. 
 
 **On crossing the threshold, the agent self-drains:** it sets `draining` on its own instance, a single-writer write that needs only Incus. `MayAct` would already return not-leader; draining adds a durable, `incus list`-visible distinction between "alive but has given up", "dead" (heartbeat stopped too) and "still trying". It also unblocks a newer generation already waiting on this node, as any drain does. A fleet-wide git outage therefore produces zero leaders, never two.
 
-**Un-draining is gated, on the write side.** Before an instance clears its own `draining`, it must have completed a successful sync ("not failing" isn't recovery, since a restarted agent's failure count starts at zero), and no higher-generation peer on its node may be non-draining (`MayUndrain`, a pure function). If one is, a newer generation took over while this one was drained, and this one stays drained permanently, like any post-handoff old generation; deleting it is the new leader's job. `MayAct` deliberately doesn't enforce this. Its peer scan is asymmetric: a candidate defers to an older non-draining instance, but an older instance never checks for a newer one, which is what lets the old instance keep acting (health-checking, validating its candidate) through an ordinary self-upgrade window. A symmetric check would stop it the moment a candidate existed.
+**Un-draining is gated, on the write side.** Before an instance clears its own `draining`, it must have completed a successful sync ("not failing" isn't recovery, since a restarted agent's failure count starts at zero), and no higher-generation peer on its node may be live and non-draining (`MayUndrain`, a pure function). Live is acting, or a heartbeat within `AGENT_HEARTBEAT_STALE_AFTER`, by the node's own clock. If one is, a newer generation took over while this one was drained, or is the candidate this one handed over to, and this one stays drained while that one runs undrained; deleting it is the new leader's job. If that newer generation stops, is deleted, drains, or hangs before it leads, nothing on the node would lead but this one, so it clears. Clearing beside a hung one that recovers is safe: `MayAct` defers it to this older, undrained instance, and were it acting this one waits for the flag. `MayAct` deliberately doesn't enforce this. Its peer scan is asymmetric: a candidate defers to an older non-draining instance, but an older instance never checks for a newer one, which is what lets the old instance keep acting (health-checking, validating its candidate) through an ordinary self-upgrade window. A symmetric check would stop it the moment a candidate existed.
 
-So `draining` has two triggers behind one bool: a self-upgrade drain is permanent, and a sync-failure drain is conditionally recoverable. `MayAct` only asks "is this peer draining"; the agent loop tracks why.
+So `draining` has two triggers behind one bool, a sync failure and a self-upgrade handoff (`superseded`), and one gate clears both. A drain for a reason the agent loop didn't set is never cleared by it. `MayAct` only asks "is this peer draining"; the agent loop tracks why.
 
 #### Failure cases, and what they cost
 
@@ -1793,6 +1793,8 @@ Recorded so it can be built later without re-deriving it. Everything registers a
 - **2026-10-03 (#101, PR #219):** building it settled the force-push refspec, ancestry as the meaning of "in my history", a failed parse as a failed sync, the own-instance and own-flag checks, peers scoped to the agent's own App, draining peers skipped by rule 2, and un-draining only after a successful sync.
 - **2026-10-03 (#223):** the #187, #212 and #101 addenda folded into the body above.
 - **2026-10-26 (#401, §30):** rule 1 went from one primary per repo to one per cluster, with a standalone host its own primary. Rule 3's reach was already one cluster, since an agent reads its peers from its own member's Incus.
+- **2026-10-27 (#109 refinement, operator; §30):** a standalone host needs a `kind: Designation` naming it, like any cluster, superseding "a standalone host is its own primary" in rule 1 and the Designated paragraph. It was never built, so `MayAct` is unchanged.
+- **2026-10-28 (#109):** the self-upgrade handoff built on this section's drain and handoff. `MayUndrain` takes the drain reason and clears only the two the agent loop sets. A `superseded` drain was first made permanent; PR #452's review (2026-10-30) found that a candidate dying between the old primary's drain and its own first lead then left the cluster leaderless with nothing to recover it, so it clears under the same gate as a sync-failure drain. The second review (2026-11-03) found a candidate that hangs while Running did the same, so the gate counts only a live newer generation. `MayAct` still never reads the heartbeat; the upgrade gate and `MayUndrain` do.
 
 ## 26. Incus clustering: 0.x claimed a one-member cluster it never built; splitting the fix into Tier A and Tier B (#177)
 
@@ -2313,9 +2315,13 @@ The agent deploys (#100), upgrades itself (#109, #103), runs one per host (#203)
 - **Cluster members:** §27's mechanism. Each tick, the designated primary's agent creates the agent on each declared member that has none, placed with `target=<member>` (#203).
 - **Standalone hosts** (a one-member cluster, below): the web app's one-shot window (#100) or `bootstrap deploy-agent`. No other agent can reach a standalone host's socket, and the web app keeps no standing credential after its one-shot cert is revoked (§4, §27). None is added for this.
 
-### Leadership is per cluster; a standalone host is its own primary
+### Leadership is per cluster; every cluster, a standalone host included, needs a `kind: Designation`
 
-A standalone host is treated as a one-member cluster, whether its Incus is a Tier A one-member cluster (static IP) or a bare, unclustered daemon (DHCP-only, which skips clustering, §26). **Its one host is its primary:** the agent takes its own node as primary, with no `kind: Designation` needed. A multi-member cluster's primary is the node `kind: Designation` names. This amends §25 rule 1 from one primary per repo to one per cluster. §25's other rules stand, and its single acting instance holds per cluster, which was already its reach: an agent reads its peers from its own member's Incus, so it never sees another cluster's agents. Taking a standalone host as its own primary is #109's; scoping `kind: Designation` to a cluster is #181's (parked, §31). On a standalone host, creates omit `target=`, as `internal/agentdeploy` already does; only a multi-member cluster needs it.
+A standalone host is treated as a one-member cluster, whether its Incus is a Tier A one-member cluster (static IP) or a bare, unclustered daemon (DHCP-only, which skips clustering, §26). **Its primary is its one host, and like any cluster's it is named by a `kind: Designation`** (operator, 2026-10-27, #109). It is not its own primary implicitly: `Designated` and `MayAct` have no standalone rule, and an agent with no Designation naming its node doesn't act, standalone or not. A multi-member cluster's primary is likewise the node `kind: Designation` names.
+
+This amends §25 rule 1 from one primary per repo to one per cluster. §25's other rules stand, and its single acting instance holds per cluster, which was already its reach: an agent reads its peers from its own member's Incus, so it never sees another cluster's agents. On a standalone host, creates omit `target=`; only a multi-member cluster needs it.
+
+**Consequence: one unattended cluster per repo, for now.** `kind: Designation` is at most one per repo (`docs/Config Schema.md`), so only the one cluster or standalone host it names upgrades its agent unattended. Every other standalone host in the repo uses the operator-driven CLI fallback (below) until #440 decides how a repo designates more than one (post-1.0). Scoping `kind: Designation` to a cluster is #181's (parked, §31).
 
 ### Agent upgrade is agent-driven
 
@@ -2325,6 +2331,8 @@ When the agent App's `image` in git differs from the running agents', **the prim
 - **On a follower's host** (a multi-member cluster, parked by §31), the primary's agent creates the follower's successor, placed with `target=<member>`. A follower's candidate is a follower and never acts (§25 rule 1), so **the acting primary retires the old follower instance** once its candidate is sustained-healthy.
 
 There is one acting instance per cluster throughout, §25's invariant unchanged. This is #109 (which takes the agent-only slice of #98's image-change handling) plus #103's proof, narrowed to the agent.
+
+**Built (#109).** `internal/agent`'s upgrade pass runs in the leader's tick beside #203's creates, on an unclustered daemon too. A candidate is healthy while its own `user.homelab-ops.agent.heartbeat` is younger than `AGENT_HEARTBEAT_STALE_AFTER` (90s) and it could lead once handed over to (not draining, and published at the commit the primary decided on or one in its history), and replaces the old instance once healthy for `AGENT_MIN_HEALTHY_DURATION` (2m) without a break; one not there within `AGENT_UPGRADE_HEALTH_DEADLINE` (10m) of its creation is counted, then deleted, and retried up to `AGENT_UPGRADE_MAX_ATTEMPTS` (3) per image. The streak and the count are `user.homelab-ops.upgrade.<node>.*` keys on the acting primary's own instance, never on another agent's: an Incus PATCH is a read-merge-write of the whole config, so a second writer loses updates even on disjoint keys (PR #452's review). The old primary's drain reason is `superseded`, which `MayUndrain` clears only once no newer generation on its node is live and undrained (§25). Heartbeat ages compare the primary's clock with the candidate's, which is one clock on a standalone host; a multi-member cluster would need skew allowed for, and is parked (§31). `scripts/validate/agent-self-upgrades-blue-green-without-gap.sh` proves it on a standalone host.
 
 - **Not each agent for itself.** A follower that crashed before creating its own successor would be left behind; the primary-driven loop covers it, as #109's original design argued.
 
@@ -2461,6 +2469,11 @@ In `full` mode IPAM owns the whole subnet and the pool is configured explicitly,
 | 10 | Tailscale (the former Phase 7) |
 | Parked | The Incus runtime: the former Phase 5, Debian and NixOS with Incus, the Incus half of the former Phase 8 |
 | Deferred | iPXE for every boot, KubeVirt with replicated storage, the own distro, the no-gap Kea handoff |
+
+### History
+
+- **2026-10-27 (#109 refinement, operator):** a standalone host needs a `kind: Designation` naming its node, like any cluster. It used to be its own primary implicitly, with no Designation; that rule was dropped before it was built, so `Designated` and `MayAct` never gained it. The consequence, one unattended cluster or standalone host per repo, waits on #440.
+- **2026-10-28 (#109):** the agent's self-upgrade built as above, with #103's validate script folded in.
 
 ## Sources consulted
 

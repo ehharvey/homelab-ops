@@ -175,7 +175,7 @@ func TestDrainOnSyncFailure(t *testing.T) {
 		}
 
 		if superseded {
-			peers["agent-node0-g1"] = leaderelection.Peer{Node: "node0", Generation: 1, Commit: "c1"}
+			peers["agent-node0-g1"] = leaderelection.Peer{Node: "node0", Generation: 1, Commit: "c1", Heartbeat: a.now()} // live
 		}
 		s.failing = false
 		a.Tick(context.Background())
