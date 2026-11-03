@@ -2341,7 +2341,7 @@ There is one acting instance per cluster throughout, §25's invariant unchanged.
 
 ### Clusters are same-OS, joined by the agent
 
-A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The check that a cluster's members declare one `os` arrives with that field, in #398 (Phase 4, §31). Until then every host is IncusOS, so #181 (parked) has nothing to check.
+A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The `os` field exists (#398, Phase 4, §31), but the check that a cluster's members declare one `os` arrives in #487, together with the per-cluster `runtime`: config has no cluster entity until #181's membership model exists. Until then `incusos` is the only `os` with a backend, so every host is IncusOS and #181 (parked) has nothing to check.
 
 ### Host OS order
 
@@ -2385,7 +2385,7 @@ The main line moves from IncusOS hosts, with Kubernetes later on top, to **bare-
   | `debian` | `incus` or `kubernetes` |
   | own distro | `kubernetes`, and `incus` if chosen |
 
-- **Code.** `internal/hostos` validates an `Instance`, renders its install media and config, and upgrades the OS. `internal/clusterruntime` bootstraps, joins, upgrades and reports health. IncusOS and Incus go behind them first, behaviour-neutral, by wrapping `seed`/`flasher` and `agent`/`agentdeploy`/`leaderelection` rather than moving them. The existing validate scripts passing proves the seams before Talos arrives.
+- **Code.** `internal/hostos` validates an `Instance` and renders its install media and config (#398). It gains an OS-upgrade operation with the first backend that needs one, Talos (Phase 6), so real behaviour shapes its signature; IncusOS updates itself, so there's nothing to wrap. `internal/clusterruntime` bootstraps, joins, upgrades and reports health. IncusOS and Incus go behind them first, behaviour-neutral, by wrapping `seed`/`flasher` and `agent`/`agentdeploy`/`leaderelection` rather than moving them. The existing validate scripts passing proves the seams before Talos arrives.
 - **No Talos lock-in.** The `kubernetes` runtime talks to the Kubernetes API (`client-go`). The Talos API is used only for OS operations: applying config, upgrading, rebooting. Kubernetes has two bootstrap providers: the Talos API now, `kubeadm` for an own distro later.
 - **Workloads stay native to each runtime:** Flux and manifests on Kubernetes, Incus instances on Incus. No runtime-neutral `kind: App` until one app must run on both; until then `kind: App` stays the Incus agent's.
 - **Validate scripts** stay named for behaviour (#138) and take the backend as a parameter (`VALIDATE_OS`). Every backend passes the same set.

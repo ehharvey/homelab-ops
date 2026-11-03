@@ -82,7 +82,7 @@ dns: [192.168.1.1]
 
 ### `kind: Instance`
 
-One physical IncusOS machine.
+One physical machine, and the host OS it runs (`os`, IncusOS unless set).
 
 ```yaml
 kind: Instance
@@ -100,6 +100,7 @@ applications: [incus]
 
 | Field | Type | Required | Rules and meaning |
 |---|---|---|---|
+| `os` | string | no, default `incusos` | The host OS, which picks how the machine's seed and image are rendered (`internal/hostos`, `docs/Decisions.md` §31). Only `incusos` is implemented. `talos` and `debian` are known but have no backend yet, and any other value is unknown; each is rejected with its own message (`instances[N].os`). |
 | `name` | string | yes | Unique among Instances, and a lowercase hostname label: 1–63 of `a-z`, `0-9` and `-`, not starting or ending with `-`, not all digits. Lowercase only, because `Node0` and `node0` would be "unique" and yet name the same host. It's the node's identity everywhere downstream: its Incus cluster member name, its cert names, its web-app store key, and the agent's `AGENT_NODE_NAME`. #193 also makes it the node's hostname. The rule is stricter than Incus's own member-name check, so a name that passes is valid everywhere. |
 | `mac` | string | yes, in effect | The NIC IncusOS configures as `eth0`. Not validated; a wrong MAC leaves the node's network unconfigured at boot. Quoting is optional. |
 | `network` | string | yes | A declared Network's `name`, checked for every instance, DHCP or not. The instance must sit on that network. |
@@ -211,6 +212,11 @@ Things the checks don't catch today, recorded so nobody assumes they do:
 - **A missing `gateway` passes `Validate`.** It's caught at render instead,
   which is later than an operator would expect.
 - **`mac` is free text.**
+- **The web app's store doesn't keep `os`.** A stored Instance reads back with
+  `os` omitted, which is right while `incusos` is the only accepted value, and
+  the config diff treats `os: incusos` and an omitted `os` as the same. The
+  store refuses any other `os` rather than storing it as `incusos`. It gains
+  the column with the second backend, which needs it to dispatch.
 - **No private repos.** Sync passes no credentials. §28's git-addressed
   networks assume a private repo, so they need this first. So does the agent
   syncing one (§28 mentions a read-only deploy key).

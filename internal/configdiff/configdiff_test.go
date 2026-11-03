@@ -284,3 +284,23 @@ func TestLinesRendersApps(t *testing.T) {
 		t.Errorf("Lines() = %v, want %v", got, want)
 	}
 }
+
+// TestDiffExplicitDefaultOSIsUnchanged pins that `os: incusos` and an omitted
+// os are the same machine: the store keeps no os column, so a synced Instance
+// that writes os: incusos reads back with os omitted, and every later sync
+// diffs against that.
+func TestDiffExplicitDefaultOSIsUnchanged(t *testing.T) {
+	stored := inst("devnode0", "10.0.0.10")
+	synced := stored
+	synced.OS = config.OSIncusOS
+
+	if got := Diff(config.Config{Instances: []config.Instance{stored}}, config.Config{Instances: []config.Instance{synced}}); !got.Empty() {
+		t.Errorf("Diff(os omitted, os: incusos) = %+v, want Empty()", got)
+	}
+
+	other := stored
+	other.OS = config.OSTalos
+	if got := Diff(config.Config{Instances: []config.Instance{stored}}, config.Config{Instances: []config.Instance{other}}); len(got.ChangedInstances) != 1 {
+		t.Errorf("Diff(os omitted, os: talos) = %+v, want one ChangedInstance", got)
+	}
+}

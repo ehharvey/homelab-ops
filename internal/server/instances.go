@@ -10,10 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
-	"github.com/ehharvey/homelab-ops/internal/seed"
 )
 
 // errInstanceNotFound marks a resolveInstanceSeed failure caused by an
@@ -23,7 +21,7 @@ var errInstanceNotFound = errors.New("instance not found")
 
 // errSeedInvalid marks a resolveInstanceSeed failure caused by the synced
 // data or the render step itself — a network missing from the synced
-// snapshot, or a seed.Render rejection (unsupported disk/nic/application, a
+// snapshot, or the host-OS backend's render rejection (unsupported disk/nic/application, a
 // malformed client cert PEM, etc.) — as opposed to a server-side fault.
 // Distinguishes a 422 from the 5xx causes below via errors.Is.
 var errSeedInvalid = errors.New("seed data invalid")
@@ -36,7 +34,7 @@ var errSeedInvalid = errors.New("seed data invalid")
 var errCertUnavailable = errors.New("client cert unavailable")
 
 // instanceSeedResponse holds the four rendered seed documents, one YAML
-// string per field — matching seed.Write's per-field marshaling — so each
+// string per field — the files hostos.WriteFiles puts on disk — so each
 // file stays independently addressable (e.g. via curl | jq) rather than
 // bundled into one multi-doc blob.
 type instanceSeedResponse struct {
@@ -63,75 +61,85 @@ func handleInstanceSeed(store Store, certs CertSource, tunnels TunnelSource, cre
 
 		name := r.PathValue("name")
 
-		bundle, err := resolveInstanceSeed(r.Context(), store, certs, tunnels, creds, name)
+		rendered, err := resolveInstanceSeed(r.Context(), store, certs, tunnels, creds, name)
 		if err != nil {
 			writeResolveSeedError(w, r, name, err)
 			return
 		}
 
-		installYAML, err := yaml.Marshal(bundle.Install)
+		resp, err := seedResponse(rendered.files)
 		if err != nil {
-			log.Printf("marshal install.yaml for %q: %v", name, err)
+			log.Printf("seed response for %q: %v", name, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		networkYAML, err := yaml.Marshal(bundle.Network)
-		if err != nil {
-			log.Printf("marshal network.yaml for %q: %v", name, err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		applicationsYAML, err := yaml.Marshal(bundle.Applications)
-		if err != nil {
-			log.Printf("marshal applications.yaml for %q: %v", name, err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		incusYAML, err := yaml.Marshal(bundle.Incus)
-		if err != nil {
-			log.Printf("marshal incus.yaml for %q: %v", name, err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		writeJSON(w, instanceSeedResponse{
-			InstallYAML:      string(installYAML),
-			NetworkYAML:      string(networkYAML),
-			ApplicationsYAML: string(applicationsYAML),
-			IncusYAML:        string(incusYAML),
-		})
+		writeJSON(w, resp)
 	}
+}
+
+// seedResponse maps rendered files onto instanceSeedResponse's four fields.
+// Those fields are IncusOS's seed files, the only backend's output; a second
+// backend's files need their own shape, decided with that backend. Every
+// field must be filled exactly once and no file left over, so a renamed or
+// missing file is a server error rather than an empty field in a 200.
+func seedResponse(files []hostos.File) (instanceSeedResponse, error) {
+	var resp instanceSeedResponse
+	fields := map[string]*string{
+		"install.yaml":      &resp.InstallYAML,
+		"network.yaml":      &resp.NetworkYAML,
+		"applications.yaml": &resp.ApplicationsYAML,
+		"incus.yaml":        &resp.IncusYAML,
+	}
+	for _, f := range files {
+		field, ok := fields[f.Name]
+		if !ok {
+			return instanceSeedResponse{}, fmt.Errorf("rendered file %q has no field in the seed response", f.Name)
+		}
+		*field = string(f.Data)
+		delete(fields, f.Name)
+	}
+	for name := range fields {
+		return instanceSeedResponse{}, fmt.Errorf("rendered seed has no %s", name)
+	}
+	return resp, nil
+}
+
+// renderedSeed is resolveInstanceSeed's result: the instance's host OS and
+// the config files its backend rendered.
+type renderedSeed struct {
+	hostOS string
+	files  []hostos.File
 }
 
 // resolveInstanceSeed looks up name's Instance and its Network from store,
 // fetches the deployment's break-glass cert from certs and its WireGuard
-// tunnel identity/credential from tunnels/creds, and renders the seed
-// bundle. Shared by handleInstanceSeed (which marshals the result to JSON)
-// and handleInstanceImage (which seed.Writes it to a temp dir for
-// flasher.Run instead).
-func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, tunnels TunnelSource, creds nodeprovision.CredentialStore, name string) (seed.Bundle, error) {
+// tunnel identity/credential from tunnels/creds, and renders the seed with
+// the instance's host-OS backend (internal/hostos). Shared by
+// handleInstanceSeed (which returns the files as JSON) and handleInstanceImage
+// (which writes them to a temp dir for the ImageBuilder instead).
+func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, tunnels TunnelSource, creds nodeprovision.CredentialStore, name string) (renderedSeed, error) {
 	inst, ok, err := store.Instance(ctx, name)
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("query instance %q: %w", name, err)
+		return renderedSeed{}, fmt.Errorf("query instance %q: %w", name, err)
 	}
 	if !ok {
-		return seed.Bundle{}, fmt.Errorf("instance %q: %w", name, errInstanceNotFound)
+		return renderedSeed{}, fmt.Errorf("instance %q: %w", name, errInstanceNotFound)
 	}
 
 	net, ok, err := store.Network(ctx, inst.Network)
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("query network %q: %w", inst.Network, err)
+		return renderedSeed{}, fmt.Errorf("query network %q: %w", inst.Network, err)
 	}
 	if !ok {
 		// The instance points at a network absent from the same synced
 		// snapshot — a data-integrity problem in the synced fleet, not a
 		// server fault.
-		return seed.Bundle{}, fmt.Errorf("%w: instance %q targets network %q, which is missing from the synced snapshot", errSeedInvalid, name, inst.Network)
+		return renderedSeed{}, fmt.Errorf("%w: instance %q targets network %q, which is missing from the synced snapshot", errSeedInvalid, name, inst.Network)
 	}
 
 	certPEM, err := certs.ClientCertPEM(ctx)
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("%w: read client cert: %w", errCertUnavailable, err)
+		return renderedSeed{}, fmt.Errorf("%w: read client cert: %w", errCertUnavailable, err)
 	}
 
 	// Unlike the network/cert lookups above, a failure here is never bad
@@ -143,20 +151,28 @@ func resolveInstanceSeed(ctx context.Context, store Store, certs CertSource, tun
 	// are already handled.
 	cred, err := nodeprovision.EnsureCredential(ctx, creds, name)
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("mint wireguard/bootstrap identity for %q: %w", name, err)
-	}
-	wg := &seed.WireGuard{
-		AppPublicKey:     tunnels.PublicKey(),
-		AppEndpoint:      tunnels.Endpoint(),
-		NodePrivateKey:   cred.WireGuardPrivateKey,
-		BootstrapCertPEM: cred.BootstrapCertPEM,
+		return renderedSeed{}, fmt.Errorf("mint wireguard/bootstrap identity for %q: %w", name, err)
 	}
 
-	bundle, err := seed.Render(net, inst, certPEM, wg, seed.Options{})
+	// The store keeps no os column yet, so a stored Instance's HostOS is
+	// always the default, IncusOS. That holds only while IncusOS is the one
+	// backend config.Validate accepts (SyncOnce validates before storing);
+	// the store gains the column with the second backend.
+	files, err := hostos.RenderConfig(hostos.ConfigInput{
+		Network:       net,
+		Instance:      inst,
+		ClientCertPEM: certPEM,
+		Tunnel: &hostos.Tunnel{
+			AppPublicKey:     tunnels.PublicKey(),
+			AppEndpoint:      tunnels.Endpoint(),
+			NodePrivateKey:   cred.WireGuardPrivateKey,
+			BootstrapCertPEM: cred.BootstrapCertPEM,
+		},
+	})
 	if err != nil {
-		return seed.Bundle{}, fmt.Errorf("%w: render seed for instance %q: %w", errSeedInvalid, name, err)
+		return renderedSeed{}, fmt.Errorf("%w: render seed for instance %q: %w", errSeedInvalid, name, err)
 	}
-	return bundle, nil
+	return renderedSeed{hostOS: inst.HostOS(), files: files}, nil
 }
 
 // writeResolveSeedError maps a resolveInstanceSeed error to an HTTP
@@ -182,8 +198,8 @@ func writeResolveSeedError(w http.ResponseWriter, r *http.Request, name string, 
 // handleInstanceImage regenerates and streams a bootable .img for name's
 // instance on every request (no caching — docs/Decisions.md §3), reusing
 // resolveInstanceSeed and writeResolveSeedError for the same lookup and
-// error mapping as handleInstanceSeed, then seed.Write + the ImageBuilder
-// (flasher.Run) into throwaway temp paths.
+// error mapping as handleInstanceSeed, then hostos.WriteFiles + the
+// ImageBuilder (flasher.Run, for IncusOS) into throwaway temp paths.
 func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder, tunnels TunnelSource, creds nodeprovision.CredentialStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
@@ -205,7 +221,7 @@ func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder, tu
 
 		name := r.PathValue("name")
 
-		bundle, err := resolveInstanceSeed(r.Context(), store, certs, tunnels, creds, name)
+		rendered, err := resolveInstanceSeed(r.Context(), store, certs, tunnels, creds, name)
 		if err != nil {
 			writeResolveSeedError(w, r, name, err)
 			return
@@ -224,7 +240,7 @@ func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder, tu
 		}
 		defer os.RemoveAll(seedDir) //nolint:errcheck // best-effort cleanup of a temp dir
 
-		if err := seed.Write(seedDir, bundle, true); err != nil {
+		if err := hostos.WriteFiles(seedDir, rendered.files, true); err != nil {
 			log.Printf("write seed for %q: %v", name, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
@@ -243,7 +259,7 @@ func handleInstanceImage(store Store, certs CertSource, builder ImageBuilder, tu
 		_ = outFile.Close()
 		defer os.Remove(outPath) //nolint:errcheck // best-effort cleanup of a temp file
 
-		if err := builder.Build(r.Context(), seedDir, outPath, &flasherLogWriter{instance: name}); err != nil {
+		if err := builder.Build(r.Context(), rendered.hostOS, seedDir, outPath, &flasherLogWriter{instance: name}); err != nil {
 			log.Printf("build image for %q: %v", name, err)
 			http.Error(w, "could not build image", http.StatusBadGateway)
 			return

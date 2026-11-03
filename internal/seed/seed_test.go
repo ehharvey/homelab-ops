@@ -4,8 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -527,57 +525,29 @@ func TestBundleYAMLMatchesReferenceFieldNames(t *testing.T) {
 	}
 }
 
-func TestWriteCreatesAllFourFiles(t *testing.T) {
+// TestMarshalNamesAllFourFiles pins Marshal's file names and order, which
+// flasher-tool's seed tar and the web app's seed route both depend on.
+func TestMarshalNamesAllFourFiles(t *testing.T) {
 	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
-	dir := t.TempDir()
-	if err := Write(dir, b, false); err != nil {
-		t.Fatalf("Write: %v", err)
+	files, err := Marshal(b)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
 	}
-
-	for _, name := range []string{"install.yaml", "network.yaml", "applications.yaml", "incus.yaml"} {
-		path := filepath.Join(dir, name)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("read %s: %v", name, err)
-			continue
+	want := []string{"install.yaml", "network.yaml", "applications.yaml", "incus.yaml"}
+	if len(files) != len(want) {
+		t.Fatalf("Marshal returned %d files, want %d", len(files), len(want))
+	}
+	for i, f := range files {
+		if f.Name != want[i] {
+			t.Errorf("file %d is %q, want %q", i, f.Name, want[i])
 		}
-		if len(data) == 0 {
-			t.Errorf("%s is empty", name)
+		if len(f.Data) == 0 {
+			t.Errorf("%s is empty", f.Name)
 		}
-	}
-}
-
-func TestWriteRefusesOverwriteWithoutForce(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-
-	dir := t.TempDir()
-	if err := Write(dir, b, false); err != nil {
-		t.Fatalf("first Write: %v", err)
-	}
-	if err := Write(dir, b, false); err == nil {
-		t.Fatalf("expected error on second Write without force, got nil")
-	}
-}
-
-func TestWriteOverwritesWithForce(t *testing.T) {
-	b, err := Render(sampleNetwork(), sampleInstance(), sampleClientCertPEM(t), nil, Options{})
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-
-	dir := t.TempDir()
-	if err := Write(dir, b, false); err != nil {
-		t.Fatalf("first Write: %v", err)
-	}
-	if err := Write(dir, b, true); err != nil {
-		t.Fatalf("forced Write: %v", err)
 	}
 }
 

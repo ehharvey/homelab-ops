@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
-	"github.com/ehharvey/homelab-ops/internal/seed"
+	"github.com/ehharvey/homelab-ops/internal/hostos"
 )
 
 var (
@@ -61,7 +61,7 @@ func runRenderSeed(cmd *cobra.Command, _ []string) error {
 	// Parse only checks structure/syntax; reject semantically invalid
 	// addressing (gateway/range/static_ip not adding up) before rendering a
 	// seed off it. This is the same config.Validate pass the web app runs in
-	// server.SyncOnce — seed.Render itself no longer re-validates.
+	// server.SyncOnce — the renderer itself doesn't re-validate.
 	if issues := config.Validate(cfg); !issues.Empty() {
 		return fmt.Errorf("invalid config: %w", issues)
 	}
@@ -82,15 +82,20 @@ func runRenderSeed(cmd *cobra.Command, _ []string) error {
 	// doesn't exist yet at bootstrap time to hold the other end of the
 	// tunnel (see docs/Architecture.md's Flow A vs. Flow B) — WireGuard is
 	// steady-state-provisioning-only, wired up by the web app itself.
-	bundle, err := seed.Render(cfg.Networks[0], cfg.Instances[0], certPEM, nil, seed.Options{
-		ForceInstall: renderSeedForceInstall,
-		ForceReboot:  renderSeedForceReboot,
+	// The instance's os picks the renderer (internal/hostos); config.Validate
+	// above has already rejected an os with no backend.
+	files, err := hostos.RenderConfig(hostos.ConfigInput{
+		Network:       cfg.Networks[0],
+		Instance:      cfg.Instances[0],
+		ClientCertPEM: certPEM,
+		ForceInstall:  renderSeedForceInstall,
+		ForceReboot:   renderSeedForceReboot,
 	})
 	if err != nil {
 		return fmt.Errorf("render seed: %w", err)
 	}
 
-	if err := seed.Write(renderSeedOutputDir, bundle, renderSeedForce); err != nil {
+	if err := hostos.WriteFiles(renderSeedOutputDir, files, renderSeedForce); err != nil {
 		return fmt.Errorf("write seed: %w", err)
 	}
 

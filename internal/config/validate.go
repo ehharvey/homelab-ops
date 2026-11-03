@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -41,7 +42,8 @@ func (is Issues) Error() string {
 // time; Validate covers the relationships between fields: name non-empty, CIDR
 // present, gateway/DNS/static-IP/DHCP-range membership in the CIDR, and a
 // static IP falling inside its network's DHCP-excluded (static) range. Every
-// Instance needs a unique hostname-label name and a declared network. For an
+// Instance needs a unique hostname-label name, a declared network, and an os
+// with an internal/hostos backend (omitted means DefaultOS). For an
 // App it covers the required fields Parse can't enforce (yaml.v3 has no notion
 // of a required key, so an omitted `replicas:` reaches here as a zero value)
 // and at most one per-node App per renderer type. For a Designation, it
@@ -111,6 +113,13 @@ func Validate(c Config) Issues {
 			} else {
 				instFirstIndex[inst.Name] = i
 			}
+		}
+
+		// An unknown name is a typo or an OS the format doesn't know; a known
+		// one without a backend is a real OS this build can't provision yet.
+		// They're told apart because the operator's fix differs.
+		if msg := hostOSIssue(inst.HostOS()); msg != "" {
+			add(path+".os", msg)
 		}
 
 		// Checked for every instance, DHCP or not: an unknown network would
@@ -188,6 +197,18 @@ func Validate(c Config) Issues {
 	validateDesignations(c, add)
 
 	return issues
+}
+
+// hostOSIssue returns why hostOS can't be used as an Instance's host OS, or
+// "" when it can.
+func hostOSIssue(hostOS string) string {
+	if HostOSImplemented(hostOS) {
+		return ""
+	}
+	if slices.Contains(hostOSes, hostOS) {
+		return fmt.Sprintf("%q has no backend yet; implemented: %s", hostOS, strings.Join(implementedHostOSList, ", "))
+	}
+	return fmt.Sprintf("%q is not a known host OS; known: %s", hostOS, strings.Join(hostOSes, ", "))
 }
 
 // isHostnameLabel reports whether s is a lowercase RFC 1123 hostname label:

@@ -140,7 +140,7 @@ func Diff(old, newCfg config.Config) Result {
 			r.AddedInstances = append(r.AddedInstances, i)
 			continue
 		}
-		if !reflect.DeepEqual(old, i) {
+		if !sameInstance(old, i) {
 			r.ChangedInstances = append(r.ChangedInstances, InstanceChange{Name: name, Old: old, New: i})
 		}
 	}
@@ -210,4 +210,14 @@ func appsByName(apps []config.App) map[string]config.App {
 		m[a.Name] = a
 	}
 	return m
+}
+
+// sameInstance reports whether a and b are the same Instance, comparing their
+// host OS as config.Instance.HostOS resolves it: an omitted os and an
+// explicit "incusos" are the same machine. The store keeps no os column, so a
+// stored Instance always reads back with os omitted; without this, one that
+// writes os: incusos would compare changed on every sync.
+func sameInstance(a, b config.Instance) bool {
+	a.OS, b.OS = a.HostOS(), b.HostOS()
+	return reflect.DeepEqual(a, b)
 }
