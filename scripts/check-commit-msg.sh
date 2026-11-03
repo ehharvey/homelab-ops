@@ -6,6 +6,7 @@
 # of audit.sh so the rules live in one place.
 #
 #   check-commit-msg.sh [--if-shipped] [--no-lookup] [--hint] [--branch <ref>] <rev>|- [<n>]
+#   check-commit-msg.sh [--hint] --no-closes <rev>|-
 #   check-commit-msg.sh --closes <rev>|-
 #
 # `-` reads the message from stdin. The issue <n> is the one given, else the
@@ -31,6 +32,12 @@
 # ship.sh finds it. --closes prints the numbers the message closes by that rule,
 # one per line, for ship's `--omit-closes`.
 #
+# --no-closes checks the two sections alone, by the same rule, and skips every
+# `Closes` check, the bundle lookup included (#451): a commit that closes no
+# issue, such as the history backfill's PR-unit commits
+# (scripts/backfill-history.sh), still needs its Plan and Test plan. It takes
+# no <n>, --branch or --closes; given one, it's a usage error.
+#
 # --if-shipped checks a bundle's sub-issue lines only once make ship's block is
 # in the message: ship's block adds them, so before ship has run (what the
 # audit sees from /ship-issue) there's nothing to check. --no-lookup skips the
@@ -52,17 +59,19 @@ skills="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.claude/skills" && pwd)"
 
 usage() {
 	echo "usage: $0 [--if-shipped] [--no-lookup] [--hint] [--branch <ref>] <rev>|- [<issue-number>]" >&2
+	echo "       $0 [--hint] --no-closes <rev>|-" >&2
 	echo "       $0 --closes <rev>|-" >&2
 	exit 2
 }
 
-if_shipped="" lookup=1 hint="" branch="" closes=""
+if_shipped="" lookup=1 hint="" branch="" closes="" no_closes=""
 while [[ $# -gt 0 ]]; do
 	case $1 in
 	--if-shipped) if_shipped=1 ;;
 	--no-lookup) lookup="" ;;
 	--hint) hint=1 ;;
 	--closes) closes=1 ;;
+	--no-closes) no_closes=1 ;;
 	--branch)
 		[[ $# -ge 2 ]] || usage
 		branch=$2
@@ -76,6 +85,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $# -ge 1 && $# -le 2 ]] || usage
 [[ -z $closes || $# -eq 1 ]] || usage
+[[ -z $no_closes || ($# -eq 1 && -z $closes && -z $branch) ]] || usage
 rev=$1
 n=${2:-}
 [[ -z $n || $n =~ ^[0-9]+$ ]] || usage
@@ -121,7 +131,9 @@ closes_n() {
 missing=()
 grep -qE '^## Plan[[:space:]]*$' <<<"$authored" || missing+=("## Plan")
 grep -qE '^## Test plan[[:space:]]*$' <<<"$authored" || missing+=("## Test plan")
-if [[ -n $n ]]; then
+if [[ -n $no_closes ]]; then
+	:
+elif [[ -n $n ]]; then
 	closes_n "$n" || missing+=("Closes #$n")
 	if [[ -n $lookup && (-z $if_shipped || -n $marker) ]]; then
 		if ! title=$(gh issue view "$n" --json title); then

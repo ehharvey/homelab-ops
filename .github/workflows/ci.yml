@@ -149,3 +149,46 @@ jobs:
             docker tag homelab-ops-agent "$IMAGE:$tag"
             docker push "$IMAGE:$tag"
           done
+
+  # What a push to main landed uses the noreply identity (#451). GitHub
+  # re-commits a rebase landing as whoever landed it, at the address that
+  # account's web-commit-email setting names, so a commit that passed
+  # pr-shape.yml's identity step can still land with another committer; only
+  # this job sees that. It runs on pushes only and is NOT a required check: on
+  # a PR it reports skipped, and the ruleset's required list stays build-test,
+  # lint, docker-smoke and one-commit.
+  #
+  # The range is before..sha. On the history rewrite's force-push, `before`
+  # (the old head) isn't an ancestor of `sha`, so the range is the whole new
+  # history, which is what should be checked then. The full clone has
+  # `before` through backup/main-pre-rewrite; failing that it's fetched by
+  # SHA, and failing that all of sha's history is checked. An all-zero
+  # `before` (a new ref) checks `sha` alone.
+  landed-identity:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Landed commits use the noreply identity
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            echo "New ref: checking $SHA alone."
+            scripts/check-commit-identity.sh -1 "$SHA"
+            exit
+          fi
+          git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
+            git fetch -q --no-tags "$REPO_URL" "$BEFORE" 2>/dev/null || true
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "Checking $BEFORE..$SHA ($(git rev-list --count "$BEFORE..$SHA") commits)."
+            scripts/check-commit-identity.sh "$BEFORE..$SHA"
+          else
+            echo "$BEFORE isn't fetchable: checking all of $SHA's history."
+            scripts/check-commit-identity.sh "$SHA"
+          fi
