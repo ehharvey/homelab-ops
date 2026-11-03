@@ -2,7 +2,7 @@
 # Is the root that started a /run-chain worker still running (#291)? A new root
 # runs this after a restart, before any "Resume" SendMessage to a ledger worker
 # that hasn't handed back, because a new root can't stop another process's
-# agent, and two drivers on one worker kill each other's shells (49482e4).
+# agent, and two drivers on one worker kill each other's shells (#282's commit).
 #
 #   .claude/skills/run-chain/root-alive.sh --self          # at the start of a run
 #   .claude/skills/run-chain/root-alive.sh <pid> <start>   # after a restart

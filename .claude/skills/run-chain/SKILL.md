@@ -50,7 +50,7 @@ finish before the previous session ended"). Run it before any "Resume"
 
 The old process may still be driving the worker. A new root can't stop another
 process's agent, the worker's hand-back goes to the old root, and two drivers
-on one worker kill each other's shells (`Exit code 137`, 49482e4). A worker
+on one worker kill each other's shells (`Exit code 137`, #282's commit). A worker
 runs inside its root's process, so check that process, using the ledger's
 `root:` line:
 

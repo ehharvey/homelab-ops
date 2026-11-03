@@ -1,0 +1,5 @@
+# One identity for every human commit (#451), the one `git log` shows and
+# scripts/backfill-history.sh applied to main's history. See
+# docs/Development Conventions.md § Branching & issues.
+Emil Harvey <36806437+ehharvey@users.noreply.github.com> Emil Harvey <emil.h.harvey@gmail.com>
+Emil Harvey <36806437+ehharvey@users.noreply.github.com> ehharvey <36806437+ehharvey@users.noreply.github.com>
