@@ -348,7 +348,7 @@ fi
 # closes_lines: the `Closes #<n>` numbers at a line start outside fences in
 # the message (stdin), first occurrence order. Narrower than
 # check-commit-msg.sh --closes on purpose: prose that quotes a `Closes` mid-line
-# (6fe62e9's `has no "Closes #92".`) doesn't make a commit part of that unit.
+# (#401's commit says `has no "Closes #92".`) doesn't make a commit part of that unit.
 # The omit list keeps --closes's rule, as ship does; it only drops lines from
 # the unit's own issues' blocks, which --verify (5) then checks.
 closes_lines() {
