@@ -39,6 +39,15 @@
 # sub-issue lookup refuses with the branch untouched and nothing pushed. Put
 # `[skip ci]` in the body: the subject gets replaced.
 #
+# Last, before the PR lookup and any push, it refuses a message without
+# `## Plan`, `## Test plan` and `Closes #<n>` (#405; `Closes #<k>` for any k
+# on a branch with no issue), plus a bundle's `Closes` line per open sub-issue:
+# scripts/check-commit-msg.sh, which CI's one-commit job runs too. It checks
+# the message that would ship, after the squash, rebase and copy, without
+# GitHub lookups: the copy just made them, and CI repeats the bundle check. A
+# squash or copy already made stays in the local commit, so a plain
+# `--amend -F` fixes it; nothing is pushed.
+#
 # Known gap until #281: a branch pushed earlier with no PR open that ship then
 # squashes, rebases or amends is refused by the plain push below as
 # non-fast-forward.
@@ -178,10 +187,15 @@ if [ -n "$issue" ]; then
 		echo "      Fix the message (\`git commit --amend -F <file>\`), then \`make ship\` again; nothing pushed." >&2
 		exit 1
 	fi
-	# A Closes line the author already wrote isn't repeated: the exact,
-	# case-sensitive match audit.sh uses.
+	# A Closes line the author already wrote isn't repeated. What counts as
+	# one (exact, outside code) is check-commit-msg.sh's rule, so ship omits
+	# exactly the lines the check below accepts.
 	omit=()
-	for k in $(grep -oE '(^|[^[:alnum:]])Closes #[0-9]+' <<<"$author"$'\n'"$trailers" | grep -oE '[0-9]+$' || true); do
+	if ! closed=$("$(dirname "${BASH_SOURCE[0]}")/check-commit-msg.sh" --closes - <<<"$author"$'\n'"$trailers"); then
+		echo "ship: couldn't read the commit message's Closes lines; nothing pushed." >&2
+		exit 1
+	fi
+	for k in $closed; do
 		omit+=(--omit-closes "$k")
 	done
 	if ! details=$("$(dirname "${BASH_SOURCE[0]}")/issue-block.sh" "${omit[@]}" "$issue"); then
@@ -239,6 +253,24 @@ elif [ -n "$new" ]; then
 	git commit -q --amend --cleanup=whitespace -F "$msg_file"
 	rm -f "$msg_file"
 	echo "ship: copied #$issue's details into the commit."
+fi
+
+# The message that ships must carry ## Plan, ## Test plan and Closes #<n>
+# (#405), checked here, after the copy above has added its Closes lines, and
+# before anything is pushed. scripts/check-commit-msg.sh holds the rules, the
+# issue's derivation from the branch (or the block's marker, for SHIP_ISSUE)
+# and the hint; CI's one-commit job and the review audit run the same script.
+# --no-lookup: the block was just built from GitHub, and CI makes the bundle
+# lookup, so a transient GitHub error can't refuse here after the rewrite.
+rc=0
+lacks=$("$(dirname "${BASH_SOURCE[0]}")/check-commit-msg.sh" --no-lookup --hint --branch "$branch" HEAD) || rc=$?
+if [ "$rc" -eq 1 ]; then
+	echo "ship: the commit message lacks what the PR body needs; nothing pushed:" >&2
+	sed '/./s/^/      /' <<<"$lacks" >&2
+	exit 1
+elif [ "$rc" -ne 0 ]; then
+	echo "ship: couldn't check the commit message (scripts/check-commit-msg.sh exited $rc); nothing pushed." >&2
+	exit 1
 fi
 
 # Look the PR up BEFORE pushing (#273): an amended commit needs a force-push,
