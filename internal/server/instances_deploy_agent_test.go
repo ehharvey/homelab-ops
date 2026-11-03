@@ -95,7 +95,7 @@ func TestInstanceDeployAgentSuccess(t *testing.T) {
 	if len(created) != 1 {
 		t.Fatalf("created %d instances, want 1", len(created))
 	}
-	want := agentdeploy.Desired(sampleAgentApp(), sampleSeedInstance(), sampleAgentRepo)
+	want := agentdeploy.Desired(sampleAgentApp(), sampleSeedInstance(), sampleAgentRepo, agentdeploy.FirstGeneration)
 	if !reflect.DeepEqual(created[0], want) {
 		t.Errorf("created %+v, want agentdeploy.Desired's %+v", created[0], want)
 	}

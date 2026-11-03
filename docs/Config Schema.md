@@ -164,6 +164,17 @@ primary: node0   # an Instance name: a node, not an agent instance
 - **At most one per repo.** A second is a validation issue
   (`designations[1]`). Zero is valid and means no agent acts: the safe
   default, matching `MayAct` treating an unknown designation as "not leader".
+- **A standalone host needs one too.** A host in no multi-member cluster is a
+  one-member cluster whose primary is its one host (`docs/Decisions.md`
+  §30), and it leads only when a Designation names it: no agent is its own
+  primary implicitly. Without one, its agent never acts, so it neither
+  creates agents nor upgrades itself.
+- **So only one cluster or standalone host per repo upgrades unattended.**
+  With at most one Designation, the cluster it names is the only one whose
+  agent self-upgrades when the agent App's `image` changes (#109). Any other
+  standalone host declared in the same repo upgrades by the operator-driven
+  CLI fallback (§30, not built yet) until #440 decides how a repo designates
+  more than one (post-1.0).
 - **There's no `epoch`.** A stale checkout is fenced by git itself: each
   agent publishes the commit it's on, and an agent behind a peer stands down.
   A new primary also waits for the old one to publish that it has stopped
