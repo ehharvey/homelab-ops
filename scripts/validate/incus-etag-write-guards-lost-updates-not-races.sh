@@ -67,6 +67,7 @@ INST="validate-etag-inst-$$"
 PROBE_PROJECT="validate-etag-proj-$$"
 TMP="$(mktemp -d)"
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	api DELETE "/1.0/instances/$INST?project=$PROJECT" >/dev/null 2>&1
 	api DELETE "/1.0/projects/$PROBE_PROJECT" >/dev/null 2>&1

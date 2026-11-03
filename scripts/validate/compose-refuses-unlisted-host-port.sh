@@ -47,6 +47,7 @@ check_prereqs
 WORK_DIR="$(mktemp -d)"
 export COMPOSE_PROJECT_NAME="validate-port-guard-$$"
 holder=
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	[ -n "$holder" ] && kill "$holder" 2>/dev/null
 	# Only has anything to remove if the guard let an `up` through.
@@ -64,6 +65,7 @@ override() {
 
 # listed_with <override> — the guard alone, on `up`. Locals keep the override
 # and any failure it records from leaking into this script.
+# shellcheck disable=SC2329 # run through check
 listed_with() {
 	local VALIDATE_COMPOSE_OVERRIDE="$1" VALIDATE_FAIL="$VALIDATE_FAIL"
 	_compose_parse up
@@ -84,12 +86,14 @@ guarded() (
 
 # port_busy <port/proto> — _compose_ports_free's verdict with only that port
 # listed.
+# shellcheck disable=SC2329 # run through check
 port_busy() {
 	local COMPOSE_HOST_PORTS=("$1")
 	! _compose_ports_free
 }
 
 # not <cmd...> — succeeds when cmd fails; `check` takes a command, not `!`.
+# shellcheck disable=SC2329 # run through check
 not() { ! "$@"; }
 
 # refused <desc> <want-reason> <out> — guarded's output is one FAIL line for the

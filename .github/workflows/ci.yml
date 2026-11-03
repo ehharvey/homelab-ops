@@ -34,6 +34,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v9.3.0
         with:
           version-file: .golangci-lint-version
+      # shellcheck at the version in .shellcheck-version, over every tracked
+      # shell script (#418); the runner has Docker.
+      - run: make lint-sh
 
   # Builds the web image on every PR and push, proves it works, and publishes
   # it to GHCR from main only (#240): tagged with the commit SHA, plus latest.

@@ -14,7 +14,7 @@ else
     echo "Found devcontainer.json at $DEVCONTAINER_FILE"
 fi
 
-cpp -P -E $DEVCONTAINER_FILE | jq '.mounts[]' -r | while read -r mount; do
+cpp -P -E "$DEVCONTAINER_FILE" | jq '.mounts[]' -r | while read -r mount; do
     echo "Processing mount: $mount"
     # 1 line key=value pairs separated by space
     declare -A mount_array
@@ -36,12 +36,11 @@ cpp -P -E $DEVCONTAINER_FILE | jq '.mounts[]' -r | while read -r mount; do
         exit 1
     else
         echo "Setting ownership for target: $target with user ID: $USERID and group ID: $GROUPID"
-        sudo chown -R $USERID:$GROUPID "$target"
-        if [ $? -ne 0 ]; then
+        if ! sudo chown -R "$USERID:$GROUPID" "$target"; then
             echo "Failed to set ownership for $target"
             exit 1
         else
-            echo "Ownership on $target is set to $(ls -ld "$target" | awk '{print $3 ":" $4}')"
+            echo "Ownership on $target is set to $(stat -c '%U:%G' "$target")"
         fi
         touched_targets+=("$target")
     fi

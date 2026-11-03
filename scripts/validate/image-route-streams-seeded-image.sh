@@ -46,7 +46,7 @@ validate_parse_args "$@"
 require_compose
 check_prereqs
 default_incusos_base_image
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
@@ -110,6 +110,7 @@ services:
 EOF
 fi
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose down >/dev/null 2>&1
   rm -rf "$WORK_DIR"

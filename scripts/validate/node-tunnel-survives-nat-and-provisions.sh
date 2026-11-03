@@ -167,9 +167,7 @@ HARNESS_BIN="$WORK_DIR/validate-tunnel-harness"
 # gateway care about.
 WG_PORT=51820
 
-pass=0
-fail=0
-
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   incus delete --force --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1
   incus delete --force --project "$PROJECT" "$REMOTE:$WRITER_NAME" >/dev/null 2>&1
@@ -223,6 +221,7 @@ incus_exec_bg() {
   BG_PIDS+=("$!")
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup_bg_pids() {
   for pid in "${BG_PIDS[@]:-}"; do
     kill "$pid" >/dev/null 2>&1

@@ -106,7 +106,9 @@ ship() {
 }
 
 remote_has() { git --git-dir="$O" rev-parse -q --verify "refs/heads/$1" >/dev/null; }
+# shellcheck disable=SC2329 # run through check
 rebasing() { (cd "$W" && [ -e "$(git rev-parse --git-path rebase-merge)" ] || [ -e "$(git rev-parse --git-path rebase-apply)" ]); }
+# shellcheck disable=SC2001 # indents every line; ${var//} can't anchor ^ per line
 show_out() { sed 's/^/    | /' <<<"$OUT"; }
 
 echo "== squash + rebase: 2 commits, main advanced =="
@@ -234,9 +236,11 @@ push_out=$(git -C "$W" push origin feat 2>&1)
 push_rc=$?
 check "the pre-push hook refuses the 2-commit push" test "$push_rc" -ne 0
 hint=$(sed -n 's/^    \(git .*\)$/\1/p' <<<"$push_out")
+# shellcheck disable=SC2016 # the hook prints this literally; nothing to expand
 check "the hook prints a merge-base squash" grep -q 'reset --soft "$(git merge-base FETCH_HEAD HEAD)"' <<<"$hint"
 hint_out=$(cd "$W" && bash -euo pipefail -c "$hint" 2>&1)
 hint_rc=$?
+# shellcheck disable=SC2001 # indents every line; ${var//} can't anchor ^ per line
 [ "$hint_rc" -eq 0 ] || sed 's/^/    | /' <<<"$hint_out"
 check_eq "the printed commands run cleanly" 0 "$hint_rc"
 check_eq "HEAD is 1 commit beyond main" 1 "$(git -C "$W" rev-list --count FETCH_HEAD..HEAD)"

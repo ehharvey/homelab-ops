@@ -163,12 +163,14 @@ await_run_done() {
 # snapshot — the real bump branches' SHAs and every PR on them. Fails rather
 # than returning a partial answer: two empty snapshots would compare equal.
 snapshot() {
-  local b prs
-  git -C "$ROOT_DIR" ls-remote origin $(printf 'refs/heads/%s ' $REAL_BRANCHES) || return 1
+  local b prs refs=()
+  for b in $REAL_BRANCHES; do refs+=("refs/heads/$b"); done
+  git -C "$ROOT_DIR" ls-remote origin "${refs[@]}" || return 1
   for b in $REAL_BRANCHES; do
     prs=$(gh pr list --repo "$REPO" --head "$b" --state all --limit 200 \
       --json number,state,headRefOid,title \
       --jq 'sort_by(.number)[] | "\(.number) \(.state) \(.headRefOid) \(.title)"') || return 1
+    # shellcheck disable=SC2001 # prefixes every line; ${var//} can't anchor ^ per line
     [ -z "$prs" ] || sed "s|^|PR on $b: #|" <<<"$prs"
   done
 }
@@ -179,10 +181,10 @@ teardown() {
   cd "$ROOT_DIR" || return
   if [ -n "$PUSHED" ]; then
     echo "--- teardown: closing what this run opened and deleting its branches"
-    local id n i ids=""
+    local id n ids=""
     # A dispatch GitHub accepted may not be listed yet; give it a moment so its
     # run cannot outlive this cleanup unseen.
-    for i in 1 2 3 4 5 6; do
+    for _ in 1 2 3 4 5 6; do
       ids=$(our_runs)
       [ -n "$ids" ] || [ -z "$DISPATCHED" ] && break
       sleep 5
@@ -213,6 +215,7 @@ trap 'exit 130' INT TERM
 echo "== 0. The real bump branches, before =="
 before=$(snapshot) || fail "could not read the real bump branches and their PRs"
 if [ -n "$before" ]; then
+  # shellcheck disable=SC2001 # indents every line; ${var//} can't anchor ^ per line
   sed 's/^/    /' <<<"$before" | cut -c1-150
 else
   echo "    (none exist)"

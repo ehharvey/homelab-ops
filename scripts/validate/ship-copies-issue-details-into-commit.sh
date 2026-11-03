@@ -71,6 +71,7 @@ fail() {
 	summary
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	set +e
 	cd "$ROOT_DIR" || return
@@ -111,6 +112,7 @@ await_pr_head() {
 # The author's text, exactly as written, and the trailer paragraph after it.
 # Its `Closes #0` is for step 4, which ships it with no issue: ship then wants
 # some `Closes #<k>` (#405).
+# shellcheck disable=SC2016 # the backticks are Markdown, meant literally
 AUTHOR=$(printf '%s\n' \
 	'## Plan' '' \
 	'Throwaway PR opened by scripts/validate/ship-copies-issue-details-into-commit.sh.' \
@@ -257,14 +259,16 @@ case "$*" in
 esac
 EOF
 out=$(PATH="$WORK_DIR/stub:$PATH" "$BLOCK" 901) || fail "issue-block.sh failed on the stub feature request: $out"
+# shellcheck disable=SC2016 # the backticks are Markdown, meant literally
 [ "${out%%$'\n'*}" = 'Ask `@someone`' ] || fail "title is '${out%%$'\n'*}', wanted 'Ask \`@someone\`'"
 grep -qxF 'Closes issue o/r#331, resolves issue https://github.com/o/r/issues/332, fixes issue #3.' <<<"$out" \
 	|| fail "a closing reference survived the copy: $out"
+# shellcheck disable=SC2016 # the backticks are Markdown, meant literally
 grep -qxF 'Ask `@alice`; mail a@b.com; `@inline`.' <<<"$out" || fail "mentions weren't quoted (or code was): $out"
 grep -qxF '@fenced' <<<"$out" || fail "a mention inside a fence was changed: $out"
 out=$(PATH="$WORK_DIR/stub:$PATH" "$BLOCK" 902) || fail "issue-block.sh failed on the stub bundle: $out"
 [ "${out%%$'\n'*}" = "Bundle: two" ] || fail "bundle title is '${out%%$'\n'*}', wanted the parent's"
-grep -qxF '### Sub-issue #10: one' <<<"$out" && grep -qxF 'Closes #10' <<<"$out" \
+{ grep -qxF '### Sub-issue #10: one' <<<"$out" && grep -qxF 'Closes #10' <<<"$out"; } \
 	|| fail "the open child has no section: $out"
 ! grep -qF '#11' <<<"$out" || fail "the closed child got a section: $out"
 pass "closing references and mentions defused, [Feature] stripped with its Proposal, bundle children from one call"

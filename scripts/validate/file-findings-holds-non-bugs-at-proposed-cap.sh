@@ -49,6 +49,7 @@ FINDING="$ROOT_DIR/scripts/finding.sh"
 PLAN="$ROOT_DIR/.claude/skills/file-findings/plan.sh"
 
 WORK_DIR="$(mktemp -d)"
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	rm -rf "$WORK_DIR"
 }

@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
+.PHONY: build test lint lint-sh lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -8,6 +8,10 @@ AGENT_BIN := bin/agent
 # image tag, and so `make lint` and `make fmt`, and CI's lint job (through
 # golangci-lint-action's version-file) all read it. To bump, edit that file.
 LINT_IMAGE := golangci/golangci-lint:$(shell cat .golangci-lint-version)
+# Likewise the shellcheck version lives only in .shellcheck-version (#418):
+# this image tag, which `make lint-sh` and so `make lint` and CI's lint job run,
+# reads it, and scripts/lint-sh.sh builds the same tag when run on its own.
+SHELLCHECK_IMAGE := koalaman/shellcheck:$(shell cat .shellcheck-version)
 
 build:
 	$(GO) build -o $(BOOTSTRAP_BIN) ./cmd/bootstrap
@@ -45,7 +49,7 @@ LINT_LOCKED_CMD := sh -c 'docker ps -q --filter "label=$(LINT_LABEL)=$$1" | whil
 	exec docker run --rm --label "$(LINT_LABEL)=$$1" -v "$$2":/app -w /app $(LINT_IMAGE) golangci-lint run ./...' \
 	make-lint "$(LINT_LOCK)" "$(CURDIR)"
 
-lint:
+lint: lint-sh
 ifeq ($(LINT_LOCKED),)
 	$(LINT_CMD)
 else
@@ -54,6 +58,13 @@ else
 	echo "make lint: waiting for another make lint to release $(LINT_LOCK)"; \
 	flock -o "$(LINT_LOCK)" $(LINT_LOCKED_CMD)
 endif
+
+# shellcheck over every tracked shell script (#418): each *.sh, plus extensionless
+# files with an sh or bash shebang, listed by git so .claude/worktrees/ is never
+# scanned. `make lint` runs it first. It doesn't take lint.lock: one small
+# container that reads a few dozen files is cheap beside a running lint.
+lint-sh:
+	SHELLCHECK_IMAGE=$(SHELLCHECK_IMAGE) ./scripts/lint-sh.sh
 
 # Proves docs/'s mermaid diagrams actually parse — a broken one renders as an
 # error box on GitHub, which reviewing the source in a diff won't catch (see

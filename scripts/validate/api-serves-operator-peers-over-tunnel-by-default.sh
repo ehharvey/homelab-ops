@@ -45,7 +45,7 @@ validate_parse_args "$@"
 require_compose
 require_cmd jq go curl
 check_prereqs
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 WORK_DIR="$(mktemp -d)"
 HARNESS="$WORK_DIR/validate-tunnel-harness"
@@ -65,6 +65,7 @@ WG_ENDPOINT=127.0.0.1:51820
 HOST_API=http://localhost:8080
 HEALTH=http://localhost:8081
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose_down
   rm -rf "$WORK_DIR"

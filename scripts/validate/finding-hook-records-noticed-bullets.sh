@@ -43,6 +43,7 @@ NOTICED_HOOK="$ROOT_DIR/.claude/hooks/finding-noticed.sh"
 COUNT_HOOK="$ROOT_DIR/.claude/hooks/finding-count.sh"
 
 WORK_DIR="$(mktemp -d)"
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	rm -rf "$WORK_DIR"
 }
