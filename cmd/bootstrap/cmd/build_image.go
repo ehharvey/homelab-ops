@@ -5,7 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ehharvey/homelab-ops/internal/flasher"
+	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/hostos"
 )
 
 var (
@@ -42,12 +43,21 @@ func runBuildImage(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--image is required")
 	}
 
-	err := flasher.Run(cmd.Context(), flasher.Options{
-		SeedDir:     buildImageSeedDir,
+	// Always the IncusOS backend: build-image is handed a seed directory, not
+	// the fleet config, so there's no Instance os to dispatch on, and its
+	// --image and --flasher-tool-bin are IncusOS's. Dispatching needs the
+	// instance's os as an input (e.g. a --file flag), which arrives with the
+	// second backend.
+	backend, err := hostos.For(config.OSIncusOS)
+	if err != nil {
+		return fmt.Errorf("build image: %w", err)
+	}
+	err = backend.RenderImage(cmd.Context(), hostos.ImageInput{
+		ConfigDir:   buildImageSeedDir,
 		BaseImage:   buildImageBaseImage,
 		OutputImage: buildImageOutput,
 		Force:       buildImageForce,
-		BinPath:     buildImageFlasherToolBin,
+		ToolPath:    buildImageFlasherToolBin,
 		Stdout:      cmd.OutOrStdout(),
 		Stderr:      cmd.ErrOrStderr(),
 	})

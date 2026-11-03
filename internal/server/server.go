@@ -53,13 +53,14 @@ type CertSource interface {
 }
 
 // ImageBuilder bakes the seed written to seedDir into a bootable .img at
-// outputPath, writing the underlying tool's subprocess output to logs. The one
-// production implementation (cmd/web) wraps internal/flasher.Run and owns the
-// base-image and flasher-tool paths; keeping those out of this interface means
-// the server package doesn't import internal/flasher, and tests can fake image
-// generation without a real flasher-tool binary or a multi-GB base image.
+// outputPath, for an instance whose host OS is hostOS (config.Instance.HostOS),
+// writing the underlying tool's subprocess output to logs. The one production
+// implementation (cmd/web) goes through internal/hostos's IncusOS backend and
+// owns the base-image and flasher-tool paths; keeping those out of this
+// interface means tests can fake image generation without a real flasher-tool
+// binary or a multi-GB base image.
 type ImageBuilder interface {
-	Build(ctx context.Context, seedDir, outputPath string, logs io.Writer) error
+	Build(ctx context.Context, hostOS, seedDir, outputPath string, logs io.Writer) error
 }
 
 // TunnelSource exposes the web app's own live in-process WireGuard tunnel

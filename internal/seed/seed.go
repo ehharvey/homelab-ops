@@ -66,6 +66,26 @@ type Bundle struct {
 // operations-center, per Architecture.md.
 var supportedApplications = map[string]bool{"incus": true}
 
+// ValidateInstance checks the parts of inst that IncusOS's seed can't express
+// yet: disk and NIC must be "single", and every application must be in
+// supportedApplications. Render runs it first; it's exported so
+// internal/hostos can check an Instance without rendering a seed.
+func ValidateInstance(inst config.Instance) error {
+	if inst.Disk != "single" {
+		return fmt.Errorf("instance %q: disk %q not supported (only \"single\" is implemented)", inst.Name, inst.Disk)
+	}
+	if inst.NIC != "single" {
+		return fmt.Errorf("instance %q: nic %q not supported (only \"single\" is implemented)", inst.Name, inst.NIC)
+	}
+
+	for _, app := range inst.Applications {
+		if !supportedApplications[app] {
+			return fmt.Errorf("instance %q: application %q not supported in 0.x", inst.Name, app)
+		}
+	}
+	return nil
+}
+
 // Render builds a seed Bundle for inst, which must belong to net. Disk and
 // NIC must be "single" — multi-disk/multi-NIC instances are out of scope
 // for 0.x and rendering one would silently produce a seed that doesn't match
@@ -79,17 +99,8 @@ func Render(net config.Network, inst config.Instance, clientCertPEM []byte, wg *
 	if inst.Network != net.Name {
 		return Bundle{}, fmt.Errorf("instance %q targets network %q, not %q", inst.Name, inst.Network, net.Name)
 	}
-	if inst.Disk != "single" {
-		return Bundle{}, fmt.Errorf("instance %q: disk %q not supported (only \"single\" is implemented)", inst.Name, inst.Disk)
-	}
-	if inst.NIC != "single" {
-		return Bundle{}, fmt.Errorf("instance %q: nic %q not supported (only \"single\" is implemented)", inst.Name, inst.NIC)
-	}
-
-	for _, app := range inst.Applications {
-		if !supportedApplications[app] {
-			return Bundle{}, fmt.Errorf("instance %q: application %q not supported in 0.x", inst.Name, app)
-		}
+	if err := ValidateInstance(inst); err != nil {
+		return Bundle{}, err
 	}
 
 	install := incusseed.Install{
@@ -369,15 +380,19 @@ func certEntry(name string, certPEM []byte) (lxcapi.CertificatesPost, error) {
 	}, nil
 }
 
-// Write marshals b's four documents to YAML and writes install.yaml,
-// network.yaml, applications.yaml, and incus.yaml into dir. It refuses to
-// overwrite existing files unless force is true.
-func Write(dir string, b Bundle, force bool) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
-	}
+// File is one marshalled seed document, named as flasher-tool's seed tar
+// expects it.
+type File struct {
+	Name string
+	Data []byte
+}
 
-	files := []struct {
+// Marshal renders b's four documents to YAML as install.yaml, network.yaml,
+// applications.yaml and incus.yaml, in that order. It is the one place the
+// seed's file names and encoding are decided: Write and internal/hostos's
+// IncusOS backend both go through it.
+func Marshal(b Bundle) ([]File, error) {
+	docs := []struct {
 		name string
 		doc  any
 	}{
@@ -387,20 +402,40 @@ func Write(dir string, b Bundle, force bool) error {
 		{"incus.yaml", b.Incus},
 	}
 
+	files := make([]File, 0, len(docs))
+	for _, d := range docs {
+		out, err := yaml.Marshal(d.doc)
+		if err != nil {
+			return nil, fmt.Errorf("marshal %s: %w", d.name, err)
+		}
+		files = append(files, File{Name: d.name, Data: out})
+	}
+	return files, nil
+}
+
+// Write marshals b's four documents (see Marshal) and writes install.yaml,
+// network.yaml, applications.yaml, and incus.yaml into dir. It refuses to
+// overwrite existing files unless force is true.
+func Write(dir string, b Bundle, force bool) error {
+	files, err := Marshal(b)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+
 	for _, f := range files {
-		path := filepath.Join(dir, f.name)
+		path := filepath.Join(dir, f.Name)
 		if !force {
 			if _, err := os.Stat(path); err == nil {
 				return fmt.Errorf("%s already exists (use --force to overwrite)", path)
 			}
 		}
 
-		out, err := yaml.Marshal(f.doc)
-		if err != nil {
-			return fmt.Errorf("marshal %s: %w", f.name, err)
-		}
-		if err := os.WriteFile(path, out, 0o644); err != nil { //nolint:gosec // seed YAML is not secret, 0644 is intentional
-			return fmt.Errorf("write %s: %w", f.name, err)
+		if err := os.WriteFile(path, f.Data, 0o644); err != nil { //nolint:gosec // seed YAML is not secret, 0644 is intentional
+			return fmt.Errorf("write %s: %w", f.Name, err)
 		}
 	}
 

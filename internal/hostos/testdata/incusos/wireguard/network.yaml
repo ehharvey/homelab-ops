@@ -1,0 +1,29 @@
+ignore_service_checks: false
+dns:
+    domain: ""
+    hostname: ""
+    nameservers:
+        - 192.168.1.1
+        - 1.1.1.1
+interfaces:
+    - addresses:
+        - 192.168.1.201/24
+      hwaddr: aa:bb:cc:dd:ee:ff
+      name: eth0
+      roles:
+        - management
+      routes:
+        - to: 0.0.0.0/0
+          via: 192.168.1.1
+wireguard:
+    - addresses:
+        - 10.100.0.2/24
+      name: wg0
+      peers:
+        - allowed_ips:
+            - 10.100.0.1/32
+          endpoint: 203.0.113.7:51820
+          persistent_keepalive: 25
+          public_key: EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=
+      private_key: gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8=
+version: ""

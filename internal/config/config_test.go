@@ -125,6 +125,39 @@ name: node1
 	}
 }
 
+// TestParseInstanceOS pins that os is structural only: Parse keeps whatever
+// was written, a value with no backend included (Validate rejects that, not
+// Parse), and HostOS applies the default for an omitted os.
+func TestParseInstanceOS(t *testing.T) {
+	const fleet = `
+kind: Instance
+name: node0
+---
+kind: Instance
+name: node1
+os: incusos
+---
+kind: Instance
+name: node2
+os: talos
+`
+	cfg, err := Parse(strings.NewReader(fleet))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	tests := []struct{ raw, host string }{
+		{"", OSIncusOS},
+		{OSIncusOS, OSIncusOS},
+		{OSTalos, OSTalos},
+	}
+	for i, tc := range tests {
+		inst := cfg.Instances[i]
+		if inst.OS != tc.raw || inst.HostOS() != tc.host {
+			t.Errorf("Instances[%d]: OS = %q, HostOS() = %q, want %q, %q", i, inst.OS, inst.HostOS(), tc.raw, tc.host)
+		}
+	}
+}
+
 func TestParseEmptyInput(t *testing.T) {
 	cfg, err := Parse(strings.NewReader(""))
 	if err != nil {

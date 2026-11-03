@@ -265,6 +265,47 @@ func TestIssuesErrorMentionsPath(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsIncusOS(t *testing.T) {
+	for _, os := range []string{"", OSIncusOS} {
+		cfg := Config{
+			Networks:  []Network{validNetwork()},
+			Instances: []Instance{{Name: "node0", Network: "home-lan", OS: os}},
+		}
+		if issues := Validate(cfg); !issues.Empty() {
+			t.Errorf("os %q: Validate() = %v, want no issues", os, issues)
+		}
+	}
+}
+
+// TestValidateRejectsHostOS covers both rejections of os, which must read
+// differently: a name the format doesn't know, and a known OS with no backend.
+func TestValidateRejectsHostOS(t *testing.T) {
+	tests := []struct {
+		os      string
+		wantMsg string
+	}{
+		{"windows", `"windows" is not a known host OS; known: incusos, talos, debian`},
+		{"IncusOS", `"IncusOS" is not a known host OS; known: incusos, talos, debian`},
+		{OSTalos, `"talos" has no backend yet; implemented: incusos`},
+		{OSDebian, `"debian" has no backend yet; implemented: incusos`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.os, func(t *testing.T) {
+			cfg := Config{
+				Networks: []Network{validNetwork()},
+				Instances: []Instance{
+					{Name: "node0", Network: "home-lan"},
+					{Name: "node1", Network: "home-lan", OS: tc.os},
+				},
+			}
+			want := Issue{Path: "instances[1].os", Message: tc.wantMsg}
+			if got := Validate(cfg); len(got) != 1 || got[0] != want {
+				t.Fatalf("Validate() = %#v, want [%#v]", got, want)
+			}
+		})
+	}
+}
+
 func hasPath(issues Issues, path string) bool {
 	for _, i := range issues {
 		if i.Path == path {

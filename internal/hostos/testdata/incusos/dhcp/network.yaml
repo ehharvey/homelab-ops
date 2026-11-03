@@ -1,0 +1,13 @@
+ignore_service_checks: false
+dns:
+    domain: ""
+    hostname: ""
+    nameservers:
+        - 192.168.1.1
+        - 1.1.1.1
+interfaces:
+    - hwaddr: aa:bb:cc:dd:ee:ff
+      name: eth0
+      roles:
+        - management
+version: ""

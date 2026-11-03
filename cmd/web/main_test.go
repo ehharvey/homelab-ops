@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,5 +127,15 @@ func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
 
 	if ts.PublicKey() != ts2.PublicKey() {
 		t.Errorf("PublicKey() changed across newTunnelSource calls: %s != %s", ts.PublicKey(), ts2.PublicKey())
+	}
+}
+
+// TestFlasherBuilderRefusesOtherHostOS pins that the IncusOS-only image
+// builder never bakes another OS's config into an IncusOS base image.
+func TestFlasherBuilderRefusesOtherHostOS(t *testing.T) {
+	b := flasherBuilder{basePath: "/nonexistent/base.img", binPath: "/nonexistent/flasher-tool"}
+	err := b.Build(context.Background(), config.OSTalos, t.TempDir(), filepath.Join(t.TempDir(), "out.img"), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), `no base image for host OS "talos"`) {
+		t.Fatalf("Build(talos) = %v, want a refusal naming the OS", err)
 	}
 }

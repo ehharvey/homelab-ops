@@ -1,0 +1,7 @@
+version: ""
+force_install: false
+force_reboot: false
+security:
+    missing_tpm: true
+    missing_secure_boot: false
+target: null

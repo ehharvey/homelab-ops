@@ -23,11 +23,13 @@ const fakeImageContents = "seeded-image-bytes"
 type fakeImageBuilder struct {
 	err error
 
+	recordedHostOS  string
 	recordedSeedDir string
 	seedWritten     bool
 }
 
-func (b *fakeImageBuilder) Build(_ context.Context, seedDir, outputPath string, logs io.Writer) error {
+func (b *fakeImageBuilder) Build(_ context.Context, hostOS, seedDir, outputPath string, logs io.Writer) error {
+	b.recordedHostOS = hostOS
 	b.recordedSeedDir = seedDir
 	if _, err := os.Stat(filepath.Join(seedDir, "install.yaml")); err == nil {
 		b.seedWritten = true
@@ -76,6 +78,11 @@ func TestInstanceImageSuccess(t *testing.T) {
 		t.Errorf("Content-Length = %q, want %q (len of %q)", got, want, fakeImageContents)
 	}
 
+	// The builder is told the instance's host OS: the fixture omits os, so
+	// it's the default.
+	if builder.recordedHostOS != config.OSIncusOS {
+		t.Errorf("builder got host OS %q, want %q", builder.recordedHostOS, config.OSIncusOS)
+	}
 	// The handler must have rendered the seed into the builder's seedDir...
 	if !builder.seedWritten {
 		t.Error("builder was called before the seed was written to its seedDir")
