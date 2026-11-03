@@ -32,6 +32,7 @@ VALIDATE_PROVES="/next flags and /run-chain skips a Ready issue whose Done-when 
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="jq, git"
 VALIDATE_DURATION="~3s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

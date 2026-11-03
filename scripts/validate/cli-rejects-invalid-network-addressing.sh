@@ -23,6 +23,7 @@ VALIDATE_PROVES="render-seed rejects network addressing that doesn't add up (#41
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="go"
 VALIDATE_DURATION="~2s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 

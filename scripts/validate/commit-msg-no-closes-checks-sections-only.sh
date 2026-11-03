@@ -20,6 +20,7 @@ VALIDATE_PROVES="check-commit-msg.sh --no-closes passes on both sections without
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="bash"
 VALIDATE_DURATION="~1s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 check_prereqs

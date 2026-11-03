@@ -32,6 +32,7 @@ VALIDATE_PROVES="the harness bypasses a docker credential helper that doesn't an
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="jq, timeout"
 VALIDATE_DURATION="~5s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

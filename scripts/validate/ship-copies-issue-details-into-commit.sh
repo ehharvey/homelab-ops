@@ -47,6 +47,7 @@ VALIDATE_PROVES="make ship replaces the subject with the issue's title and adds 
 VALIDATE_GROUP="github"
 VALIDATE_NEEDS="gh authenticated with push access (opens and closes a real PR)"
 VALIDATE_DURATION="~1m"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

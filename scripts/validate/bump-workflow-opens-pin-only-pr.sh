@@ -64,6 +64,7 @@ VALIDATE_PROVES="bump-incusos.yml's pin job opens a PR changing only the pin fil
 VALIDATE_GROUP="github"
 VALIDATE_NEEDS="VALIDATE_GITHUB_WRITES=1 (opt-in: pushes branches, dispatches a workflow, opens and closes a real PR), gh authenticated with push access, git curl openssl jq"
 VALIDATE_DURATION="~1m"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

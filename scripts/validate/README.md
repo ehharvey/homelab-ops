@@ -18,6 +18,7 @@ make incusos-base                 # once per host: fetch the IncusOS base image 
 ./scripts/validate/run.sh --group compose
 ./scripts/validate/run.sh --describe            # the prerequisite matrix, live
 ./scripts/validate/run.sh --list --group compose --json
+VALIDATE_OS=incusos make validate                # the host-OS backend; unset means incusos
 ```
 
 Any script also runs standalone and takes the same flags:
@@ -33,7 +34,7 @@ Any script also runs standalone and takes the same flags:
 |---|---|
 | `0` | every check ran and passed |
 | `1` | at least one check **failed** — a real defect |
-| `2` | **hard** prerequisites unmet; declined to run at all |
+| `2` | **hard** prerequisites unmet, or a usage error (an unknown flag or `VALIDATE_OS`); declined to run at all |
 | `3` | no failures, but at least one check was **skipped** |
 
 The `2`/`3` split is the point of the harness. Before it, "you didn't install a
@@ -44,6 +45,9 @@ node-provisioning regression.
 `run.sh` aggregates: any `1` → `1`; else any `2` → `2`; else any `3` → `3`; else
 `0`. "Something is broken" always outranks "something couldn't run", which
 always outranks "everything that ran, passed".
+
+`VALIDATE_OS` adds no code: an unknown backend is a `2` and a known one a
+script doesn't support is a `3` ([below](#the-host-os-backend-validate_os-486)).
 
 ## Skips, tags, and `--strict`
 
@@ -76,7 +80,7 @@ wired up it only protects the runs someone remembers to start by hand. Wiring
 it is tracked separately, and the "runs in CI" column below states intent, not
 current fact.
 
-Tags in use: `base-image`, `ct-image`, `flasher-tool`, `incus-cluster`, `incus-instances`,
+Tags in use: `base-image`, `ct-image`, `flasher-tool`, `host-os`, `incus-cluster`, `incus-instances`,
 `incus-remote`, `incus-socket`, `opt-in`, `upstream`. Six describe a prerequisite the environment
 didn't supply — an IncusOS image, a container image, the `flasher-tool`
 binary, a readable/writable Incus unix socket, (`incus-cluster`) a
@@ -91,7 +95,10 @@ can't, which covers an uninitialized daemon (no storage pool) and a
 devcontainer with no idmap without enumerating either. `upstream` means "a
 prior check already failed, so this couldn't run" — a cascade, not a missing
 prerequisite. `opt-in` is `bump-workflow-opens-pin-only-pr.sh` declining to
-write to the real repository because nobody asked it to (below).
+write to the real repository because nobody asked it to (below). `host-os` is
+a whole script skipped because `VALIDATE_OS` names a backend it doesn't declare
+([below](#the-host-os-backend-validate_os-486)); `lib.sh` raises it, so the
+grep below doesn't find it.
 
 Enumerate them from the scripts rather than trusting this list:
 
@@ -264,6 +271,45 @@ verification step. What it cannot show is that the real CDN's files verify
 against the committed root; `make incusos-base` and the daily
 `--latest-stable` in `bump-incusos.yml` do that.
 
+## The host-OS backend (`VALIDATE_OS`, #486)
+
+The scripts take the host-OS backend under test as a parameter rather than
+being copied per OS: names stay behavioural (#138), and every backend passes the
+same set (`docs/Decisions.md` §31).
+
+```
+make validate                                     # unset: incusos
+VALIDATE_OS=incusos ./scripts/validate/node-boots-and-trusts-bootstrap-cert.sh
+```
+
+- **Unset or empty** means `incusos`, so `make validate`,
+  `make validate-hardware` and CI run exactly as before.
+- **An unknown value** is a usage error: exit `2` before any work, `--describe`
+  included, naming the known backends (`VALIDATE_KNOWN_OS` in `lib.sh`, which
+  lists `incusos` only). `run.sh` checks it once, up front. A typo never passes
+  quietly, locally or in CI.
+- **A known backend a script doesn't support** skips the whole script, before
+  any work, as one `SKIP` tagged `host-os` (exit `3`). Under `--strict` it is a
+  failure unless `--allow-skip host-os` blesses it, which is how a run says
+  "every backend passes the same set": allow it only while a backend is being
+  brought up.
+
+Each script declares what it supports next to its other declarations:
+
+```
+VALIDATE_SUPPORTED_OS="incusos"   # the backends it proves its behaviour on, space-separated
+VALIDATE_SUPPORTED_OS="any"       # it exercises no host OS: the ship tooling, the web app's sync and store
+```
+
+A script that renders a seed, builds or boots an image, or talks to a node's
+Incus lists backends; one that would run the same whatever the nodes run says
+`any`. The declaration isn't read from the environment, and a script that
+leaves it out gets `incusos`, so a forgotten line skips under a new backend
+rather than passing without proving anything.
+`harness-rejects-unknown-os-and-skips-unsupported.sh` proves both exit paths
+with a fake backend, and that every script declares only `any` or known
+backends.
+
 ## Prerequisite matrix
 
 Don't maintain a table here — it would drift the moment a script changed, which
@@ -273,10 +319,11 @@ is the disease this suite exists to treat. Ask the scripts instead:
 ./scripts/validate/run.sh --describe
 ```
 
-Each declares `VALIDATE_PROVES`, `VALIDATE_GROUP`, `VALIDATE_NEEDS` and
-`VALIDATE_DURATION`; `--describe` prints them and exits without running
-anything. Square brackets in `needs` mark an *optional* prerequisite whose
-absence causes a skip rather than a failure.
+Each declares `VALIDATE_PROVES`, `VALIDATE_GROUP`, `VALIDATE_NEEDS`,
+`VALIDATE_DURATION` and `VALIDATE_SUPPORTED_OS` (its `os:` line, above);
+`--describe` prints them and exits without running anything. Square brackets in
+`needs` mark an *optional* prerequisite whose absence causes a skip rather than
+a failure.
 
 ## Groups
 
@@ -365,7 +412,7 @@ an older or CI-provided Compose where `down` returns early (#153).
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, arg parsing, `summary` | all |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, the `VALIDATE_OS` gate (`VALIDATE_KNOWN_OS`, `validate_os_known`), arg parsing, `summary` | all, and `run.sh` |
 | `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose, jq, the credential-helper probe), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 

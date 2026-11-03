@@ -34,6 +34,7 @@ VALIDATE_PROVES="POST /instances/{name}/seed renders all four seed files for an 
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose jq go openssl"
 VALIDATE_DURATION="~15s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 require_compose

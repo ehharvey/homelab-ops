@@ -41,6 +41,7 @@ VALIDATE_PROVES="make incusos-base rejects an unverifiable or corrupt IncusOS im
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="curl openssl jq gzip sha256sum"
 VALIDATE_DURATION="~5s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 

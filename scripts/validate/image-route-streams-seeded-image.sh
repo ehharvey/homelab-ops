@@ -40,6 +40,7 @@ VALIDATE_PROVES="GET /instances/{name}/image streams a freshly seeded, correctly
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose curl jq go openssl [INCUSOS_BASE_IMAGE]"
 VALIDATE_DURATION="~1m"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 require_compose

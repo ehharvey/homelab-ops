@@ -48,6 +48,7 @@ VALIDATE_PROVES="the app produces a working installer end-to-end, without the bo
 VALIDATE_GROUP="incus-vm"
 VALIDATE_NEEDS="docker-compose jq incus go openssl pinned-base-images INCUSOS_BASE_IMAGE"
 VALIDATE_DURATION="~10m"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 default_incusos_base_image

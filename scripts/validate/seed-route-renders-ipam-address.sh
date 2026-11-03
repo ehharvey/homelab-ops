@@ -34,6 +34,7 @@ VALIDATE_PROVES="POST /instances/{name}/seed renders a stable IPAM-assigned addr
 VALIDATE_GROUP="compose"
 VALIDATE_NEEDS="docker-compose jq go"
 VALIDATE_DURATION="~15s"
+VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 require_compose

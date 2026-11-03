@@ -18,6 +18,8 @@
 #   0  every check ran and passed
 #   1  at least one check FAILED — a real defect
 #   2  hard prerequisites unmet; declined to run at all, before doing any work
+#      (or a usage error: an unknown flag, or a VALIDATE_OS the harness doesn't
+#      know)
 #   3  no failures, but at least one check was SKIPPED
 #
 # Callers that don't care about skips treat 0 and 3 alike. CI uses --strict to
@@ -45,6 +47,29 @@ VALIDATE_PROVES="${VALIDATE_PROVES:-}"
 VALIDATE_GROUP="${VALIDATE_GROUP:-}"       # none | compose | incus | incus-vm | github
 VALIDATE_NEEDS="${VALIDATE_NEEDS:-}"
 VALIDATE_DURATION="${VALIDATE_DURATION:-}"
+
+# ---------------------------------------------------------------------------
+# Host-OS backends (#486, docs/Decisions.md §31). Every backend passes the same
+# behaviour-named scripts, so the backend is a parameter, not a script name.
+#
+#   VALIDATE_OS            the backend under test, from the environment. Unset
+#                          or empty means incusos, so today's runs are unchanged.
+#   VALIDATE_KNOWN_OS      the backends the harness knows. Anything else in
+#                          VALIDATE_OS is a usage error: exit 2, naming these.
+#   VALIDATE_SUPPORTED_OS  a declaration, like VALIDATE_GROUP: the backends a
+#                          script proves its behaviour on, space-separated, or
+#                          "any" when it doesn't exercise a host OS at all (the
+#                          ship tooling, the web app's own routes). A known
+#                          backend it doesn't list is a SKIP tagged host-os.
+#
+# The declaration is not read from the environment, so exporting it can't make
+# a script claim a backend it doesn't run. A script that doesn't declare gets
+# incusos, the one backend every script was written against: forgetting the
+# line skips under a new backend rather than passing without proving anything.
+# ---------------------------------------------------------------------------
+VALIDATE_KNOWN_OS=(incusos)
+VALIDATE_OS="${VALIDATE_OS:-incusos}"
+VALIDATE_SUPPORTED_OS="incusos"
 
 # ---------------------------------------------------------------------------
 # Outcomes
@@ -565,12 +590,41 @@ validate_describe() {
 	echo "group:    $VALIDATE_GROUP"
 	echo "needs:    $VALIDATE_NEEDS"
 	echo "duration: $VALIDATE_DURATION"
+	echo "os:       $VALIDATE_SUPPORTED_OS"
+}
+
+# validate_os_known — 0 when VALIDATE_OS names a backend in VALIDATE_KNOWN_OS.
+# Otherwise it prints the usage error, naming the known backends, and returns
+# 2 for the caller to exit with. run.sh calls it too, to fail once up front.
+validate_os_known() {
+	local os
+	for os in "${VALIDATE_KNOWN_OS[@]}"; do
+		[ "$VALIDATE_OS" = "$os" ] && return 0
+	done
+	echo "unknown VALIDATE_OS: $VALIDATE_OS (known backends: ${VALIDATE_KNOWN_OS[*]})" >&2
+	return 2
+}
+
+# _validate_os_gate — after the flags are parsed, so --strict and --allow-skip
+# govern the skip: a script that doesn't support the backend under test skips
+# as a whole, before any work, and exits through summary (3, or 1 under
+# --strict unless host-os is allowed).
+_validate_os_gate() {
+	case " $VALIDATE_SUPPORTED_OS " in
+	*" any "* | *" $VALIDATE_OS "*) return 0 ;;
+	esac
+	skip_check "$(basename "${BASH_SOURCE[-1]}") on VALIDATE_OS=$VALIDATE_OS" host-os \
+		"the script supports only: $VALIDATE_SUPPORTED_OS"
+	summary
 }
 
 # validate_parse_args "$@" — call once, early, before doing any work.
 # Recognizes --describe (print declarations and exit 0), --strict, and
-# --allow-skip <tag>[,<tag>...] (repeatable).
+# --allow-skip <tag>[,<tag>...] (repeatable). An unknown VALIDATE_OS exits 2
+# before any of them, --describe included; a known one the script doesn't
+# declare skips it (_validate_os_gate).
 validate_parse_args() {
+	validate_os_known || exit 2
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--describe)
@@ -591,7 +645,7 @@ validate_parse_args() {
 		-h | --help)
 			validate_describe
 			echo
-			echo "usage: $(basename "${BASH_SOURCE[-1]}") [--describe] [--strict] [--allow-skip TAG[,TAG...]]"
+			echo "usage: [VALIDATE_OS=$(IFS="|"; echo "${VALIDATE_KNOWN_OS[*]}")] $(basename "${BASH_SOURCE[-1]}") [--describe] [--strict] [--allow-skip TAG[,TAG...]]"
 			exit 0
 			;;
 		*)
@@ -601,6 +655,7 @@ validate_parse_args() {
 		esac
 		shift
 	done
+	_validate_os_gate
 }
 
 # summary — print the tally and exit with the contract's code. Call last.

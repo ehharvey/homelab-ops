@@ -40,6 +40,7 @@ VALIDATE_PROVES="a multi-commit PR cannot reach main: hook, check, and ruleset a
 VALIDATE_GROUP="github"
 VALIDATE_NEEDS="gh authenticated with repo admin (reads rulesets, opens/closes real PRs); jq; git"
 VALIDATE_DURATION="~3m"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 

@@ -30,6 +30,7 @@ VALIDATE_PROVES="a commit not on the noreply identity is refused by check-commit
 VALIDATE_GROUP="none"
 VALIDATE_NEEDS="git"
 VALIDATE_DURATION="~2s"
+VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 
