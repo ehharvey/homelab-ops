@@ -1,7 +1,8 @@
 name: PR shape
 
 # Enforces the "one GitHub issue, one commit on main" invariant from #119, and
-# that the commit's message carries the PR body (#405).
+# that the commit's message carries the PR body (#405) and its author and
+# committer use the noreply identity (#451, scripts/check-commit-identity.sh).
 #
 # The main ruleset merges PRs with rebase only (never squash), so a branch with
 # N commits lands as N commits — the branch itself has to be the single commit,
@@ -20,7 +21,7 @@ name: PR shape
 # chore/bump-incusos-base-test-<run_id> only when github-actions[bot] opened
 # them. A step skipped by `if:` leaves the job green.
 #
-# Both steps live in the one `one-commit` job, not a new one, so the
+# Every check lives in the one `one-commit` job, not a new one, so the
 # ruleset's required-check list doesn't change.
 #
 # Unlike ci.yml this cannot also run on push: the commit count is only defined
@@ -96,6 +97,28 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
+
+      # The PR's commit uses the noreply identity (#451): the personal address
+      # main's history was rewritten to remove mustn't come back on a branch
+      # that skipped the pre-push hook. Same bot exemption: dependabot's head
+      # commit has GitHub's web-flow committer, and a bot PR is re-committed
+      # by whoever lands it, which ci.yml's landed-identity job checks. The
+      # base's copy of the script when it has one, as below.
+      - name: Commit author and committer use the noreply identity
+        if: >-
+          !(github.event.pull_request.user.login == 'dependabot[bot]'
+          || github.head_ref == 'chore/bump-incus-os'
+          || (startsWith(github.head_ref, 'chore/bump-incusos-base')
+          && github.event.pull_request.user.login == 'github-actions[bot]'))
+        run: |
+          check=scripts/check-commit-identity.sh
+          if git cat-file -e HEAD^1:scripts/check-commit-identity.sh 2>/dev/null; then
+            mkdir -p "$RUNNER_TEMP/identity"
+            git show HEAD^1:scripts/check-commit-identity.sh >"$RUNNER_TEMP/identity/check.sh"
+            chmod +x "$RUNNER_TEMP/identity/check.sh"
+            check=$RUNNER_TEMP/identity/check.sh
+          fi
+          "$check" -1 HEAD^2
 
       # check-commit-msg.sh derives the issue from the head branch (passed
       # through env:, never `${{ }}` inside run:, since a branch name is

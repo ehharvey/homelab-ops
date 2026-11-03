@@ -1460,7 +1460,7 @@ separately in #161. With both landed the script's contract is 41 passed,
 
 **None of these three assertions had ever passed.** The extraction in (1), the
 cgo-linked harness in (4), the missing DHCP wait in (5), and the wrong key in
-(6) are all present in `f94fa44`, the commit that introduced the script — so
+(6) are all present in #91's commit (PR #107), the one that introduced the script — so
 they failed from the day it landed. #137's premise that "the
 tunnel path is byte-identical to when this script last passed" was mistaken;
 there was no such run. Worth stating because it changes what the suite's green
