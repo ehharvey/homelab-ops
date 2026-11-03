@@ -41,6 +41,7 @@ require_cmd git
 check_prereqs
 
 WORK_DIR="$(mktemp -d)"
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	rm -rf "$WORK_DIR"
 }

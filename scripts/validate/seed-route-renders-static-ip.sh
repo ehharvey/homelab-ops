@@ -39,7 +39,7 @@ VALIDATE_SUPPORTED_OS="incusos"
 validate_parse_args "$@"
 require_compose
 check_prereqs
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
@@ -73,6 +73,7 @@ services:
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
 EOF
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose_down
   rm -rf "$WORK_DIR"

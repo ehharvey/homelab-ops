@@ -100,6 +100,7 @@ for f in "$SUITE_DIR"/*.sh; do
 done
 
 if [ "${#SCRIPTS[@]}" -eq 0 ]; then
+	# shellcheck disable=SC2016 # inside "${:+}" the single quotes are literal; $GROUP expands
 	echo "no scripts matched${GROUP:+ group '$GROUP'}" >&2
 	exit 2
 fi

@@ -15,7 +15,7 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 # shellcheck source=scripts/validate/lib.sh
 . "$ROOT_DIR/scripts/validate/lib.sh"
 
@@ -31,6 +31,7 @@ WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   rm -rf "$WORK_DIR"
 }

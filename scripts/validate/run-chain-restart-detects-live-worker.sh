@@ -39,6 +39,7 @@ ALIVE="$ROOT_DIR/.claude/skills/run-chain/root-alive.sh"
 
 WORK_DIR="$(mktemp -d)"
 ROOT=
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	[ -n "$ROOT" ] && kill "$ROOT" 2>/dev/null
 	rm -rf "$WORK_DIR"

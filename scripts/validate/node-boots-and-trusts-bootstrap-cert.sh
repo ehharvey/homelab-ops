@@ -88,9 +88,7 @@ SEED_VOL="validate-nodeboot-seeded-img-$$"
 
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
 
-pass=0
-fail=0
-
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   incus delete --force --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1
   incus delete --force --project "$PROJECT" "$REMOTE:$WRITER_NAME" >/dev/null 2>&1

@@ -123,6 +123,7 @@ set_state() { # set_state <name> <start|stop>
 		-d "{\"action\": \"$2\", \"force\": true, \"timeout\": 30}")"
 }
 
+# shellcheck disable=SC2329 # called from cleanup, which the EXIT trap runs
 destroy() {
 	set_state "$1" stop >/dev/null 2>&1
 	await "$(api DELETE "/1.0/instances/$1")" >/dev/null 2>&1
@@ -146,8 +147,10 @@ acting_names() {
 }
 
 # acting_is <node> — Incus shows exactly that node's agent acting, and no other.
+# shellcheck disable=SC2329 # polled through wait_for
 acting_is() { [ "$(acting_names)" = "${INSTANCE[$1]} " ]; }
 
+# shellcheck disable=SC2329 # polled through wait_for
 key_is() { [ "$(key "$1" "$2")" = "$3" ]; } # key_is <node> <key> <want>
 
 start_agent() { # start_agent <node> <repo-url> <log-suffix>
@@ -203,6 +206,7 @@ commit_designation() { # commit_designation <primary>
 	)
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	[ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" 2>/dev/null
 	for n in "${NODES[@]}"; do
@@ -318,6 +322,7 @@ for n in "${NODES[@]}"; do
 	start_agent "$n" "$REMOTE" ""
 done
 
+# shellcheck disable=SC2329 # polled through wait_for
 all_on() { # all_on <commit> <node...>
 	local c="$1" n
 	shift

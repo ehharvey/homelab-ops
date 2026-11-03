@@ -61,6 +61,7 @@ fail() {
 	summary
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	set +e
 	cd "$ROOT_DIR" || return
@@ -89,8 +90,8 @@ remote_head() { git ls-remote origin "refs/heads/$BRANCH" | cut -f1; }
 
 # The PR's headRefOid trails a push by a moment; poll rather than race it.
 await_pr_head() {
-	local want=$1 got i
-	for i in $(seq 1 20); do
+	local want=$1 got
+	for _ in $(seq 1 20); do
 		got=$(gh pr view "$BRANCH" --json headRefOid --jq .headRefOid 2>/dev/null || true)
 		[ "$got" = "$want" ] && return 0
 		sleep 2

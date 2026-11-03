@@ -31,7 +31,7 @@ VALIDATE_SUPPORTED_OS="any"
 validate_parse_args "$@"
 require_compose
 check_prereqs
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 check_json() {
   local desc="$1" json="$2" filter="$3"
@@ -42,6 +42,7 @@ check_json() {
   fi
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose_down
 }

@@ -170,6 +170,7 @@ harness_list_entry() {
 		jq -c --arg n "$1" '.[] | select(.Name == $n)' 2>/dev/null
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	local name
 	for name in "$TAGGED" "$UNTAGGED" "$CREATED" "$DOOMED" "$FSINST" "$TARGETED" "$PLACED"; do

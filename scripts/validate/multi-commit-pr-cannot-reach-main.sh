@@ -75,6 +75,7 @@ fail() {
 	summary
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	set +e
 	if [ -n "${PR_OPEN:-}" ]; then
@@ -192,8 +193,8 @@ echo "=== opened throwaway PR, waiting for one-commit to report"
 # SHA makes "no run yet" distinguishable from "run finished", which is the
 # whole difference.
 await_check() {
-	local sha=$1 want=$2 i line status conclusion
-	for i in $(seq 1 60); do
+	local sha=$1 want=$2 line status conclusion
+	for _ in $(seq 1 60); do
 		line=$(gh api "repos/$REPO/commits/$sha/check-runs" \
 			--jq '.check_runs[] | select(.name=="one-commit") | "\(.status) \(.conclusion)"' \
 			2>/dev/null | head -1)

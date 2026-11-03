@@ -52,10 +52,7 @@ VALIDATE_SUPPORTED_OS="incusos"
 
 validate_parse_args "$@"
 default_incusos_base_image
-cd "$ROOT_DIR"
-
-pass=0
-fail=0
+cd "$ROOT_DIR" || exit 1
 
 WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
@@ -84,6 +81,7 @@ WRITER_NAME="validate-installer-writer-$$"
 PROBE_NAME="validate-installer-probe-$$"
 SEED_VOL="validate-installer-seeded-img-$$"
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose down >/dev/null 2>&1
   incus delete --force --project "$PROJECT" "$REMOTE:$VM_NAME" >/dev/null 2>&1

@@ -169,6 +169,7 @@ console_tail() { # console_tail <instance> <lines>
 	incus console "$(r "$1")" --show-log 2>/dev/null | tail -n "$2"
 }
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	[ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" 2>/dev/null
 	if [ "$VALIDATE_FAIL" -gt 0 ]; then
@@ -229,6 +230,7 @@ echo "== 1. Build and import the agent image (as a and b) and the git fixture ==
 if ! go -C "$ROOT_DIR" build -o "$WORK_DIR/bootstrap" ./cmd/bootstrap; then
 	fail_rest 0 "bootstrap did not build"
 fi
+# shellcheck disable=SC2329 # run through check
 build_fixture() {
 	build_agent_incus_image "$ROOT_DIR" "$WORK_DIR/img" &&
 		build_incus_oci_image "$ROOT_DIR/dev/git-fixture/Dockerfile" "$ROOT_DIR/dev/git-fixture" "$WORK_DIR/img" fixture || return 1
@@ -253,6 +255,7 @@ fixture_ip() {
 	incus query "$REMOTE:/1.0/instances/$FIXTURE/state" 2>/dev/null |
 		jq -r '[.network // {} | to_entries[] | select(.key != "lo") | .value.addresses[] | select(.family == "inet") | .address][0] // empty'
 }
+# shellcheck disable=SC2329 # polled through wait_for
 has_ip() { [ -n "$(fixture_ip)" ]; }
 wait_for 60 has_ip
 ip="$(fixture_ip)"
@@ -304,20 +307,21 @@ fi
 # writing its own keys every tick makes it lose the race. The stop itself can
 # meet one of those writes in flight ("busy running an update"), so retry it.
 retry() { # retry <cmd...> — up to 10 tries, a second apart
-	local i
-	for i in $(seq 1 10); do
+	local _
+	for _ in $(seq 1 10); do
 		"$@" 2>/dev/null && return 0
 		sleep 1
 	done
 	"$@"
 }
-retry incus stop -f "$(r "$G0")" &&
+{ retry incus stop -f "$(r "$G0")" &&
 	incus config set "$(r "$G0")" \
 		environment.AGENT_TICK_INTERVAL="$TICK" \
 		environment.AGENT_HEARTBEAT_STALE_AFTER="${STALE_AFTER}s" \
 		environment.AGENT_MIN_HEALTHY_DURATION="${MIN_HEALTHY}s" \
 		environment.AGENT_UPGRADE_HEALTH_DEADLINE="$DEADLINE" &&
-	incus start "$(r "$G0")" || fail_rest 2 "could not set the first agent's knobs"
+	incus start "$(r "$G0")"; } || fail_rest 2 "could not set the first agent's knobs"
+# shellcheck disable=SC2329 # polled through wait_for
 g0_acts() { [ "$(cfg "$G0" user.homelab-ops.agent.acting)" = true ]; }
 if wait_for 90 g0_acts; then
 	record_pass "${_checks[2]}"
@@ -335,6 +339,7 @@ bumped_at="$(date +%s)"
 if ! commit_fleet "$IMAGE_B" "agent on image b"; then
 	fail_rest 3 "could not commit the image bump"
 fi
+# shellcheck disable=SC2329 # polled through wait_for, then run through check
 settled() {
 	agents_json | jq -e --arg g1 "$G1" --arg b "$IMAGE_B" \
 		'length == 1 and .[0].name == $g1 and .[0].config["user.homelab-ops.agent.acting"] == "true"
@@ -361,12 +366,17 @@ first() {
 			fi
 		done
 }
+# shellcheck disable=SC2016 # a jq program; $g0/$g1 are jq --arg variables
 t_g1="$(first 'any(.[]; .name == $g0 and .status == "Running") and any(.[]; .name == $g1)')"
 # The primary's bookkeeping for this host, on its own instance (-g0's).
 HEALTHY_KEY="user.homelab-ops.upgrade.$NODE.healthy-since"
+# shellcheck disable=SC2016 # a jq program; $g0/$g1 are jq --arg variables
 t_healthy="$(first 'any(.[]; .name == $g0 and (.config["'"$HEALTHY_KEY"'"] // "") != "")')"
+# shellcheck disable=SC2016 # a jq program; $g0/$g1 are jq --arg variables
 t_drain="$(first 'any(.[]; .name == $g0 and .config["user.homelab-ops.agent.draining"] == "true" and .config["user.homelab-ops.agent.drain-reason"] == "superseded")')"
+# shellcheck disable=SC2016 # a jq program; $g0/$g1 are jq --arg variables
 t_acts="$(first 'any(.[]; .name == $g1 and .config["user.homelab-ops.agent.acting"] == "true")')"
+# shellcheck disable=SC2016 # a jq program; $g0/$g1 are jq --arg variables
 t_gone="$(first 'all(.[]; .name != $g0)')"
 echo "   seconds after the bump: g1 $((${t_g1:-0} - bumped_at)), healthy $((${t_healthy:-0} - bumped_at)), drain $((${t_drain:-0} - bumped_at)), g1 acts $((${t_acts:-0} - bumped_at)), g0 gone $((${t_gone:-0} - bumped_at))"
 

@@ -32,7 +32,7 @@ VALIDATE_SUPPORTED_OS="any"
 validate_parse_args "$@"
 require_compose
 check_prereqs
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 # A short poll interval keeps the test fast; the waits below tolerate clone
 # and scheduling jitter well beyond one tick.
@@ -47,6 +47,7 @@ services:
       - CONFIG_SYNC_INTERVAL=2s
 EOF
 
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose_down
   rm -f "$OVERRIDE"

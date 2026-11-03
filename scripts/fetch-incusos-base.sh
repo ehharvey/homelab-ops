@@ -163,6 +163,7 @@ verify_sjson() {
 	if [ "$(wc -l <<<"$chain")" != 3 ] || [ "$(sed -n 2p <<<"$chain")" != "depth=1: $update_ca" ]; then
 		say "ERROR: $(basename "$sjson") is validly signed, but not by a certificate issued by the Update CA."
 		say "       Wanted the signer's issuer to be '$update_ca', directly under the trust root; got:"
+		# shellcheck disable=SC2001 # indents every line; ${var//} can't anchor ^ per line
 		sed 's/^/         /' <<<"$chain" >&2
 		exit 1
 	fi
