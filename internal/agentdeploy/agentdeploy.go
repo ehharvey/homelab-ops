@@ -44,17 +44,18 @@ func FindApp(apps []config.App) (config.App, bool) {
 	return config.App{}, false
 }
 
-// firstGeneration is the generation of every agent this package creates.
-// Its name suffix and its GenerationTagKey both come from it: cmd/agent reads
-// its generation from the suffix, and #98/#109 key on the tag, so the two
-// must not disagree.
-const firstGeneration = 0
+// FirstGeneration is the generation of an agent's first instance on a node:
+// the one the web route, `bootstrap deploy-agent` and the primary's
+// per-member creates (#203) make. Each self-upgrade (#109) creates the next.
+const FirstGeneration = 0
 
-// InstanceName is the agent's first instance on inst:
-// <app>-<instance>-g<firstGeneration> (docs/AppManager.md), e.g.
-// agent-node0-g0. cmd/agent reads its generation back from the suffix.
-func InstanceName(app config.App, inst config.Instance) string {
-	return fmt.Sprintf("%s-%s-g%d", app.Name, inst.Name, firstGeneration)
+// InstanceName is the agent's instance of generation generation on inst:
+// <app>-<instance>-g<generation> (docs/AppManager.md), e.g. agent-node0-g0.
+// cmd/agent reads its generation back from the suffix, and #109 keys on
+// Desired's GenerationTagKey, so both come from the same argument and can't
+// disagree.
+func InstanceName(app config.App, inst config.Instance, generation int64) string {
+	return fmt.Sprintf("%s-%s-g%d", app.Name, inst.Name, generation)
 }
 
 // IsAgentInstance reports whether name is app's instance for inst, of any
@@ -63,15 +64,24 @@ func InstanceName(app config.App, inst config.Instance) string {
 // agent in a cluster-wide listing nor an unrelated instance that merely
 // starts with "<app>-" counts.
 func IsAgentInstance(app config.App, inst config.Instance, name string) bool {
-	gen, ok := strings.CutPrefix(name, app.Name+"-"+inst.Name+"-g")
-	if !ok {
-		return false
-	}
-	_, err := strconv.ParseUint(gen, 10, 64)
-	return err == nil
+	_, ok := Generation(app, inst, name)
+	return ok
 }
 
-// Desired is the InstancesPost for app's generation-0 instance on inst.
+// Generation is the generation in name's -g<N> suffix, when name is app's
+// instance for inst (IsAgentInstance).
+func Generation(app config.App, inst config.Instance, name string) (int64, bool) {
+	gen, ok := strings.CutPrefix(name, app.Name+"-"+inst.Name+"-g")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(gen, 10, 63) // 63 bits: it fits an int64
+	return int64(n), err == nil
+}
+
+// Desired is the InstancesPost for app's instance of generation generation on
+// inst: FirstGeneration for an agent's first instance there, g+1 for the
+// self-upgrade candidate of an instance of generation g (#109).
 //
 // It is a container, because the incus-socket profile's proxy device is
 // container-only (internal/seed), and it gets that profile, the agent's
@@ -83,7 +93,7 @@ func IsAgentInstance(app config.App, inst config.Instance, name string) bool {
 //     makes an agent visible to itself and its peers (internal/incusregistry,
 //     docs/Decisions.md §25), so an agent tagged otherwise is neither a peer
 //     nor fenced.
-//   - GenerationTagKey is firstGeneration, as InstanceName's suffix is.
+//   - GenerationTagKey is generation, as InstanceName's suffix is.
 //   - ImageTagKey is app.Image serialized by ImageTag, which the agent's
 //     self-upgrade (#109) compares against the declared image.
 //
@@ -93,11 +103,11 @@ func IsAgentInstance(app config.App, inst config.Instance, name string) bool {
 // and `bootstrap deploy-agent` create on a standalone node, which rejects a
 // target, while the primary agent passes target=<member> to
 // incuslocal.Client.CreateInstance alongside it (#203).
-func Desired(app config.App, inst config.Instance, repo Repo) lxcapi.InstancesPost {
-	name := InstanceName(app, inst)
+func Desired(app config.App, inst config.Instance, repo Repo, generation int64) lxcapi.InstancesPost {
+	name := InstanceName(app, inst, generation)
 	cfg := map[string]string{
 		incuslocal.AppTagKey:              app.Name,
-		incuslocal.GenerationTagKey:       strconv.Itoa(firstGeneration),
+		incuslocal.GenerationTagKey:       strconv.FormatInt(generation, 10),
 		incuslocal.ImageTagKey:            ImageTag(app.Image),
 		"environment.AGENT_NODE_NAME":     inst.Name,
 		"environment.AGENT_INSTANCE_NAME": name,
@@ -157,10 +167,9 @@ func ImageTag(ref config.ImageRef) string {
 // rather than a partial ref, and a tag a newer writer extended or a hand
 // edited reads as "unknown", never as a different image.
 //
-// It ships with ImageTag, ahead of its first caller (#109), because #203
-// starts writing the tag onto every agent it creates: the round-trip test
-// pins the format those agents carry, rather than leaving #109 to discover
-// it.
+// The self-upgrade (#109) compares tags as ImageTag strings, which canonical
+// output makes exact; this is for reading one back as a ref. The round-trip
+// test pins the format every agent created since #203 carries.
 func ParseImageTag(s string) (config.ImageRef, error) {
 	var t imageTag
 	if err := json.Unmarshal([]byte(s), &t); err != nil {

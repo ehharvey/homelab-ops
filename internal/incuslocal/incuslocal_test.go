@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	lxcapi "github.com/lxc/incus/v7/shared/api"
 )
@@ -35,6 +36,8 @@ type fakeIncus struct {
 	patched map[string]map[string]string
 	// deleted records the names DeleteInstance asked to remove.
 	deleted []string
+	// stopped records the state changes StopInstance sent, per instance.
+	stopped map[string]lxcapi.InstanceStatePut
 	// created records the requests CreateInstance sent, and targets the
 	// ?target= each was sent with ("" for none).
 	created []lxcapi.InstancesPost
@@ -62,6 +65,7 @@ func newFakeIncus(t *testing.T) *fakeIncus {
 	t.Helper()
 	f := &fakeIncus{
 		patched: map[string]map[string]string{},
+		stopped: map[string]lxcapi.InstanceStatePut{},
 		files:   map[string]string{},
 		dirs:    map[string]bool{},
 	}
@@ -102,6 +106,18 @@ func newFakeIncus(t *testing.T) *fakeIncus {
 	mux.HandleFunc("DELETE /1.0/instances/{name}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.deleted = append(f.deleted, r.PathValue("name"))
+		f.mu.Unlock()
+		writeOperation(w)
+	})
+
+	mux.HandleFunc("PUT /1.0/instances/{name}/state", func(w http.ResponseWriter, r *http.Request) {
+		var put lxcapi.InstanceStatePut
+		if err := json.NewDecoder(r.Body).Decode(&put); err != nil {
+			writeEnvelope(w, lxcapi.Response{Type: lxcapi.ErrorResponse, Error: "undecodable body"})
+			return
+		}
+		f.mu.Lock()
+		f.stopped[r.PathValue("name")] = put
 		f.mu.Unlock()
 		writeOperation(w)
 	})
@@ -265,6 +281,8 @@ func TestListInstancesReturnsOnlyManagedInstancesWithStatus(t *testing.T) {
 	running := managed("agent-node0-g3", "agent", "Running")
 	running.Location = "node0"
 	running.Config["limits.cpu"] = "2"
+	created := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	running.CreatedAt = created
 
 	f.instances = []lxcapi.Instance{unmanaged, stopped, running}
 
@@ -301,6 +319,10 @@ func TestListInstancesReturnsOnlyManagedInstancesWithStatus(t *testing.T) {
 	// `Location == ""` checks that never fire on a clustered host.
 	if loc := byName["agent-node0-g2"].Location; loc != "none" {
 		t.Errorf("unclustered Location = %q, want the literal %q passed through", loc, "none")
+	}
+	// The self-upgrade's health deadline counts from it (#109).
+	if at := byName["agent-node0-g3"].CreatedAt; !at.Equal(created) {
+		t.Errorf("CreatedAt = %v, want %v", at, created)
 	}
 	// Config is deliberately the whole map, not narrowed to user.*.
 	if cpu := byName["agent-node0-g3"].Config["limits.cpu"]; cpu != "2" {
@@ -445,6 +467,28 @@ func TestDeleteInstance(t *testing.T) {
 	f.operationFails = true
 	if err := c.DeleteInstance(context.Background(), "agent-node0-g2"); err == nil {
 		t.Fatal("DeleteInstance succeeded despite a failed operation")
+	}
+}
+
+func TestStopInstanceForceStopsAndWaits(t *testing.T) {
+	f := newFakeIncus(t)
+	c := f.client(t)
+
+	if err := c.StopInstance(context.Background(), "agent-node0-g2"); err != nil {
+		t.Fatalf("StopInstance: %v", err)
+	}
+	got, ok := f.stopped["agent-node0-g2"]
+	if !ok || got.Action != "stop" || !got.Force {
+		t.Fatalf("state change = %+v (sent: %v), want a forced stop", got, ok)
+	}
+
+	if err := c.StopInstance(context.Background(), ""); err == nil {
+		t.Fatal("StopInstance with no name succeeded, want an error")
+	}
+
+	f.operationFails = true
+	if err := c.StopInstance(context.Background(), "agent-node0-g2"); err == nil {
+		t.Fatal("StopInstance succeeded despite a failed operation")
 	}
 }
 
