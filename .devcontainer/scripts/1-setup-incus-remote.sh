@@ -6,6 +6,8 @@ set -e
 # postAttachCommand, with --trust-only) as well as at start (postStartCommand,
 # with everything else). A fresh start therefore runs it twice; the second run
 # finds the remote already `trusted` and only refreshes the fingerprint cache.
+# When any start script fails, the CLI skips postAttachCommand on that start
+# (#328), leaving only this first run.
 TRUST_ONLY=false
 if [ "${1:-}" = "--trust-only" ]; then
   TRUST_ONLY=true
