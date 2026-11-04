@@ -269,6 +269,11 @@ seams, proven by the existing validate scripts (e.g.
 
 ## Phase 5 — Web app appliance: bootstrap and break-glass
 
+> **`later` items moved out (2026-11-04, #512):** the mkosi-built appliance
+> image (#393), the web app as a bastion (#399) and pushing store snapshots to
+> off-cluster S3 (#200) are `later` work. They moved to "Deferred — after the
+> Talos main line" and have no phase yet. The notes below are kept as history.
+
 > **Renumbered (2026-11-02, #466, `docs/Decisions.md` §31):** this was Phase
 > 4, "Web app appliance and hardening", and moved after the seams and before
 > the first Talos node, since Talos's bootstrap is what it's for. The LAN form,
@@ -307,8 +312,6 @@ Appliance (from "Web app deployment", added 2026-10-03, #247, §29):
   alternative — see #244
 - [ ] Migrate the web app between hosts without reflashing nodes, including
   the endpoint DNS re-resolution probe — see #245
-- [ ] *(later)* mkosi-built appliance image, sharing a build with §15's
-  helper OS and, later, the own distro's node OS (`docs/Decisions.md` §15); design open — see #393
 
 Bootstrap and break-glass (added 2026-11-02, #466, §31):
 
@@ -321,8 +324,6 @@ Bootstrap and break-glass (added 2026-11-02, #466, §31):
   (`docs/Decisions.md` §31). To file.
 - [ ] DNS records from IPAM, served by the appliance (`docs/Decisions.md`
   §31). To file.
-- [ ] The web app as a bastion (`docs/Decisions.md` §11, §30). A decision
-  first — see #399
 
 Operator surface, keys, CA and IdM (added 2026-11-04, #505, §32):
 
@@ -355,8 +356,6 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
   straight to the install media — see #198
 - [ ] Network addressing from git (private repo) or web app state, exactly
   one source per network — see #199
-- [ ] *(optional)* Push encrypted store snapshots to off-cluster S3 — see
-  #200
 - [ ] One operator client cert for both Incus and the web app's tunnel API;
   its custody is #397's to decide (`docs/Decisions.md` §30) — see #397
 
@@ -575,7 +574,7 @@ option's cost worth paying.
 - [ ] NixOS + Incus host. Needs its own install-mechanism decision first. To
   file.
 - [ ] SSH-CA host access to Debian and NixOS hosts, through the bastion
-  (#399, Phase 5), which also decides the SSH CA (`docs/Decisions.md` §32);
+  (#399, deferred), which also decides the SSH CA (`docs/Decisions.md` §32);
   instances keep Incus's own websocket exec. To file.
 
 **Done when:** a Debian host and a NixOS host are each provisioned and run an
@@ -622,6 +621,13 @@ since §31: Phases 6 and 7.)
   Rook-Ceph), since live migration needs shared storage. To file.
 - [ ] *(later)* An own mkosi-built distro replacing Talos, gated on a written
   list of what Talos can't do; Kubernetes bootstrapped with `kubeadm`. To file.
+- [ ] *(later)* mkosi-built web appliance image, sharing a build with §15's
+  helper OS and, later, the own distro's node OS (`docs/Decisions.md` §15);
+  design open — see #393
+- [ ] *(later)* The web app as a bastion (`docs/Decisions.md` §11, §30). A
+  decision first — see #399
+- [ ] *(later, optional)* Push encrypted store snapshots to off-cluster S3 —
+  see #200
 
 ## Deferred / post-1.0 — tooling and dev-host health
 

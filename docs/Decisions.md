@@ -218,8 +218,9 @@ bus" addendum immediately above, and doesn't reopen that rejection:
   no command semantics — sitting on top of the WireGuard tunnel once it
   exists, closer to a bastion/jump host than a control plane.
 
-**Expected sequencing:** with the web app as a bastion (#399, Phase 5 in
-`docs/Roadmap.md` since §31). WireGuard node connectivity is in place
+**Expected sequencing:** with the web app as a bastion (#399, a `later`
+item with no phase yet, under "Deferred — after the Talos main line" in
+`docs/Roadmap.md` since #512). WireGuard node connectivity is in place
 (#91). Not designed or built now — captured here so the shape of the
 options survives until then.
 
@@ -414,8 +415,8 @@ identical struct. The open question was the install mechanism:
   still the right tool for building the *helper* boot environment itself.
   The web app's own mkosi-built appliance image (§29, #393) is folded into
   this work as another role for the same build, with its design open. The
-  Roadmap keeps #393 as a `(later)` item in Phase 5, beside the other
-  appliance forms. Per §31, the same mkosi pipeline later builds the own
+  Roadmap keeps #393 as a `(later)` item with no phase yet, under
+  "Deferred — after the Talos main line" (#512). Per §31, the same mkosi pipeline later builds the own
   distro's node OS.
 
 ### Helper OS: pre-install hardware registration/confirmation
@@ -2102,7 +2103,7 @@ Also found:
 
 ## 28. The web app's interim security posture: WireGuard API by default, one operator-held key (2026-09-28)
 
-Raised alongside §27 but independent of it: none of this blocks the cluster work. It is scheduled in `docs/Roadmap.md` Phase 5, the web app appliance (#195–#200, #397; folded in by §30, renumbered by §31). Proper auth was deferred (end of this section) and is now decided by §32 (#505): a browser UI behind OIDC login via kanidm. This section remains the CLI's and the tunnel's posture.
+Raised alongside §27 but independent of it: none of this blocks the cluster work. It is scheduled in `docs/Roadmap.md` Phase 5, the web app appliance (#195–#199, #397; folded in by §30, renumbered by §31), except the optional S3 snapshot push (#200), which is a `later` item under "Deferred — after the Talos main line" (#512). Proper auth was deferred (end of this section) and is now decided by §32 (#505): a browser UI behind OIDC login via kanidm. This section remains the CLI's and the tunnel's posture.
 
 **The problem.**
 
