@@ -7,7 +7,7 @@ accepts, and what checks it. The code is the source of truth
 repo). Where this page and the code disagree, the code is right, and this
 page needs fixing.
 
-Working examples live in [`examples/`](https://github.com/ehharvey/homelab-ops/tree/main/examples). A test parses and
+Working examples live in [`examples/nodes/`](https://github.com/ehharvey/homelab-ops/tree/main/examples/nodes). A test parses and
 validates every one of them the way a sync does, so they can't drift from
 this schema.
 
@@ -35,7 +35,8 @@ Later sections:
   that fails validation, rejects the whole commit. The previous synced state
   stays in place.
 
-The web app syncs from:
+The web app syncs from these deployment settings (`docs/Deployment.md` lists
+every setting, and the `web.env` file they go in on an appliance):
 
 | Setting | Meaning |
 |---|---|
@@ -231,7 +232,7 @@ primary: node0   # an Instance name: a node, not an agent instance
 | Reader | Reads | Differences |
 |---|---|---|
 | **Web app** | The branch above, on `POST /sync` or every `CONFIG_SYNC_INTERVAL` | Runs `Validate`, then IPAM. An omitted `static_ip` gets an address from the network's `dhcp_excluded_range`, stable across syncs. It errors if the range is unset or exhausted. The web app stores the result, reports what changed against the previous sync, and renders each node's seed and image from it. |
-| **`bootstrap render-seed`** | One local file (`--file`), no git | Needs **exactly one** Network and one Instance; Apps are ignored. There's no IPAM, so an omitted `static_ip` means DHCP, and the node comes up unclustered. Use [`examples/single-node/`](https://github.com/ehharvey/homelab-ops/tree/main/examples/single-node). |
+| **`bootstrap render-seed`** | One local file (`--file`), no git | Needs **exactly one** Network and one Instance; Apps are ignored. There's no IPAM, so an omitted `static_ip` means DHCP, and the node comes up unclustered. Use [`examples/nodes/single-node/`](https://github.com/ehharvey/homelab-ops/tree/main/examples/nodes/single-node). |
 | **Agent** (`cmd/agent`, #101) | The same repo, from its own `CONFIG_REPO_URL`/`CONFIG_REPO_REF` | Runs with the web app down. It keeps a persistent full clone (`AGENT_REPO_DIR`) and fetches into it, rather than a fresh shallow clone, because leader election asks whether a peer's commit is in its history. It runs `Validate` too, and a commit that fails keeps the previous one current. Today it reads only the Designation; it never reads addressing. |
 
 ## Known gaps

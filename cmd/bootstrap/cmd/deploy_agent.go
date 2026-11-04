@@ -37,7 +37,7 @@ POST /instances/{name}/deploy-agent is the other path, over the tunnel.
 
 --file is the fleet definition: the target Instance and the agent App
 (kind: App, type: agent, replicas: per-node). Repeat it to merge several
-files, e.g. examples/fleet/instances.yaml and apps.yaml.
+files, e.g. examples/nodes/fleet/instances.yaml and apps.yaml.
 
 If any of the agent's instances already exists on the node, nothing is
 created. The break-glass cert is never revoked.`,

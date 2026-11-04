@@ -1,0 +1,9 @@
+# Operator devices allowed to call the API over the tunnel
+# (WIREGUARD_OPERATOR_PEERS, docs/Deployment.md): one
+# <overlay-address>=<base64-public-key> per line. # starts a comment.
+#
+# Addresses come from 10.100.0.240-10.100.0.254, and each address and key
+# appears once. Only public keys go here: generate a keypair on the operator's
+# device (wg genkey | tee op.key | wg pubkey) and keep the private half there.
+#
+# 10.100.0.240=<your device's public key>   # laptop

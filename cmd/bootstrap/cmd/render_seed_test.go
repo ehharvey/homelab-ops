@@ -79,7 +79,7 @@ func TestRenderSeedCommandRendersSingleNodeExample(t *testing.T) {
 	certPath := writeFixtureCert(t, dir)
 	outDir := filepath.Join(dir, "out")
 
-	rootCmd.SetArgs([]string{"render-seed", "--file", "../../../examples/single-node/fleet.yaml", "--cert", certPath, "--output-dir", outDir})
+	rootCmd.SetArgs([]string{"render-seed", "--file", "../../../examples/nodes/single-node/fleet.yaml", "--cert", certPath, "--output-dir", outDir})
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)

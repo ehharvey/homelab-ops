@@ -14,7 +14,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
+	"github.com/ehharvey/homelab-ops/internal/deployconfig"
 	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
@@ -36,50 +36,53 @@ func main() {
 }
 
 func run() error {
-	hostAddr := os.Getenv("API_HOST_LISTEN_ADDR")
-	if err := checkRetiredPort(os.Getenv("PORT"), os.Getenv("WIREGUARD_ENDPOINT"), hostAddr); err != nil {
+	// Every setting, read and validated up front (#241, absorbing #67): a bad
+	// deployment stops here, naming each problem, before anything starts.
+	cfg, err := deployconfig.Load()
+	if err != nil {
 		return err
 	}
+	if cfg.Dir != "" {
+		//nolint:gosec // G706: the path is an operator-supplied env var (not untrusted input) and %q quotes it
+		log.Printf("deployment config directory %q", cfg.Dir)
+	}
+	noteRetiredPort(cfg.RetiredPort)
 
-	syncer := newSyncer()
+	syncer := newSyncer(cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	st, err := store.Open(ctx, storePath())
+	st, err := store.Open(ctx, cfg.StorePath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close() //nolint:errcheck // best-effort cleanup on shutdown
 
-	operators, err := wireguard.ParseOperatorPeers(os.Getenv("WIREGUARD_OPERATOR_PEERS"))
-	if err != nil {
-		return fmt.Errorf("WIREGUARD_OPERATOR_PEERS: %w", err)
-	}
+	operators := cfg.OperatorPeers
 
 	// Unlike the other optional sources (cert/image builder, which degrade to
 	// "route reports itself unconfigured"), a *set* WIREGUARD_ENDPOINT
 	// expresses explicit operator intent to run the tunnel — failing to
 	// start it is fatal, not silently degraded. An unset WIREGUARD_ENDPOINT
-	// leaves tunnelSrc as a true nil server.TunnelSource.
+	// leaves tunnelSrc as a true nil server.TunnelSource; deployconfig.Load
+	// has already refused operator peers without one.
 	var tunnelSrc server.TunnelSource
 	var tun *wireguard.Tunnel
-	if endpoint := os.Getenv("WIREGUARD_ENDPOINT"); endpoint != "" {
-		ts, err := newTunnelSource(ctx, st, endpoint, operators)
+	if cfg.WireGuardEndpoint != "" {
+		ts, err := newTunnelSource(ctx, st, cfg.WireGuardEndpoint, cfg.WireGuardPort, operators)
 		if err != nil {
 			return fmt.Errorf("start wireguard tunnel: %w", err)
 		}
 		tunnelSrc, tun = ts, ts.tun
 		defer tunnelSrc.Close() //nolint:errcheck // best-effort cleanup on shutdown
-	} else if len(operators) > 0 {
-		return errors.New("WIREGUARD_OPERATOR_PEERS is set but WIREGUARD_ENDPOINT is not: operator peers reach the API over the tunnel, which only runs when WIREGUARD_ENDPOINT is set")
 	}
 
 	// One Service shared between the HTTP handlers and the background poller
 	// so their syncs serialize through a single lock.
-	svc := server.NewService(syncer, st, newCertSource(), newImageBuilder(), tunnelSrc, st)
+	svc := server.NewService(syncer, st, newCertSource(cfg.ClientCertPath), newImageBuilder(cfg), tunnelSrc, st)
 	// A deployed agent syncs from the same repo as this web app.
-	svc.SetAgentRepo(agentdeploy.Repo{URL: os.Getenv("CONFIG_REPO_URL"), Ref: os.Getenv("CONFIG_REPO_REF")})
+	svc.SetAgentRepo(agentdeploy.Repo{URL: cfg.ConfigRepoURL, Ref: cfg.ConfigRepoRef})
 
 	// Nodes flashed before this restart must get a handshake reply now, not
 	// after the next sync (#269), and this also registers the operators.
@@ -89,15 +92,13 @@ func run() error {
 		return fmt.Errorf("restore wireguard peers: %w", err)
 	}
 
-	listeners, err := listen(server.NewFromService(svc), tun, operators, hostAddr)
+	listeners, err := listen(server.NewFromService(svc), tun, operators, cfg.HealthListenAddr, cfg.APIHostListenAddr)
 	if err != nil {
 		return err
 	}
 
-	if syncer != nil {
-		if interval, ok := syncInterval(); ok {
-			go pollSync(ctx, svc, interval)
-		}
+	if syncer != nil && cfg.SyncInterval > 0 {
+		go pollSync(ctx, svc, cfg.SyncInterval)
 	}
 
 	errCh := make(chan error, len(listeners))
@@ -121,21 +122,16 @@ func run() error {
 	return serveErr
 }
 
-// checkRetiredPort refuses to start a deployment that still sets PORT, which
-// #195 retired, when nothing else serves the API: before #195 such a
-// deployment served the API on PORT, and now it would serve it nowhere while
-// /healthz, on its own listener, kept reporting healthy. With an API listener
-// configured, a set PORT is only logged.
-func checkRetiredPort(port, endpoint, hostAddr string) error {
+// noteRetiredPort logs that a set PORT, which #195 retired, isn't read.
+// deployconfig.Load has already refused one with no API listener configured:
+// before #195 such a deployment served the API on PORT, and now it would serve
+// it nowhere while /healthz, on its own listener, kept reporting healthy.
+func noteRetiredPort(port string) {
 	if port == "" {
-		return nil
-	}
-	if endpoint == "" && hostAddr == "" {
-		return fmt.Errorf("PORT=%q is no longer read (#195), and no API listener is configured: set WIREGUARD_ENDPOINT and WIREGUARD_OPERATOR_PEERS (the default, tunnel-only posture), or API_HOST_LISTEN_ADDR=:%s to keep serving plain HTTP on that port", port, port)
+		return
 	}
 	//nolint:gosec // G706: port is an operator-supplied env var (not untrusted input) and %q quotes it
 	log.Printf("PORT=%q is no longer read (#195): the API is served over the WireGuard tunnel, or on API_HOST_LISTEN_ADDR if set; /healthz is on HEALTH_LISTEN_ADDR", port)
-	return nil
 }
 
 // shutdown drains every listener's server in parallel, all against one
@@ -176,7 +172,7 @@ type listener struct {
 // docs/Decisions.md §28 and §29), before anything is served, so a bad or
 // taken address fails startup instead of a background goroutine:
 //
-//   - health: GET /healthz only, on HEALTH_LISTEN_ADDR (default :8081),
+//   - health: GET /healthz only, on healthAddr (HEALTH_LISTEN_ADDR, default :8081),
 //     whatever the API listener setting, for container health checks.
 //   - tunnel (the default API listener): the API at wireguard.WebAppAddr,
 //     port wireguard.APIPort, inside the tunnel, admitting operator peers
@@ -187,7 +183,7 @@ type listener struct {
 //
 // A TLS host listener is the expected third mode (§29). It would be one
 // more entry here; it is not built yet.
-func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.OperatorPeer, hostAddr string) ([]listener, error) {
+func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.OperatorPeer, healthAddr, hostAddr string) ([]listener, error) {
 	var out []listener
 	fail := func(err error) ([]listener, error) {
 		for _, l := range out {
@@ -201,7 +197,6 @@ func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.Opera
 		log.Printf("%s listening on %q", name, ln.Addr().String())
 	}
 
-	healthAddr := healthListenAddr()
 	ln, err := net.Listen("tcp", healthAddr)
 	if err != nil {
 		return fail(fmt.Errorf("health listener on %s: %w", healthAddr, err))
@@ -235,46 +230,19 @@ func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.Opera
 	return out, nil
 }
 
-// healthListenAddr reports the /healthz listener's address from
-// HEALTH_LISTEN_ADDR, or ":8081" if unset. That listener serves nothing but
-// /healthz, so binding every interface by default exposes no API route.
-func healthListenAddr() string {
-	if a := os.Getenv("HEALTH_LISTEN_ADDR"); a != "" {
-		return a
-	}
-	return ":8081"
-}
-
-// newSyncer builds the config-sync client from the environment, or a nil
+// newSyncer builds the config-sync client from the deployment config, or a nil
 // server.Syncer if CONFIG_REPO_URL is unset (sync stays disabled). The return
 // type is the interface, not *configsync.Syncer, so an unconfigured result is
 // a true nil interface — boxing a nil *configsync.Syncer would defeat the
 // nil-check in handleSync and panic on the first request.
-func newSyncer() server.Syncer {
-	repoURL := os.Getenv("CONFIG_REPO_URL")
-	if repoURL == "" {
+func newSyncer(cfg deployconfig.Config) server.Syncer {
+	if cfg.ConfigRepoURL == "" {
 		return nil
 	}
 	return &configsync.Syncer{
-		RepoURL: repoURL,
-		Ref:     os.Getenv("CONFIG_REPO_REF"),
+		RepoURL: cfg.ConfigRepoURL,
+		Ref:     cfg.ConfigRepoRef,
 	}
-}
-
-// syncInterval reports the configured background poll interval from
-// CONFIG_SYNC_INTERVAL (e.g. "5m"), or ok=false if unset/invalid.
-func syncInterval() (time.Duration, bool) {
-	raw := os.Getenv("CONFIG_SYNC_INTERVAL")
-	if raw == "" {
-		return 0, false
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		//nolint:gosec // G706: raw is an operator-supplied env var (not untrusted input) and %q quotes it
-		log.Printf("invalid CONFIG_SYNC_INTERVAL %q: %v", raw, err)
-		return 0, false
-	}
-	return d, true
 }
 
 func pollSync(ctx context.Context, svc *server.Service, interval time.Duration) {
@@ -300,21 +268,11 @@ func pollSync(ctx context.Context, svc *server.Service, interval time.Duration) 
 	}
 }
 
-// storePath reports the local store's location from STORE_PATH, or
-// ":memory:" (non-persistent, scoped to this process) if unset.
-func storePath() string {
-	if p := os.Getenv("STORE_PATH"); p != "" {
-		return p
-	}
-	return ":memory:"
-}
-
 // newCertSource builds the deployment's break-glass CertSource from
-// CLIENT_CERT_PATH, or a nil server.CertSource if unset (the seed route
-// then reports itself unconfigured, mirroring newSyncer's nil-Syncer
-// convention).
-func newCertSource() server.CertSource {
-	path := os.Getenv("CLIENT_CERT_PATH")
+// CLIENT_CERT_PATH (or the config directory's client.crt), or a nil
+// server.CertSource if unset (the seed route then reports itself
+// unconfigured, mirroring newSyncer's nil-Syncer convention).
+func newCertSource(path string) server.CertSource {
 	if path == "" {
 		return nil
 	}
@@ -337,12 +295,11 @@ func (f fileCertSource) ClientCertPEM(_ context.Context) ([]byte, error) {
 // flasher-tool binary location — the Docker image sets it to /flasher-tool
 // since distroless has no $PATH; unset falls back to resolving "flasher-tool"
 // from $PATH for dev/devcontainer use.
-func newImageBuilder() server.ImageBuilder {
-	base := os.Getenv("BASE_IMAGE_PATH")
-	if base == "" {
+func newImageBuilder(cfg deployconfig.Config) server.ImageBuilder {
+	if cfg.BaseImagePath == "" {
 		return nil
 	}
-	return flasherBuilder{basePath: base, binPath: os.Getenv("FLASHER_TOOL_PATH")}
+	return flasherBuilder{basePath: cfg.BaseImagePath, binPath: cfg.FlasherToolPath}
 }
 
 // flasherBuilder implements server.ImageBuilder with internal/hostos's IncusOS
@@ -382,15 +339,16 @@ func (b flasherBuilder) Build(ctx context.Context, hostOS, seedDir, outputPath s
 // decided by the caller before this runs, since a *set* WIREGUARD_ENDPOINT
 // that then fails to start is fatal (see run()'s comment). The identity
 // persists in st (internal/wireguard.LoadOrGenerateIdentity), so it survives
-// restarts without a new file-based deployment config surface.
-// WIREGUARD_PORT overrides the UDP listen port (default 51820, WireGuard's
-// IANA-assigned port).
-func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, operators []wireguard.OperatorPeer) (wireguardTunnelSource, error) {
+// restarts; #197 moves it to the deployment config directory's
+// secrets/wireguard.key (docs/Deployment.md).
+// port is the UDP listen port (WIREGUARD_PORT, default 51820, WireGuard's
+// IANA-assigned port; 0 lets the OS pick).
+func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, port int, operators []wireguard.OperatorPeer) (wireguardTunnelSource, error) {
 	priv, err := wireguard.LoadOrGenerateIdentity(ctx, st)
 	if err != nil {
 		return wireguardTunnelSource{}, fmt.Errorf("load wireguard identity: %w", err)
 	}
-	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: wireguardPort(), LocalAddr: wireguard.WebAppAddr})
+	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: port, LocalAddr: wireguard.WebAppAddr})
 	if err != nil {
 		return wireguardTunnelSource{}, fmt.Errorf("start tunnel: %w", err)
 	}
@@ -399,23 +357,6 @@ func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, oper
 	//nolint:gosec // G706: endpoint is an operator-supplied env var (not untrusted input) and %q quotes it
 	log.Printf("wireguard public key %s, overlay address %s, endpoint %q", tun.PublicKey(), wireguard.WebAppAddr, endpoint)
 	return wireguardTunnelSource{tun: tun, endpoint: endpoint, operators: operators}, nil
-}
-
-// wireguardPort reports the configured WireGuard UDP listen port from
-// WIREGUARD_PORT, or 51820 (WireGuard's IANA-assigned default) if unset or
-// invalid.
-func wireguardPort() int {
-	raw := os.Getenv("WIREGUARD_PORT")
-	if raw == "" {
-		return 51820
-	}
-	port, err := strconv.Atoi(raw)
-	if err != nil {
-		//nolint:gosec // G706: raw is an operator-supplied env var (not untrusted input) and %q quotes it
-		log.Printf("invalid WIREGUARD_PORT %q, using default 51820: %v", raw, err)
-		return 51820
-	}
-	return port
 }
 
 // wireguardTunnelSource implements server.TunnelSource over a live

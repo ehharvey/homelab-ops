@@ -87,23 +87,19 @@ func TestFileCertSourceMissingFileReturnsClearError(t *testing.T) {
 }
 
 func TestNewCertSourceUnsetReturnsNil(t *testing.T) {
-	t.Setenv("CLIENT_CERT_PATH", "")
-
-	if cs := newCertSource(); cs != nil {
+	if cs := newCertSource(""); cs != nil {
 		t.Errorf("newCertSource with CLIENT_CERT_PATH unset = %v, want nil", cs)
 	}
 }
 
 func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
-	t.Setenv("WIREGUARD_PORT", "0") // let the OS pick a free port
-
 	st, err := store.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close() //nolint:errcheck // test cleanup
 
-	ts, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", nil)
+	ts, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", 0, nil)
 	if err != nil {
 		t.Fatalf("newTunnelSource: %v", err)
 	}
@@ -119,7 +115,7 @@ func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
 	// A second call must reuse the persisted identity rather than minting a
 	// new one, so a restarted process keeps the same public key every node's
 	// seed already trusts.
-	ts2, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", nil)
+	ts2, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", 0, nil)
 	if err != nil {
 		t.Fatalf("second newTunnelSource: %v", err)
 	}
