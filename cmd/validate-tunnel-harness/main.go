@@ -16,7 +16,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -163,28 +162,25 @@ func runGenKey(privateKeyFile string) error {
 
 // buildTunnel loads privateKeyFile, starts a Tunnel on listenPort, and
 // registers peerPublicKeyB64/peerTunnelIPStr as a trusted peer reachable at
-// peerEndpointStr — the common setup probe and http both need.
-// The peer here is the *node*, so peerPublicKeyB64 is the node's own wg0 key
-// (read off its IncusOS API), not the web app's.
+// peerEndpointStr — the common setup probe and http both need, through the
+// same wireguard.StartClient the operator CLI (`bootstrap api`, #196) joins
+// the web app's tunnel with. In probe mode the peer is the *node*, so
+// peerPublicKeyB64 is the node's own wg0 key (read off its IncusOS API), not
+// the web app's.
 func buildTunnel(privateKeyFile, localAddrStr, peerPublicKeyB64, peerTunnelIPStr, peerEndpointStr string, listenPort int) (*wireguard.Tunnel, error) {
 	if privateKeyFile == "" || peerPublicKeyB64 == "" || peerTunnelIPStr == "" || peerEndpointStr == "" {
 		return nil, fmt.Errorf("-private-key-file, -peer-public-key, -peer-tunnel-ip, and -peer-endpoint are all required")
 	}
 
-	privRaw, err := os.ReadFile(privateKeyFile) //nolint:gosec // path is operator-supplied via --private-key-file, not untrusted input
+	priv, err := wireguard.ReadPrivateKeyFile(privateKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("read private key: %w", err)
+		return nil, err
 	}
-	priv, err := decodeKey(string(privRaw))
-	if err != nil {
-		return nil, fmt.Errorf("decode private key: %w", err)
-	}
-
 	localAddr, err := netip.ParseAddr(localAddrStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse -local-addr: %w", err)
 	}
-	peerPub, err := decodeKey(peerPublicKeyB64)
+	peerPub, err := wireguard.ParsePublicKey(peerPublicKeyB64)
 	if err != nil {
 		return nil, fmt.Errorf("decode -peer-public-key: %w", err)
 	}
@@ -192,38 +188,22 @@ func buildTunnel(privateKeyFile, localAddrStr, peerPublicKeyB64, peerTunnelIPStr
 	if err != nil {
 		return nil, fmt.Errorf("parse -peer-tunnel-ip: %w", err)
 	}
-
-	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: listenPort, LocalAddr: localAddr})
-	if err != nil {
-		return nil, fmt.Errorf("start tunnel: %w", err)
-	}
 	// The endpoint is what makes this side able to initiate. A node's seeded
 	// peer entry for this harness carries no endpoint (patch-seed cannot add
 	// one), and UpsertPeer cannot express one either — so without this the
 	// handshake has no first packet from either direction.
 	peerEndpoint, err := netip.ParseAddrPort(peerEndpointStr)
 	if err != nil {
-		tun.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed setup; we're already returning the real error
 		return nil, fmt.Errorf("parse -peer-endpoint %q: %w", peerEndpointStr, err)
 	}
-	if err := tun.UpsertPeerWithEndpoint(wireguard.PublicKey(peerPub), peerTunnelIP, peerEndpoint); err != nil {
-		tun.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed setup; we're already returning the real error
-		return nil, fmt.Errorf("register peer: %w", err)
-	}
-	return tun, nil
-}
-
-func decodeKey(b64 string) ([32]byte, error) {
-	var key [32]byte
-	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return key, err
-	}
-	if len(raw) != 32 {
-		return key, fmt.Errorf("key has length %d, want 32", len(raw))
-	}
-	copy(key[:], raw)
-	return key, nil
+	return wireguard.StartClient(wireguard.ClientOptions{
+		PrivateKey:    priv,
+		LocalAddr:     localAddr,
+		ListenPort:    listenPort,
+		PeerPublicKey: peerPub,
+		PeerTunnelIP:  peerTunnelIP,
+		PeerEndpoint:  peerEndpoint,
+	})
 }
 
 // runProbe brings the tunnel up and dials nodeAddr over it, retrying until

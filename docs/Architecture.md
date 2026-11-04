@@ -24,7 +24,9 @@ A standalone command, not part of the always-on web app — it has to work befor
 - Leaves the cert/key on local disk. This cert is the deployment's single break-glass client credential, not a one-off for node #0 alone — the web app is later pointed at the same cert's public half via its own deployment config (see "Cert sourcing" below), so it embeds it into every subsequently-provisioned node too. The private key never leaves the operator's local disk and the web app never reads it.
 - Owns the project's Secure Boot keys (`internal/secureboot`, `Decisions.md` §31), for the Talos and own-distro nodes that boot UKIs the project signs. `bootstrap gen-secureboot-keys` generates an RSA-2048 PK, a KEK issued by PK and a db key issued by KEK, offline. It writes the certs, the db key, an EFI signature list (`.esl`) per variable and the signed enrollment payloads (`PK.auth`, `KEK.auth`, `db.auth` and, with Microsoft's CA, `dbx.auth`, which systemd-boot auto-enrolls from `/loader/keys/<name>/` on install media while the machine is in Setup Mode) to `--output-dir` (default `bootstrap-output/secureboot/`). The **PK and KEK private keys go to a separate `--offline-dir`** (default `bootstrap-output/secureboot-offline/`), holding nothing else, so the operator can move that directory to offline storage whole. db includes Microsoft's third-party UEFI CA certs (2011 and 2023, vendored in `internal/third_party/msuefica`) by default, because GPU, NIC and storage option ROMs are signed under them. With them comes dbx: Microsoft's x64 list of revoked binaries (vendored in `internal/third_party/msdbx`), re-signed by KEK, because that CA has signed shims and boot loaders that were later revoked and clearing a machine's factory keys can empty its dbx. `--no-microsoft-ca` leaves out both. Microsoft's KEK and Windows PCA are never enrolled. Both commands write each file to a temporary file and rename it into place only once every write has succeeded, so a failed run leaves the previous files as they were. `bootstrap sign-efi <image>` Authenticode-signs a PE/EFI binary (a UKI) with the db key (`--key`/`--cert`, defaulting to `bootstrap-output/secureboot/db.{key,crt}`).
 
-Once node #0 is up and reachable, this tool's job is done; steady-state provisioning moves to the web app.
+- Is also the operator's client for the web app's API, once the web app runs: `bootstrap api <verb>` joins the web app's WireGuard tunnel as an operator peer and calls one route per verb (see § Who can reach the API, "The operator CLI").
+
+Once node #0 is up and reachable, this tool's bootstrap job is done; steady-state provisioning moves to the web app.
 
 ### 2. Web app (Go)
 
@@ -150,8 +152,36 @@ listeners run is deployment config:
   `WIREGUARD_OPERATOR_PEERS`. The web app logs its own public key at startup
   (`wireguard public key …`). Use that key as the operator's peer, with
   `AllowedIPs = 10.100.0.1/32` and the web app's `WIREGUARD_ENDPOINT` as its
-  endpoint. Then call `http://10.100.0.1/…` through the tunnel. Every sync
+  endpoint. Then call `http://10.100.0.1/…` through the tunnel, or use the
+  operator CLI below, which needs no OS WireGuard interface. Every sync
   re-registers the operator peers alongside the instances.
+- **The operator CLI (#196).** `bootstrap api <verb>` brings up its own
+  userspace WireGuard peer in-process (`wireguard.StartClient`, the netstack
+  the web app uses), so it needs no OS interface and no root, and calls the
+  API through it. It authenticates by being the listed operator peer; it is
+  plain HTTP for now (TLS and server-cert pinning: #397). The HTTP client is
+  `internal/apiclient`, separate from the tunnel dialer. Its inputs are flags,
+  not a config file, so a script passes them inline:
+
+  | Flag | Default | Meaning |
+  | --- | --- | --- |
+  | `--private-key-file` | required | File holding this peer's base64 private key (`wg genkey`). Never a flag value, which `ps` would show. |
+  | `--local-addr` | required | This peer's address, as listed for its key in `WIREGUARD_OPERATOR_PEERS`. |
+  | `--server-public-key` | required | The web app's public key, from its startup log. |
+  | `--endpoint` | required | The web app's `WIREGUARD_ENDPOINT`, `host:port`. A host name is resolved once, and each address it resolves to (an A and an AAAA record, say) is tried in turn until one answers; the error names each address that didn't. |
+  | `--server-addr` | `10.100.0.1` | The web app's tunnel address; the API is on port 80 there. |
+  | `--listen-port` | `0` (OS picks) | Local UDP port for this peer. |
+  | `--connect-timeout` | `30s` | How long to wait for the tunnel to answer, at each address `--endpoint` resolves to. Bounds connecting only, not a download. A key the web app doesn't list never gets an answer, so it fails here. |
+
+  Verbs, one per route: `status`, `networks`, `instances`, `sync` and
+  `deploy-agent <instance>` print the server's JSON on stdout.
+  `seed <instance> --output <file>` saves the seed JSON, and
+  `image <instance> --output <file|device>` streams the image as it arrives,
+  never buffered; both create a new file mode 0600, `-` writes to stdout, and
+  a download cut short exits non-zero and removes the partial file. Any 4xx or
+  5xx (a failed sync is a 502) exits non-zero with the server's message.
+  `scripts/validate/operator-cli-drives-api-over-tunnel.sh` drives every verb
+  against the compose stack.
 - **Nothing configured.** The API is served on no listener, and startup warns.
 - **Dev.** `docker-compose.yml` opts in with `API_HOST_LISTEN_ADDR=:8080`,
   published on the host's `127.0.0.1` only, so `curl localhost:8080` works.
