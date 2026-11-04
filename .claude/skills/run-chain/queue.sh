@@ -30,17 +30,42 @@
 # no slower than without them, and one fetch per `run` row costs ~0.5 s each.
 #
 # `proposed` wins over `Ready`: an issue carrying both hasn't been triaged, and
-# the triage gate is the point of the label. Run order is most-unblocking
-# first, then issue number; with arguments, it's the order given.
+# the triage gate is the point of the label.
+#
+# Order (#392): `--order <key>[,<key>...]`, keys `p0` (labelled first),
+# `unblocks` (most open dependents first) and `number` (ascending, always the
+# final tiebreaker). The default, p0,unblocks,number, and the key check are
+# lib.sh's (order_default, order_json), and the sort is lib.jq's ready_order,
+# the same ones next.sh's Ready section uses. With issue numbers and no
+# --order, the order given wins; with both, --order sorts the given issues.
+# Order never overrides a blocker: pass 2 still parks an issue behind it.
+# `[p0]` marks a p0 row in the Run list.
 # shellcheck disable=SC2016 # the $vars in single quotes are GraphQL's and jq's
 set -euo pipefail
 
-for a in "$@"; do
-	[[ $a =~ ^#?[0-9]+$ ]] || {
-		echo "usage: queue.sh [<issue> ...]" >&2
-		exit 2
-	}
+# shellcheck source=SCRIPTDIR/../lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
+
+usage() {
+	echo "usage: queue.sh [--order <key>[,<key>...]] [<issue> ...]   keys: p0, unblocks, number (default $order_default)" >&2
+	exit 2
+}
+order_arg=$order_default order_set=false nums=()
+while [ $# -gt 0 ]; do
+	case $1 in
+	--order) [ $# -ge 2 ] || usage; order_arg=$2 order_set=true; shift 2 ;;
+	--order=*) order_arg=${1#--order=} order_set=true; shift ;;
+	*)
+		[[ $1 =~ ^#?[0-9]+$ ]] || usage
+		nums+=("$1")
+		shift
+		;;
+	esac
 done
+order=$(order_json "$order_arg") || usage
+# Given issues keep their order unless --order says otherwise.
+given=false
+if [ ${#nums[@]} -gt 0 ] && [ "$order_set" = false ]; then given=true; fi
 
 skills=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$(git rev-parse --show-toplevel)"
@@ -73,15 +98,15 @@ gh pr list --state open --json number,headRefName >"$tmp/prs.json"
 git for-each-ref --format='%(refname:short)' 'refs/heads/eharvey/*' |
 	sed -n 's|^eharvey/#\([0-9][0-9]*\)$|\1|p' | jq -R 'tonumber' | jq -s . >"$tmp/local.json"
 
-printf '%s\n' "$@" | tr -d '#' | jq -R 'select(. != "") | tonumber' | jq -s . >"$tmp/want.json"
+printf '%s\n' ${nums[@]+"${nums[@]}"} | tr -d '#' | jq -R 'select(. != "") | tonumber' | jq -s . >"$tmp/want.json"
 
-jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local.json" --slurpfile want "$tmp/want.json" '
+jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local.json" --slurpfile want "$tmp/want.json" \
+	--argjson order "$order" --argjson given "$given" '
   include "lib";
   include "file-task/done-when";
   def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 80 then .[:79] + "…" else . end;
   def labels: [.labels.nodes[].name];
   def pr($n): [$prs[0][] | select(.headRefName == "eharvey/#\($n)") | .number] | first;
-  def unblocks: [.blocking.nodes[] | select(.state == "OPEN")] | length;
 
   (map({key: (.number | tostring), value: .}) | from_entries) as $by
   # An issue plus, for a bundle parent, its open children: what ships in its commit.
@@ -93,13 +118,17 @@ jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local
       elif any(members[]; (.body | type) != "string") then {lane: "full", lw: "body unreadable"}
       elif ([members[] | cites[]] | unique | length) > 0 then {lane: "full", lw: "body cites \([members[] | cites[]] | unique | join(" "))"}
       else {lane: "fast", lw: "small; body cites no §N and no Decisions.md"} end;
-  (if ($want[0] | length) > 0 then $want[0]
-     else [.[] | select(labels | index("Ready"))] | sort_by(-unblocks, .number) | map(.number) end) as $cand
+  # A given number that is no open issue sorts as a bare node, so it still
+  # gets its `skip` row.
+  (if $given then $want[0]
+   elif ($want[0] | length) > 0 then $want[0] | unique
+     | map($by[tostring] // {number: ., labels: {nodes: []}, blocking: {nodes: []}}) | ready_order($order) | map(.number)
+   else [.[] | select(labels | index("Ready"))] | ready_order($order) | map(.number) end) as $cand
   # Pass 1: eligibility, ignoring blockers.
   | [ $cand[] | . as $n | $by[$n | tostring] as $i
       | if $i == null then {n: $n, t: "(not found)", v: "skip", why: "not an open issue"}
         else $i | (labels) as $l | ([members[].blockedBy.nodes[] | select(.state == "OPEN") | eff(.number)] | unique - [$n]) as $b
-          | {n: $n, t: (.title | short), b: $b} + lane +
+          | {n: $n, t: (.title | short), b: $b, p0: is_p0} + lane +
           if ($l | index("proposed")) then {v: "skip", why: "proposed: awaiting the operator'"'"'s triage"}
           elif ($l | index("Ready") | not) then {v: "skip", why: "not Ready"}
           elif bundled then {v: "skip", why: "sub-issue of bundle #\(.parent.number): ships with it"}
@@ -124,7 +153,7 @@ jq -r -L "$skills" --slurpfile prs "$tmp/prs.json" --slurpfile local "$tmp/local
       | .ok += $new)
   | .rows | map(if .v == "?" then .v = "skip" | .why = "blocked by open \(.b | map("#\(.)") | join(", ")), outside this run" else . end)
   | "== Run (in this order) ==",
-    ([.[] | select(.v == "run") | "#\(.n)  \(.t)\n      lane \(.lane): \(.lw)"] | if length == 0 then "(none)" else .[] end),
+    ([.[] | select(.v == "run") | "#\(.n)\(if .p0 then " [p0]" else "" end)  \(.t)\n      lane \(.lane): \(.lw)"] | if length == 0 then "(none)" else .[] end),
     "",
     "== Parked ==",
     ([.[] | select(.v == "park") | "#\(.n)  \(.t)\n      \(.why)"] | if length == 0 then "(none)" else .[] end),

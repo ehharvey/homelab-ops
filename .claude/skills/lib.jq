@@ -23,3 +23,21 @@ def open_sub_issues: .[] | select(.state == "open");
 # The decisions an issue's body cites: each `§<digit>…`, and `Decisions.md`
 # when it mentions the file. Any one makes /run-chain's lane `full`.
 def cites: (.body // "") | [scan("§[0-9]+"), (if test("Decisions\\.md") then "Decisions.md" else empty end)] | unique;
+
+# The open issues this one blocks, which landing it unblocks. Input: an issue
+# node with `blocking { nodes { number state } }`.
+def unblocks: [.blocking.nodes[] | select(.state == "OPEN") | .number];
+
+# Labelled `p0`: the operator wants it taken before other Ready issues (#392).
+def is_p0: any(.labels.nodes[]; .name == "p0");
+
+# The order /next lists Ready issues in and /run-chain runs them in (#392):
+# sort issue nodes by $keys, a list of `p0` (labelled first), `unblocks` (most
+# open dependents first) and `number` (ascending). The number is always the
+# final tiebreaker, listed or not. lib.sh's order_json checks the keys and
+# holds the default. Input: an array of issue nodes.
+def ready_order($keys):
+  sort_by([$keys[] as $k
+    | if $k == "p0" then (if is_p0 then 0 else 1 end)
+      elif $k == "unblocks" then -(unblocks | length)
+      else .number end] + [.number]);

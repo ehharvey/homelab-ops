@@ -1,7 +1,7 @@
 ---
 name: run-chain
 description: Work through a chain of Ready issues from one root session. Each issue gets a decisions-scout brief (skipped for a fast-lane `small` issue) and an issue-worker in its own worktree, then a Done-when audit and `make ship`. Never `make lgtm`. Workers' "Noticed" items are filed as `proposed` issues for triage. Operator-invoked only.
-argument-hint: "[<issue> ...]"
+argument-hint: "[--order <key>[,<key>...]] [<issue> ...]"
 disable-model-invocation: true
 ---
 
@@ -72,7 +72,16 @@ usual, and replace the ledger's `root:` line with this root's.
 ## 1. Queue
 
     make wt-gc                                  # once, at the start
-    .claude/skills/run-chain/queue.sh [<n> ...] # run / park / skip, with reasons
+    .claude/skills/run-chain/queue.sh [--order <keys>] [<n> ...] # run / park / skip, with reasons
+
+`/run-chain`'s arguments pass through, e.g. `/run-chain --order unblocks,p0`
+or `/run-chain --order p0 240 257`. `--order` keys (#392): `p0` (labelled
+`p0` first), `unblocks` (most open dependents first), `number` (ascending,
+always the final tiebreaker). The default is `p0,unblocks,number`, the same
+as `/next`'s. Given issue numbers without `--order` keep the order given;
+with it, `--order` sorts them. Order never beats a blocker: a blocked issue
+still parks. `[p0]` marks a `p0` row. The chain runs in the Run list's
+printed order.
 
 No arguments takes every `Ready` issue. Arguments are filtered the same way,
 so only `Ready` ones run. `queue.sh`'s header says what each verdict means. A

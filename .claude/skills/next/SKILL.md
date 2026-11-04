@@ -1,13 +1,21 @@
 ---
 name: next
 description: What to work on next in this repo. Reports Ready issues with their blockers, the current Roadmap phase's unchecked items, open PRs with check status, and in-flight branches, in one bounded call, then recommends. Use for "what's next", "what should I work on", "what's ready", "status", "where are we".
+argument-hint: "[--order <key>[,<key>...]]"
 ---
 
 # /next
 
 Run the report once:
 
-    .claude/skills/next/next.sh
+    .claude/skills/next/next.sh [--order <key>[,<key>...]]
+
+`/next <args>` passes its arguments through. `--order` sorts the Ready section
+only (#392). Keys: `p0` (issues labelled `p0` first), `unblocks` (most open
+dependents first), `number` (ascending). The default is
+`p0,unblocks,number`, and `number` always breaks the last tie. An unknown,
+empty or repeated key exits 2 with a usage line. `[…,p0]` beside the phase
+tag marks a `p0` issue.
 
 It makes all the gh calls and applies all the filtering itself, and prints
 under ~300 lines. Don't re-derive any part of it with your own `gh issue list`
@@ -55,7 +63,9 @@ Give a short recommendation, not the report pasted back:
 1. what's waiting on the operator (PRs to review / `make lgtm`, proposed
    issues to triage),
 2. the top one to three things to pick up, in order, each with one line on why
-   and on what it unblocks,
+   and on what it unblocks. Follow the Ready section's printed order unless
+   the report overrides it (a blocker, an in-flight PR, a `bundled` child);
+   say why when you skip one,
 3. anything stale you noticed (Roadmap drift, dependency inconsistencies,
    blockers that look outdated).
 
