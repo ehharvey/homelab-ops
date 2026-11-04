@@ -182,6 +182,10 @@ the main context:
   work. The handoff carries the *distilled* spec (a `decisions-scout` brief
   plus the exact `§N`/doc sections to read), not "read `docs/` in full". Every
   file you tell it to read, it pays for again.
+- **`issue-refiner`** (#404): `/refine-issue` for one issue as a subagent,
+  when refining several at once or under `/run-chain`. Read-only until the
+  operator answers; give it a `decisions-scout` brief. Its four tools keep its
+  startup context small, which an all-tools agent's isn't.
 - The built-in **`Explore`**: Incus/IncusOS source questions in the Go module
   cache (`$(go env GOMODCACHE)/github.com/lxc/incus/v7@…`). `gopls` only
   indexes packages this repo imports, so it can't see e.g. the Incus client.

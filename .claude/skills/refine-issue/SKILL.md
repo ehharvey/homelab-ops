@@ -109,9 +109,16 @@ when the refinement grew the issue past it or left a design question open.
 
 ## As a subagent
 
-Under `/run-chain`, you can't ask the operator or spawn `decisions-scout`:
+A session that hands refining to a subagent (`/run-chain`, or one refining
+several issues at once) starts the **`issue-refiner`** agent
+(`.claude/agents/issue-refiner.md`, #404), one per issue, with this mode's
+steps. Its tools are Read, Grep, Glob and Bash, so it doesn't pay an
+all-tools agent's ~34k-token startup context. As a subagent, you can't ask the
+operator or spawn `decisions-scout`:
 
 - The handoff carries the scout brief; it is step 2.
+- Step 2's gopls tools and `Explore` aren't yours: use `go doc` and bounded
+  grep for Go, and put an Incus-behaviour question under `open questions`.
 - Do steps 1–5 read-only, planning the links and children without setting
   or filing them, and **stop before any edit**. Hand back with verdict
   `awaiting operator answers`, the questions under `open questions`, and the

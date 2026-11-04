@@ -127,6 +127,11 @@ the ID to send work back.
 When a worker finishes, start the next queued issue before auditing, so the
 slot doesn't sit idle.
 
+An issue the operator asks the run to *refine* rather than implement goes to
+an **`issue-refiner`** (background, no worktree) instead of an
+`issue-worker`: "Refine #<n> as `/refine-issue`'s subagent mode", plus its
+scout brief. It counts against the worker limit like any other.
+
 ## 3. Audit "Done when"
 
 Check the worker's claims against the branch, not against its prose. The
@@ -150,9 +155,11 @@ gaps, then audit again. A second miss **parks** the issue, with the gaps as
 the reason. An item that can't be met in a worktree at all (e.g. it needs the
 operator) parks it straight away.
 
-A hand-back with verdict `awaiting operator answers` (`/refine-issue` as a
-subagent) isn't a miss: ask its open questions with `AskUserQuestion`, then
-resume the same worker with the answers via `SendMessage`.
+A hand-back with verdict `awaiting operator answers` (an `issue-refiner`,
+§ 2) isn't a miss: ask its open questions with `AskUserQuestion`, then
+resume the same worker with the answers via `SendMessage`. Its second
+hand-back (`refined:`) has no branch to audit or ship: put its Ready verdict
+in the ledger.
 
 Nor is `needs full lane` from a fast-lane worker. Re-queue the issue as
 `full`: mark it so in the ledger with what the worker hit, run
