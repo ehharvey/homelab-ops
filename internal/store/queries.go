@@ -21,8 +21,8 @@ VALUES (?, ?, ?, ?, ?)`
 
 // -- name: ReplaceInstance :exec
 const replaceInstanceSQL = `
-INSERT OR REPLACE INTO instances (name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT OR REPLACE INTO instances (name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip, runtime)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // -- name: ReplaceApp :exec
 const replaceAppSQL = `
@@ -47,7 +47,7 @@ SELECT name, cidr, gateway, dhcp_excluded_range, dns FROM networks WHERE name = 
 
 // -- name: ListInstances :many
 const listInstancesSQL = `
-SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances ORDER BY name`
+SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip, runtime FROM instances ORDER BY name`
 
 // -- name: ListInstanceTunnelIPs :many
 const listInstanceTunnelIPsSQL = `
@@ -55,7 +55,7 @@ SELECT name, tunnel_ip FROM instances ORDER BY name`
 
 // -- name: GetInstance :one
 const getInstanceSQL = `
-SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip FROM instances WHERE name = ?`
+SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications, tunnel_ip, runtime FROM instances WHERE name = ?`
 
 // -- name: ListApps :many
 const listAppsSQL = `
@@ -87,3 +87,11 @@ const setInstanceCredentialSQL = `
 INSERT INTO instance_credentials (instance_name, wireguard_private_key, bootstrap_cert_pem, bootstrap_key_pem, created_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (instance_name) DO NOTHING`
+
+// -- name: CountColumn :one
+// pragma_table_info is SQLite's table-valued form of PRAGMA table_info, so the
+// table name can be a parameter.
+const countColumnSQL = `SELECT count(*) FROM pragma_table_info(?) WHERE name = ?`
+
+// -- name: AddInstancesRuntime :exec
+const addInstancesRuntimeSQL = `ALTER TABLE instances ADD COLUMN runtime TEXT NOT NULL DEFAULT ''`

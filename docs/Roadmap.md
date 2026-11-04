@@ -247,9 +247,10 @@ work is tracked separately and is not part of this section.)
 - [x] An `os` field on `Instance` and the `internal/hostos` seam (validate,
   render install media and config), with IncusOS behind it, wrapping `seed`
   and `flasher` (`docs/Decisions.md` §15 Prerequisite 1, §31): DONE; see #398
-- [ ] A per-cluster `runtime` (`incus | kubernetes`) and the allowed-pairs
-  table of `os` and `runtime`, checked at parse (`docs/Decisions.md` §31). To
-  file.
+- [x] A cluster `runtime` (`incus | kubernetes`) on `Instance`, and the
+  allowed-pairs table of `os` and `runtime`, checked in `config.Validate`
+  along with one `os` and one `runtime` per fleet (`docs/Decisions.md` §30,
+  §31): DONE; see #487
 - [ ] The `internal/clusterruntime` seam (bootstrap, join, upgrade, health),
   with Incus behind it, wrapping `agent`, `agentdeploy` and `leaderelection`
   (`docs/Decisions.md` §31). To file.
@@ -505,7 +506,7 @@ run from git, and a node's logs and resource metrics show up in Grafana.
 - [ ] Cluster membership config model: declare which `Instance` bootstraps
   the cluster vs. joins it, with no addresses required in git, and scope
   `kind: Designation` to a cluster (`docs/Decisions.md` §30). The same-OS
-  check arrives in #487, with the per-cluster `runtime` — see #181
+  check landed fleet-wide in #487; this narrows it to each cluster — see #181
 - [ ] Tie `bootstrap`'s `flasher-tool` to the same pin as the web image, so
   the two cannot drift from one another: Incus rejects a joiner whose version
   differs from the cluster's. IncusOS's own updates are the larger source of

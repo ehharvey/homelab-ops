@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"net/netip"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -393,5 +395,104 @@ func TestReplaceRefusesNonDefaultHostOS(t *testing.T) {
 	}
 	if i.HostOS() != config.OSIncusOS {
 		t.Errorf("stored os: incusos reads back as HostOS %q", i.HostOS())
+	}
+}
+
+// TestReplaceRoundTripsRuntime pins that the store keeps runtime as written:
+// an omitted runtime reads back omitted, and an explicit one, the default or
+// not, reads back as itself.
+func TestReplaceRoundTripsRuntime(t *testing.T) {
+	s, ctx := openTestStore(t)
+	cfg := config.Config{
+		Networks: []config.Network{{Name: "lan", CIDR: netip.MustParsePrefix("10.0.0.0/24")}},
+		Instances: []config.Instance{
+			{Name: "node0", Network: "lan"},
+			{Name: "node1", Network: "lan", Runtime: config.RuntimeIncus},
+			{Name: "node2", Network: "lan", Runtime: config.RuntimeKubernetes},
+		},
+	}
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	got, err := s.Instances(ctx)
+	if err != nil {
+		t.Fatalf("Instances: %v", err)
+	}
+	if !reflect.DeepEqual(got, cfg.Instances) {
+		t.Errorf("Instances() = %+v, want %+v", got, cfg.Instances)
+	}
+	one, ok, err := s.Instance(ctx, "node2")
+	if err != nil || !ok || one.Runtime != config.RuntimeKubernetes {
+		t.Errorf("Instance(node2) = %+v, %v, %v, want runtime %q", one, ok, err, config.RuntimeKubernetes)
+	}
+}
+
+// preRuntimeInstancesSQL is the instances table as schema.sql created it
+// before the runtime column (#487): what an existing store file holds.
+const preRuntimeInstancesSQL = `
+CREATE TABLE instances (
+    name         TEXT NOT NULL PRIMARY KEY,
+    mac          TEXT NOT NULL,
+    network      TEXT NOT NULL,
+    static_ip    TEXT NOT NULL,
+    disk         TEXT NOT NULL,
+    nic          TEXT NOT NULL,
+    tpm          INTEGER NOT NULL,
+    secure_boot  INTEGER NOT NULL,
+    applications TEXT NOT NULL,
+    tunnel_ip    TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO instances VALUES ('old0', '', 'lan', '', '', '', 0, 0, '[]', '');`
+
+// TestOpenAddsRuntimeToPreRuntimeStore pins that a store file created before
+// the runtime column opens, gains the column (its existing rows reading back
+// with runtime omitted), stores an Instance with a runtime, and opens again
+// without trying to add the column twice.
+func TestOpenAddsRuntimeToPreRuntimeStore(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "store.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old store: %v", err)
+	}
+	if _, err := old.ExecContext(ctx, preRuntimeInstancesSQL); err != nil {
+		t.Fatalf("create pre-runtime instances table: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close old store: %v", err)
+	}
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open(pre-runtime store): %v", err)
+	}
+	i, ok, err := s.Instance(ctx, "old0")
+	if err != nil || !ok || i.Runtime != "" {
+		t.Fatalf("Instance(old0) = %+v, %v, %v, want the existing row with runtime omitted", i, ok, err)
+	}
+	cfg := config.Config{
+		Networks:  []config.Network{{Name: "lan", CIDR: netip.MustParsePrefix("10.0.0.0/24")}},
+		Instances: []config.Instance{{Name: "node0", Network: "lan", Runtime: config.RuntimeKubernetes}},
+	}
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace into a migrated store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen a migrated store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	i, ok, err = s.Instance(ctx, "node0")
+	if err != nil || !ok || i.Runtime != config.RuntimeKubernetes {
+		t.Errorf("Instance(node0) after reopen = %+v, %v, %v, want runtime %q", i, ok, err, config.RuntimeKubernetes)
 	}
 }

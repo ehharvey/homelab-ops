@@ -2,6 +2,8 @@ package config
 
 import (
 	"net/netip"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -277,32 +279,171 @@ func TestValidateAcceptsIncusOS(t *testing.T) {
 	}
 }
 
-// TestValidateRejectsHostOS covers both rejections of os, which must read
-// differently: a name the format doesn't know, and a known OS with no backend.
-func TestValidateRejectsHostOS(t *testing.T) {
+// TestValidateHostOSAndRuntime covers one Instance's os and runtime: every
+// allowed-pairs row, allowed and disallowed, for both runtimes, and the check
+// order that gives each Instance the one error naming its fix. An unknown os
+// or runtime reports only itself; a disallowed pair reports only the pair,
+// even when its os or runtime also has no backend; an allowed pair goes on to
+// the no-backend errors, os then runtime. The fleet has one Instance, so the
+// one-cluster check can't add to it.
+func TestValidateHostOSAndRuntime(t *testing.T) {
+	const (
+		unknownOS   = `is not a known host OS; known: incusos, talos, debian`
+		talosNoOS   = `"talos" has no backend yet; implemented: incusos`
+		debianNoOS  = `"debian" has no backend yet; implemented: incusos`
+		k8sNoRT     = `"kubernetes" has no backend yet; implemented: incus`
+		unknownRT   = `is not a known runtime; known: incus, kubernetes`
+		omittedNote = ` (the default when runtime is omitted)`
+	)
+	type want struct{ field, msg string }
 	tests := []struct {
-		os      string
-		wantMsg string
+		os, runtime string
+		want        []want
 	}{
-		{"windows", `"windows" is not a known host OS; known: incusos, talos, debian`},
-		{"IncusOS", `"IncusOS" is not a known host OS; known: incusos, talos, debian`},
-		{OSTalos, `"talos" has no backend yet; implemented: incusos`},
-		{OSDebian, `"debian" has no backend yet; implemented: incusos`},
+		// incusos row: incus only.
+		{"", "", nil},
+		{OSIncusOS, "", nil},
+		{OSIncusOS, RuntimeIncus, nil},
+		{"", RuntimeIncus, nil},
+		{OSIncusOS, RuntimeKubernetes, []want{{"runtime", `os "incusos" only runs incus, not "kubernetes"`}}},
+		{"", RuntimeKubernetes, []want{{"runtime", `os "incusos" only runs incus, not "kubernetes"`}}},
+		// talos row: kubernetes only. The disallowed pair is reported alone,
+		// not "talos has no backend yet".
+		{OSTalos, RuntimeIncus, []want{{"runtime", `os "talos" only runs kubernetes, not "incus"`}}},
+		{OSTalos, "", []want{{"runtime", `os "talos" only runs kubernetes, not "incus"` + omittedNote}}},
+		{OSTalos, RuntimeKubernetes, []want{{"os", talosNoOS}, {"runtime", k8sNoRT}}},
+		// debian row: both runtimes, so neither is a pair error.
+		{OSDebian, RuntimeIncus, []want{{"os", debianNoOS}}},
+		{OSDebian, "", []want{{"os", debianNoOS}}},
+		{OSDebian, RuntimeKubernetes, []want{{"os", debianNoOS}, {"runtime", k8sNoRT}}},
+		// An unknown os reports only itself, whatever the runtime.
+		{"windows", "", []want{{"os", `"windows" ` + unknownOS}}},
+		{"IncusOS", "", []want{{"os", `"IncusOS" ` + unknownOS}}},
+		{"windows", RuntimeKubernetes, []want{{"os", `"windows" ` + unknownOS}}},
+		{"windows", "docker", []want{{"os", `"windows" ` + unknownOS}}},
+		// An unknown runtime reports only itself, whatever the os.
+		{OSIncusOS, "docker", []want{{"runtime", `"docker" ` + unknownRT}}},
+		{OSTalos, "Kubernetes", []want{{"runtime", `"Kubernetes" ` + unknownRT}}},
+		{OSDebian, "docker", []want{{"runtime", `"docker" ` + unknownRT}}},
 	}
 	for _, tc := range tests {
-		t.Run(tc.os, func(t *testing.T) {
+		t.Run(tc.os+"+"+tc.runtime, func(t *testing.T) {
 			cfg := Config{
-				Networks: []Network{validNetwork()},
-				Instances: []Instance{
-					{Name: "node0", Network: "home-lan"},
-					{Name: "node1", Network: "home-lan", OS: tc.os},
-				},
+				Networks:  []Network{validNetwork()},
+				Instances: []Instance{{Name: "node0", Network: "home-lan", OS: tc.os, Runtime: tc.runtime}},
 			}
-			want := Issue{Path: "instances[1].os", Message: tc.wantMsg}
-			if got := Validate(cfg); len(got) != 1 || got[0] != want {
-				t.Fatalf("Validate() = %#v, want [%#v]", got, want)
+			var wantIssues Issues
+			for _, w := range tc.want {
+				wantIssues = append(wantIssues, Issue{Path: "instances[0]." + w.field, Message: w.msg})
+			}
+			if got := Validate(cfg); !reflect.DeepEqual(got, wantIssues) {
+				t.Fatalf("Validate(os %q, runtime %q) = %#v, want %#v", tc.os, tc.runtime, got, wantIssues)
 			}
 		})
+	}
+}
+
+// TestAllowedRuntimesCoversKnownNames pins the allowed-pairs table to the
+// known names: every known host OS has a non-empty row, the table has no row
+// for an unknown OS, and every row names only known runtimes. A new host OS
+// that forgot its row would otherwise get a pair error naming no runtime.
+func TestAllowedRuntimesCoversKnownNames(t *testing.T) {
+	for _, hostOS := range hostOSes {
+		if len(allowedRuntimes[hostOS]) == 0 {
+			t.Errorf("host OS %q has no allowed-runtimes row", hostOS)
+		}
+	}
+	for hostOS, rts := range allowedRuntimes {
+		if !slices.Contains(hostOSes, hostOS) {
+			t.Errorf("allowed-runtimes row for unknown host OS %q", hostOS)
+		}
+		for _, rt := range rts {
+			if !slices.Contains(runtimes, rt) {
+				t.Errorf("host OS %q's row names unknown runtime %q", hostOS, rt)
+			}
+		}
+	}
+}
+
+// TestValidateOneClusterPerFleet covers the fleet-wide rule: every Instance is
+// a member of the fleet's one cluster, so all must resolve to the same os and
+// the same runtime. Resolved values are compared (omitted equals the
+// default), and an unknown name, which has its own error, is left out.
+func TestValidateOneClusterPerFleet(t *testing.T) {
+	node := func(name, hostOS, rt string) Instance {
+		return Instance{Name: name, Network: "home-lan", OS: hostOS, Runtime: rt}
+	}
+	tests := []struct {
+		name      string
+		instances []Instance
+		want      Issues // the complete result, per-Instance issues included
+	}{
+		{
+			name:      "omitted equals the default",
+			instances: []Instance{node("node0", "", ""), node("node1", OSIncusOS, RuntimeIncus), node("node2", "", RuntimeIncus)},
+		},
+		{
+			name:      "mixed runtime",
+			instances: []Instance{node("node0", OSDebian, ""), node("node1", OSDebian, RuntimeKubernetes)},
+			want: Issues{
+				{Path: "instances[0].os", Message: `"debian" has no backend yet; implemented: incusos`},
+				{Path: "instances[1].os", Message: `"debian" has no backend yet; implemented: incusos`},
+				{Path: "instances[1].runtime", Message: `"kubernetes" has no backend yet; implemented: incus`},
+				{Path: "instances[1].runtime", Message: `"kubernetes" differs from instances[0]'s "incus": a fleet is one cluster, and its members all run one runtime`},
+			},
+		},
+		{
+			name:      "mixed os",
+			instances: []Instance{node("node0", "", ""), node("node1", OSDebian, RuntimeIncus)},
+			want: Issues{
+				{Path: "instances[1].os", Message: `"debian" has no backend yet; implemented: incusos`},
+				{Path: "instances[1].os", Message: `"debian" differs from instances[0]'s "incusos": a fleet is one cluster, and its members all run one host OS`},
+			},
+		},
+		{
+			name:      "mixed os and runtime report both",
+			instances: []Instance{node("node0", "", ""), node("node1", OSTalos, RuntimeKubernetes)},
+			want: Issues{
+				{Path: "instances[1].os", Message: `"talos" has no backend yet; implemented: incusos`},
+				{Path: "instances[1].runtime", Message: `"kubernetes" has no backend yet; implemented: incus`},
+				{Path: "instances[1].os", Message: `"talos" differs from instances[0]'s "incusos": a fleet is one cluster, and its members all run one host OS`},
+				{Path: "instances[1].runtime", Message: `"kubernetes" differs from instances[0]'s "incus": a fleet is one cluster, and its members all run one runtime`},
+			},
+		},
+		{
+			name:      "unknown names are left out",
+			instances: []Instance{node("node0", "windows", "docker"), node("node1", "", ""), node("node2", "", "docker")},
+			want: Issues{
+				{Path: "instances[0].os", Message: `"windows" is not a known host OS; known: incusos, talos, debian`},
+				{Path: "instances[2].runtime", Message: `"docker" is not a known runtime; known: incus, kubernetes`},
+			},
+		},
+		{
+			name:      "compared against the first known value",
+			instances: []Instance{node("node0", "windows", ""), node("node1", OSDebian, ""), node("node2", "", "")},
+			want: Issues{
+				{Path: "instances[0].os", Message: `"windows" is not a known host OS; known: incusos, talos, debian`},
+				{Path: "instances[1].os", Message: `"debian" has no backend yet; implemented: incusos`},
+				{Path: "instances[2].os", Message: `"incusos" differs from instances[1]'s "debian": a fleet is one cluster, and its members all run one host OS`},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Networks: []Network{validNetwork()}, Instances: tc.instances}
+			if got := Validate(cfg); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate() =\n%#v\nwant\n%#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClusterRuntimeDefault(t *testing.T) {
+	if got := (Instance{}).ClusterRuntime(); got != DefaultRuntime || DefaultRuntime != RuntimeIncus {
+		t.Errorf("ClusterRuntime() of an omitted runtime = %q, want %q", got, RuntimeIncus)
+	}
+	if got := (Instance{Runtime: RuntimeKubernetes}).ClusterRuntime(); got != RuntimeKubernetes {
+		t.Errorf("ClusterRuntime() = %q, want %q", got, RuntimeKubernetes)
 	}
 }
 

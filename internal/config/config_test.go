@@ -158,6 +158,39 @@ os: talos
 	}
 }
 
+// TestParseInstanceRuntime pins that runtime parses like os: Parse keeps
+// whatever was written, a disallowed or unimplemented value included
+// (Validate rejects that, not Parse), and ClusterRuntime applies the default.
+func TestParseInstanceRuntime(t *testing.T) {
+	const fleet = `
+kind: Instance
+name: node0
+---
+kind: Instance
+name: node1
+runtime: incus
+---
+kind: Instance
+name: node2
+runtime: kubernetes
+`
+	cfg, err := Parse(strings.NewReader(fleet))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	tests := []struct{ raw, resolved string }{
+		{"", RuntimeIncus},
+		{RuntimeIncus, RuntimeIncus},
+		{RuntimeKubernetes, RuntimeKubernetes},
+	}
+	for i, tc := range tests {
+		inst := cfg.Instances[i]
+		if inst.Runtime != tc.raw || inst.ClusterRuntime() != tc.resolved {
+			t.Errorf("Instances[%d]: Runtime = %q, ClusterRuntime() = %q, want %q, %q", i, inst.Runtime, inst.ClusterRuntime(), tc.raw, tc.resolved)
+		}
+	}
+}
+
 func TestParseEmptyInput(t *testing.T) {
 	cfg, err := Parse(strings.NewReader(""))
 	if err != nil {

@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS instances (
     tpm          INTEGER NOT NULL, -- 0/1
     secure_boot  INTEGER NOT NULL, -- 0/1
     applications TEXT NOT NULL, -- JSON array of strings
-    tunnel_ip    TEXT NOT NULL DEFAULT '' -- WireGuard overlay address, app-assigned (internal/wireguard.AssignTunnelIPs)
+    tunnel_ip    TEXT NOT NULL DEFAULT '', -- WireGuard overlay address, app-assigned (internal/wireguard.AssignTunnelIPs)
+    runtime      TEXT NOT NULL DEFAULT '' -- the runtime field as written, '' when omitted (config.Instance.ClusterRuntime); store.Open adds it to an older file
 );
 
 CREATE TABLE IF NOT EXISTS apps (

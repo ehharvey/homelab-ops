@@ -42,8 +42,11 @@ func (is Issues) Error() string {
 // time; Validate covers the relationships between fields: name non-empty, CIDR
 // present, gateway/DNS/static-IP/DHCP-range membership in the CIDR, and a
 // static IP falling inside its network's DHCP-excluded (static) range. Every
-// Instance needs a unique hostname-label name, a declared network, and an os
-// with an internal/hostos backend (omitted means DefaultOS). For an
+// Instance needs a unique hostname-label name, a declared network, an os
+// with an internal/hostos backend (omitted means DefaultOS), and a runtime
+// (omitted means DefaultRuntime) that its os can run and this build
+// implements; all Instances must share one os and one runtime, because a
+// fleet is one cluster. For an
 // App it covers the required fields Parse can't enforce (yaml.v3 has no notion
 // of a required key, so an omitted `replicas:` reaches here as a zero value)
 // and at most one per-node App per renderer type. For a Designation, it
@@ -115,12 +118,7 @@ func Validate(c Config) Issues {
 			}
 		}
 
-		// An unknown name is a typo or an OS the format doesn't know; a known
-		// one without a backend is a real OS this build can't provision yet.
-		// They're told apart because the operator's fix differs.
-		if msg := hostOSIssue(inst.HostOS()); msg != "" {
-			add(path+".os", msg)
-		}
+		validateHostOSAndRuntime(path, inst, add)
 
 		// Checked for every instance, DHCP or not: an unknown network would
 		// otherwise surface only later, as an IPAM or render error.
@@ -194,9 +192,83 @@ func Validate(c Config) Issues {
 		}
 	}
 
+	validateOneCluster(c.Instances, add)
 	validateDesignations(c, add)
 
 	return issues
+}
+
+// validateHostOSAndRuntime checks inst's os and runtime against the known
+// names, the allowed-pairs table (allowedRuntimes) and the implemented
+// backends, in that order, so an Instance gets the one error that names its
+// fix. An unknown os or runtime is a typo, and checking its pairing would only
+// add noise. A disallowed pair is reported alone, even when its os or runtime
+// also has no backend, because adding that backend wouldn't make the pair
+// valid. Only an allowed pair goes on to the no-backend errors, os then
+// runtime. An unknown name is told apart from a known one without a backend
+// because the operator's fix differs.
+func validateHostOSAndRuntime(path string, inst Instance, add func(path, msg string)) {
+	hostOS, rt := inst.HostOS(), inst.ClusterRuntime()
+	switch allowed := allowedRuntimes[hostOS]; {
+	case !slices.Contains(hostOSes, hostOS):
+		add(path+".os", hostOSIssue(hostOS))
+	case !slices.Contains(runtimes, rt):
+		add(path+".runtime", runtimeIssue(rt))
+	case !slices.Contains(allowed, rt):
+		msg := fmt.Sprintf("os %q only runs %s, not %q", hostOS, strings.Join(allowed, " or "), rt)
+		if inst.Runtime == "" {
+			msg += " (the default when runtime is omitted)"
+		}
+		add(path+".runtime", msg)
+	default:
+		if msg := hostOSIssue(hostOS); msg != "" {
+			add(path+".os", msg)
+		}
+		if msg := runtimeIssue(rt); msg != "" {
+			add(path+".runtime", msg)
+		}
+	}
+}
+
+// validateOneCluster checks that every Instance resolves to the same host OS
+// and the same cluster runtime. Config has no cluster entity, so every
+// Instance in a fleet is a member of its one cluster, and a cluster's members
+// all run one host OS (docs/Decisions.md §30) and one runtime. Resolved values
+// are compared, so an omitted os or runtime equals its default. An unknown
+// name is left out of the comparison: it already has its own error, and fixing
+// that typo is the change the operator needs. If a repo can later hold several
+// clusters (#181, #440), this narrows to each cluster's members.
+func validateOneCluster(instances []Instance, add func(path, msg string)) {
+	sameAcross := func(field string, value func(Instance) string, known []string, what string) {
+		first, firstIdx := "", -1
+		for i, inst := range instances {
+			v := value(inst)
+			if !slices.Contains(known, v) {
+				continue
+			}
+			if firstIdx < 0 {
+				first, firstIdx = v, i
+				continue
+			}
+			if v != first {
+				add(fmt.Sprintf("instances[%d].%s", i, field), fmt.Sprintf("%q differs from instances[%d]'s %q: a fleet is one cluster, and its members all run one %s", v, firstIdx, first, what))
+			}
+		}
+	}
+	sameAcross("os", Instance.HostOS, hostOSes, "host OS")
+	sameAcross("runtime", Instance.ClusterRuntime, runtimes, "runtime")
+}
+
+// runtimeIssue returns why rt can't be used as an Instance's cluster runtime,
+// or "" when it can.
+func runtimeIssue(rt string) string {
+	if RuntimeImplemented(rt) {
+		return ""
+	}
+	if slices.Contains(runtimes, rt) {
+		return fmt.Sprintf("%q has no backend yet; implemented: %s", rt, strings.Join(implementedRuntimeList, ", "))
+	}
+	return fmt.Sprintf("%q is not a known runtime; known: %s", rt, strings.Join(runtimes, ", "))
 }
 
 // hostOSIssue returns why hostOS can't be used as an Instance's host OS, or
