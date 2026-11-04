@@ -31,9 +31,9 @@ type leaderView struct {
 
 func (v leaderView) clustered() bool { return v.own.Location != incuslocal.UnclusteredLocation }
 
-// leaderWork is Tick's leader-only work: #203's creates, then #109's
-// upgrades, on one leaderView and within one passTimeout. It reports
-// upgradeAgents' drained and holds.
+// leaderWork is Tick's leader-only work: #203's creates (the runtime's
+// Join), then #109's upgrades (its Upgrade), on one leaderView and within one
+// passTimeout. It reports upgradeAgents' drained and holds.
 func (a *Agent) leaderWork(ctx context.Context, commit string) (drained bool, holds []string) {
 	pctx, cancel := context.WithTimeout(ctx, a.passTimeout)
 	defer cancel()
@@ -41,8 +41,9 @@ func (a *Agent) leaderWork(ctx context.Context, commit string) (drained bool, ho
 	if !ok {
 		return false, nil
 	}
-	a.ensureAgents(ctx, pctx, v)
-	return a.upgradeAgents(ctx, pctx, v)
+	rt, p := a.runtime(), LeaderPass{a: a, ctx: ctx, pctx: pctx, v: v}
+	rt.Join(p)
+	return rt.Upgrade(p)
 }
 
 // readLeaderView reads what both passes act on, and reports false, with the

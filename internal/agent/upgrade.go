@@ -297,7 +297,7 @@ func (a *Agent) upgradeHost(ctx context.Context, key string, v leaderView, inst 
 		return false, "" // couldn't be retired above; logged there, retried next tick
 	}
 
-	if a.sustainedHealthy(ctx, v, h, cand) {
+	if a.runtime().Health(Candidate{a: a, ctx: ctx, v: v, h: h, cand: cand}) {
 		switch {
 		case oldest.Name == a.self:
 			if err := a.reg.SetDraining(ctx, true, incusregistry.DrainSuperseded); err != nil {

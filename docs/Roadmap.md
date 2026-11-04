@@ -251,9 +251,10 @@ work is tracked separately and is not part of this section.)
   allowed-pairs table of `os` and `runtime`, checked in `config.Validate`
   along with one `os` and one `runtime` per fleet (`docs/Decisions.md` §30,
   §31): DONE; see #487
-- [ ] The `internal/clusterruntime` seam (bootstrap, join, upgrade, health),
-  with Incus behind it, wrapping `agent`, `agentdeploy` and `leaderelection`
-  (`docs/Decisions.md` §31). To file.
+- [x] The `internal/clusterruntime` seam (bootstrap, join, upgrade, health),
+  with Incus behind it, wrapping `agent` and `agentdeploy` in place;
+  `leaderelection` stays in the agent loop around the seam
+  (`docs/Decisions.md` §31): DONE; see #488
 - [x] Validate scripts take the backend as a parameter (`VALIDATE_OS`), still
   named for behaviour (`docs/Decisions.md` §31): DONE; see #486
 - [x] `internal/secureboot`: the project's PK, KEK and db, with Microsoft's

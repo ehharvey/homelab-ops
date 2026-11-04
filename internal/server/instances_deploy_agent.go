@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,14 +9,10 @@ import (
 	"net/http"
 
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
+	"github.com/ehharvey/homelab-ops/internal/clusterruntime"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/seed"
 )
-
-// errNoAgentApp marks a deploy-agent request against a fleet that declares
-// no agent App (agentdeploy.FindApp): nothing to deploy, a 422 like
-// errSeedInvalid.
-var errNoAgentApp = errors.New("no agent App declared")
 
 // deployAgentResponse reports what POST /instances/{name}/deploy-agent did
 // on the node: Status is "deployed" (201) or "already_deployed" (200), and
@@ -26,9 +23,10 @@ type deployAgentResponse struct {
 }
 
 // handleInstanceDeployAgent puts the first app-manager agent on name's node
-// (#100, docs/Decisions.md §27): over the node's WireGuard tunnel, with the
-// instance's minted one-shot bootstrap credential, which CreateInstance
-// revokes afterwards.
+// (#100, docs/Decisions.md §27), through its cluster runtime's Bootstrap
+// (internal/clusterruntime): over the node's WireGuard tunnel, with the
+// instance's minted one-shot bootstrap credential, which the create revokes
+// afterwards.
 //
 // It lists the node's instances first, so an existing agent instance is
 // reported rather than duplicated; the credential is revoked then too, since
@@ -65,58 +63,54 @@ func handleInstanceDeployAgent(store Store, tunnels TunnelSource, creds nodeprov
 			writeDeployAgentError(w, r, name, errInstanceNotFound)
 			return
 		}
+		rt, err := clusterruntime.ForInstance(inst)
+		if err != nil {
+			writeDeployAgentError(w, r, name, err)
+			return
+		}
 		apps, err := store.Apps(ctx)
 		if err != nil {
 			writeDeployAgentError(w, r, name, fmt.Errorf("list apps: %w", err))
 			return
 		}
-		app, ok := agentdeploy.FindApp(apps)
-		if !ok {
-			writeDeployAgentError(w, r, name, errNoAgentApp)
-			return
-		}
-		cred, err := nodeprovision.EnsureCredential(ctx, creds, name)
-		if err != nil {
-			writeDeployAgentError(w, r, name, fmt.Errorf("ensure credential: %w", err))
-			return
-		}
-		addr := net.JoinHostPort(inst.TunnelIP.String(), seed.IncusHTTPSPort)
 
-		existing, err := nodeprovision.InstanceNames(ctx, tunnels.DialContext, addr, cred.BootstrapCertPEM, cred.BootstrapKeyPEM)
-		if err != nil {
-			writeDeployAgentError(w, r, name, fmt.Errorf("%w: list instances: %w", errNodeIncus, err))
-			return
-		}
-		for _, n := range existing {
-			if agentdeploy.IsAgentInstance(app, inst, n) {
-				// Logged, not failed: the agent is there either way, and a
-				// cert the revoke left trusted needs manual cleanup, as
-				// after CreateInstance's.
-				if err := nodeprovision.RevokeCert(ctx, tunnels.DialContext, addr, cred.BootstrapCertPEM, cred.BootstrapKeyPEM); err != nil {
-					log.Printf("deploy agent to %q: revoke unused bootstrap credential: %v", name, err)
+		res, err := rt.Bootstrap(ctx, clusterruntime.BootstrapInput{
+			Apps:     apps,
+			Instance: inst,
+			Repo:     *repo,
+			Dial:     tunnels.DialContext,
+			Addr:     net.JoinHostPort(inst.TunnelIP.String(), seed.IncusHTTPSPort),
+			Credential: func(ctx context.Context) ([]byte, []byte, error) {
+				cred, err := nodeprovision.EnsureCredential(ctx, creds, name)
+				if err != nil {
+					return nil, nil, fmt.Errorf("ensure credential: %w", err)
 				}
-				writeJSON(w, deployAgentResponse{Status: "already_deployed", Instance: n})
-				return
-			}
-		}
-
-		req := agentdeploy.Desired(app, inst, *repo, agentdeploy.FirstGeneration)
-		if err := nodeprovision.CreateInstance(ctx, tunnels.DialContext, addr, cred.BootstrapCertPEM, cred.BootstrapKeyPEM, req); err != nil {
-			writeDeployAgentError(w, r, name, fmt.Errorf("%w: %w", errNodeIncus, err))
+				return cred.BootstrapCertPEM, cred.BootstrapKeyPEM, nil
+			},
+			OneShot: true,
+		})
+		if err != nil {
+			writeDeployAgentError(w, r, name, err)
 			return
 		}
-		writeJSONStatus(w, http.StatusCreated, deployAgentResponse{Status: "deployed", Instance: req.Name})
+		if res.AlreadyDeployed {
+			// Logged, not failed: the agent is there either way, and a
+			// cert the revoke left trusted needs manual cleanup, as after
+			// CreateInstance's.
+			if res.RevokeErr != nil {
+				log.Printf("deploy agent to %q: revoke unused bootstrap credential: %v", name, res.RevokeErr)
+			}
+			writeJSON(w, deployAgentResponse{Status: "already_deployed", Instance: res.Agent})
+			return
+		}
+		writeJSONStatus(w, http.StatusCreated, deployAgentResponse{Status: "deployed", Instance: res.Agent})
 	}
 }
 
-// errNodeIncus marks a failure talking to the node's Incus — the tunnel not
-// up yet, or the create itself failing there — as opposed to a fault in this
-// server: a 502.
-var errNodeIncus = errors.New("node incus")
-
 // writeDeployAgentError maps a deploy-agent failure to an HTTP response,
 // logging the full error first, in writeResolveSeedError's style: 404 for
-// an unknown instance, 422 for a fleet with no agent App, 409 for a
+// an unknown instance, 422 for an Instance whose runtime this build doesn't
+// implement or a fleet with no agent App, 409 for a
 // bootstrap credential the node no longer trusts, 502 for an unreachable or
 // failing node, 500 for anything else.
 func writeDeployAgentError(w http.ResponseWriter, r *http.Request, name string, err error) {
@@ -124,11 +118,16 @@ func writeDeployAgentError(w http.ResponseWriter, r *http.Request, name string, 
 	switch {
 	case errors.Is(err, errInstanceNotFound):
 		http.NotFound(w, r)
-	case errors.Is(err, errNoAgentApp):
-		http.Error(w, "no agent App declared (kind: App, type: agent, replicas: per-node)", http.StatusUnprocessableEntity)
+	case errors.Is(err, clusterruntime.ErrNoRuntime):
+		// A runtime the store kept but config.Validate would reject.
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	case errors.Is(err, clusterruntime.ErrNoAgentApp):
+		http.Error(w, clusterruntime.ErrNoAgentApp.Error(), http.StatusUnprocessableEntity)
 	case errors.Is(err, nodeprovision.ErrUntrusted):
 		http.Error(w, "node does not trust this instance's bootstrap credential: it is one-shot, so an earlier deploy-agent call spent it (whether that call succeeded or failed), or the node was never seeded with it; to deploy now, run `bootstrap deploy-agent` with the break-glass cert", http.StatusConflict)
-	case errors.Is(err, errNodeIncus):
+	case errors.Is(err, clusterruntime.ErrNode):
+		// The tunnel not up yet, or the node's Incus failing a request, as
+		// opposed to a fault in this server.
 		http.Error(w, "node incus request failed", http.StatusBadGateway)
 	default:
 		http.Error(w, "internal server error", http.StatusInternalServerError)

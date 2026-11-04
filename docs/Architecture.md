@@ -47,6 +47,22 @@ Modules:
 
 IncusOS host(s) running: Incus (always), Tailscale service (authkey-enrolled), and — once observability is wired up — an Alloy Incus instance receiving the node's syslog and scraping its local Incus API for metrics.
 
+### 4. Runtime-agnostic seams (`Decisions.md` §31)
+
+Two seams keep the callers independent of what a node runs. Each is an interface with a registry keyed by a config value, and a test that keeps the registry in step with what `config.Validate` accepts. Today each has one implementation, which wraps the existing packages in place rather than moving them, so it behaves exactly as before the seam existed. Neither interface guesses at a backend that doesn't exist yet: an operation is added when a real backend needs one.
+
+- **Host OS** (`internal/hostos`, #398), chosen by `Instance.HostOS()` (`os`, default `incusos`): validate an Instance, render its install config, render its install media. IncusOS wraps `internal/seed` and `internal/flasher`. There's no upgrade operation, because IncusOS updates itself; Talos adds one in Phase 6.
+- **Cluster runtime** (`internal/clusterruntime`, #488), chosen by `Instance.ClusterRuntime()` (`runtime`, default `incus`; one per fleet): bootstrap, join, upgrade and health. For Incus they are the app-manager agent's lifecycle, which is all the Incus runtime does today:
+
+  | Operation | Incus wraps | Called from |
+  |---|---|---|
+  | Bootstrap | The first agent on a node: `agentdeploy.FindApp`, `IsAgentInstance` and `Desired` at `FirstGeneration`, created through `nodeprovision.CreateInstance` (the one-shot bootstrap credential, revoked after use) or `CreateInstanceNoRevoke` (the break-glass cert) | `bootstrap deploy-agent`, `POST /instances/{name}/deploy-agent` |
+  | Join | The leader's create of the agent on each declared member that has none (`agent.ensureAgents`, #203) | `cmd/agent`, in the leader's tick |
+  | Upgrade | The blue-green agent self-upgrade (`agent.upgradeAgents`, #109) | `cmd/agent`, in the leader's tick |
+  | Health | A self-upgrade candidate's sustained-healthy check (`sustainedHealthy`/`unhealthy`, on its `incusregistry.KeyHeartbeat`) | Upgrade, for each candidate |
+
+  `internal/incusregistry`, `incuslocal` and `nodeprovision` are the Incus runtime's internals, and stay direct. Outside the seam: the Incus host cluster's own formation (the seed renders the one-member Tier A bootstrap behind the host-OS seam, and member join, #180, goes behind Join when it lands), and the agent loop around Join and Upgrade. Leader election (`internal/leaderelection`, §25), the acting-flag gating, the order of Join then Upgrade and their shared pass timeout stay in `internal/agent`, whatever runtime is set. Incus's Join, Upgrade and Health run the agent's own passes, which `internal/agent` hands them (`clusterruntime.LeaderPass`, `Candidate`), so the dependency points one way: the web app and the CLI, which only Bootstrap, don't link the agent. `cmd/agent`, being the Incus runtime's agent, runs `clusterruntime.Incus` rather than dispatching on config.
+
 ## Data model (sketch)
 
 K8s-style: multiple YAML documents in one or more files, each discriminated by `kind:`, merged into one fleet definition.

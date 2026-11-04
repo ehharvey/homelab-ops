@@ -50,6 +50,7 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/agent"
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
+	"github.com/ehharvey/homelab-ops/internal/clusterruntime"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/incuslocal"
 	"github.com/ehharvey/homelab-ops/internal/incusregistry"
@@ -132,6 +133,10 @@ func run() error {
 	a := agent.New(s.instance, s.node, s.generation, clone, reg, client, repo, logger)
 	a.Upgrade = s.upgrade
 	a.ChildEnv = inheritedEnv(os.Getenv)
+	// The cluster runtime whose Join, Upgrade and Health the leader work
+	// runs. This binary is the Incus runtime's agent, an Incus instance, so
+	// it runs Incus's, whatever runtime the fleet it syncs declares.
+	a.Runtime = clusterruntime.Incus
 
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()
