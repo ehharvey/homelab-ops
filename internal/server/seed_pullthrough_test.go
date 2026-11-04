@@ -82,7 +82,7 @@ func TestSeedPullThroughAssignsIPForStaticIPLessInstance(t *testing.T) {
 	tunnels := &fakeTunnelSource{}
 
 	// Real config.Validate + real ipam.Assign (auto-assign) + real store.Replace.
-	if _, err := SyncOnce(ctx, fakeSyncer{cfg: staticIPLessFleet(), sha: "commit1"}, st, tunnels, st, time.Now()); err != nil {
+	if _, err := SyncOnce(ctx, fakeSyncer{cfg: staticIPLessFleet(), sha: "commit1"}, st, tunnels, st, privateRepo, time.Now()); err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestSeedPullThroughIPStableAcrossResync(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	tunnels := &fakeTunnelSource{}
 
-	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit1"}, st, tunnels, st, time.Now()); err != nil {
+	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit1"}, st, tunnels, st, privateRepo, time.Now()); err != nil {
 		t.Fatalf("first SyncOnce: %v", err)
 	}
 	first := fetchInstanceSeed(t, st, certs, tunnels, st, "devnode1").NetworkYAML
@@ -135,7 +135,7 @@ func TestSeedPullThroughIPStableAcrossResync(t *testing.T) {
 	// Re-syncing the identical fleet must reuse the persisted prior address
 	// (SyncOnce feeds the prior snapshot into ipam.Assign), not hand out a new
 	// one — otherwise network.yaml would silently churn its IP every poll.
-	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit2"}, st, tunnels, st, time.Now()); err != nil {
+	if _, err := SyncOnce(ctx, fakeSyncer{cfg: cfg, sha: "commit2"}, st, tunnels, st, privateRepo, time.Now()); err != nil {
 		t.Fatalf("second SyncOnce: %v", err)
 	}
 	second := fetchInstanceSeed(t, st, certs, tunnels, st, "devnode1").NetworkYAML

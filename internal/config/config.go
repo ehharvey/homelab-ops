@@ -25,6 +25,17 @@ import (
 // so each parses (and is syntactically validated) straight from the YAML, and
 // an empty (`gateway: ""`) or omitted optional lands as a zero value with
 // IsValid()==false and no error. See ExampleNetwork_yamlUnmarshal.
+//
+// The addressing fields (cidr, gateway, dhcp_excluded_range, dns) are
+// optional in a fleet the web app syncs (docs/Decisions.md §28, #199). A
+// Network that sets cidr is git-addressed, and its other three fields stay
+// optional as they always were. One that sets none of them is
+// state-addressed: the web app's resolve step (internal/addressing) fills its
+// addressing in from the addressing file before Validate runs. Anything in
+// between (a gateway, range or dns without a cidr) is partial, and
+// AddressingIssues rejects it. Validate itself still requires a cidr, so a
+// local file (bootstrap render-seed, deploy-agent) and a resolved fleet carry
+// full Networks.
 type Network struct {
 	Name              string       `yaml:"name"`
 	CIDR              netip.Prefix `yaml:"cidr"`
@@ -32,6 +43,29 @@ type Network struct {
 	DHCPExcludedRange Range        `yaml:"dhcp_excluded_range"`
 	DNS               []netip.Addr `yaml:"dns"`
 }
+
+// AddressingFields names the addressing fields n sets, in schema order:
+// cidr, gateway, dhcp_excluded_range, dns.
+func (n Network) AddressingFields() []string {
+	var set []string
+	if n.CIDR.IsValid() {
+		set = append(set, "cidr")
+	}
+	if n.Gateway.IsValid() {
+		set = append(set, "gateway")
+	}
+	if r := n.DHCPExcludedRange; r.Start.IsValid() || r.End.IsValid() {
+		set = append(set, "dhcp_excluded_range")
+	}
+	if len(n.DNS) > 0 {
+		set = append(set, "dns")
+	}
+	return set
+}
+
+// Unaddressed reports whether n sets none of the addressing fields. In a
+// synced fleet that makes it state-addressed (docs/Decisions.md §28).
+func (n Network) Unaddressed() bool { return len(n.AddressingFields()) == 0 }
 
 // Range is a closed inclusive address range written as "<start>-<end>" (used
 // for a Network's DHCP-excluded range). It implements encoding.TextMarshaler/

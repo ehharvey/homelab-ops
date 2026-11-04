@@ -2188,21 +2188,22 @@ WireGuard protects the transfer, but the aim is that plaintext secrets never lan
 
 The config repo is public, and addresses in it describe the operator's LAN. Git always keeps each `kind: Network`'s *name*, which is what `Instance.network` references. The addressing — `cidr`, `gateway`, `dhcp_excluded_range`, `dns` — comes from exactly one of two sources per network.
 
-- **Exactly one source per network.** A `kind: Network` in git carries either all of the addressing fields or none of them.
-  - All of them: the network is git-addressed, for a private repo.
+- **Exactly one source per network.** A `kind: Network` in git carries either all of its addressing or none of it.
+  - All of it: the network is git-addressed, for a private repo. "All" means a `cidr`, the one addressing field that was ever required; `gateway`, `dhcp_excluded_range` and `dns` stay as optional as they always were, so today's fleets keep validating.
   - None: the network is state-addressed, and its addressing lives in the web app's state.
-  - A partial set is a validation error.
+  - A partial set (a `gateway`, range or `dns` without a `cidr`) is a validation error naming the network.
 - **A conflict is an error, never a precedence rule.** If git and state both address the same network, the sync (or the load) is rejected, the same stance as #52's "no silent last-wins". The operator removes one side.
-- **`static_ip` follows its network's mode.** In git it is valid only for a git-addressed network. Pins for a state-addressed network live in state, so a public repo never carries an address.
-- **One resolve step.** Before validation, IPAM and seed rendering, the web app joins git's network names with the addressing from whichever source holds it. Everything downstream sees one resolved `Network` and doesn't know its mode.
-- **Where state addressing comes from.** Interim: a deployment-config file on the web app, like `CLIENT_CERT_PATH`. Target: loaded through the CLI into the encrypted store, once #197 lands.
+- **`static_ip` follows its network's mode.** In git it is valid only for a git-addressed network. Pins for a state-addressed network live in state, so a public repo never carries an address. Interim (#199): there are no pins for state-addressed networks yet, so their instances get IPAM addresses; pins arrive with #514.
+- **One resolve step.** Before validation, IPAM and seed rendering, the web app joins git's network names with the addressing from whichever source holds it (`internal/addressing`). Everything downstream sees one resolved `Network` and doesn't know its mode. The sync is parse → resolve → validate.
+- **Where state addressing comes from.** Interim (#199): its own deployment setting, `NETWORK_ADDRESSING_PATH`, naming a file of full `kind: Network` documents parsed with `internal/config`'s parser and read on every sync, so an edit can't hide behind an unchanged commit. Target (#514): loaded, with pins, through the CLI into the encrypted store, after #197.
 - **What moves with it.**
-  - The cross-field checks in `config.Validate` that need addresses move from git sync into the resolve step: static IP inside the CIDR and range, gateway collision (#53), duplicate names (#52).
-  - Changes to state-addressed networks are reported when they're loaded, since `configdiff` doesn't see them.
+  - The resolve step owns the checks on its two inputs, each naming the network: partial addressing, a network addressed in both sources, a state entry for a network git doesn't declare (or a duplicate one, #52), a state-addressed network with no addressing, and a git `static_ip` on a state-addressed network.
+  - The address checks in `config.Validate` (CIDR validity, gateway and range inside the CIDR, a static IP inside its network's range, the gateway collision of #53) then run on the resolved networks, so both modes get them alike.
+  - Changes to state-addressed networks are reported when they're loaded, since `configdiff` can't attribute them: logged, and in `POST /sync`'s and `GET /status`'s warnings.
   - IPAM (§12, `docs/Ipam.md`) is otherwise unchanged. It already assigns from a store, not from git directly.
-- **Optional guard against leaking addresses into a public repo.** Repo visibility can't be detected through a plain git transport. So git-addressed networks could require an explicit deployment flag (e.g. `CONFIG_REPO_PRIVATE=true`); without it, git addressing is rejected rather than silently published.
+- **A guard against leaking addresses into a public repo, rejecting by default.** Repo visibility can't be detected through a plain git transport. So git addressing is rejected at sync unless the deployment sets `CONFIG_REPO_PRIVATE=true` (§29's safe default). It is a sync-time check, so `bootstrap render-seed` and the `examples/` tests are unaffected; the dev compose stack sets it, since its fixture repo is git-addressed.
 - **Unaffected:**
-  - The agent. It discovers joiners from its host's subnet (§27) and never reads addressing. A private repo does mean agents need a read-only deploy key, since they sync git themselves.
+  - The agent. It discovers joiners from its host's subnet (§27) and never reads addressing, so its sync accepts a name-only Network (`config.ValidateUnresolved`). A private repo does mean agents need a read-only deploy key, since they sync git themselves.
   - The bootstrap CLI. It reads a local file, which can keep full `kind: Network` documents.
 - **Cost.**
   - The resolve step and the all-or-nothing rule are small.
@@ -2230,6 +2231,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 - **2026-10-03 (#247, #195).** The tunnel-only API became the default rather than the only mode. An explicit, opt-in host listener on an operator-chosen address replaced the earlier dev-only localhost flag, and TLS was named as a later third mode. Why: the web app now runs on appliance machines in several topologies (§29), and every deployment setting is an operator choice with a safe default.
 - **2026-11-02 (#466, §31).** Renumbered only: the appliance phase is now Phase 5 (it was Phase 4), and the cluster work this never blocked (then Phase 5, multi-member Incus clusters) is parked.
 - **2026-11-04 (#505, §32).** "A CLI first, no web UI yet" became "a CLI, and a browser UI behind kanidm". The operator-held, memory-only key and the operator-supplied WireGuard identity stay the default, now with an opt-in where the web app generates both on first boot and seals them to the TPM. The deferred auth's provider question is answered: kanidm, beside the web app. Why: the appliance is the bootstrap and break-glass anchor (§31), and the operator wanted it usable from a browser and able to restart unattended.
+- **2026-11-04 (#199).** The network-addressing decision was built, with three interim choices. State addressing comes from its own setting, `NETWORK_ADDRESSING_PATH`, rather than "a deployment-config file like `CLIENT_CERT_PATH`" folded into other config; loading it through the CLI into the encrypted store, with pins, is split to #514. State-addressed networks have no pins until then. The "optional guard… could require `CONFIG_REPO_PRIVATE=true`" became mandatory and rejecting by default. "All of the addressing fields" was read as "a `cidr`", the one that was ever required. Why: the operator's answers on #199 and §29's safe-default rule for the first two; for the third, the operator's sign-off on PR #516, since `gateway`, `dhcp_excluded_range` and `dns` were always optional and a strict reading would reject fleets that validate today.
 
 ## 29. The web app runs on an appliance machine; every deployment setting is an operator choice (2026-10-03)
 
@@ -2275,6 +2277,8 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 | Web app keys: WireGuard identity and store key (§32) | Operator-supplied identity; operator-held store key, sealed on restart (§28) | Generated on first boot and sealed to the TPM, with an operator recovery key (#509) |
 | step-ca root (§32) | Offline; only an intermediate is online in step-ca (#506) | Generated on the appliance onto a YubiKey; generated on the appliance onto a USB stick; generated on the appliance and kept there |
 | Browser UI on a LAN host listener (§32) | Off; the UI is on the tunnel listener only | On, over TLS, at an operator-chosen address (#508) |
+| Network addressing in git (§28, `CONFIG_REPO_PRIVATE`) | Rejected: the repo is assumed public, so each Network carries only its name | `CONFIG_REPO_PRIVATE=true`, for a private repo: networks may be addressed in git (#199) |
+| Where state addressing comes from (§28, `NETWORK_ADDRESSING_PATH`) | Unset: no state addressing, so a name-only Network fails the sync | A file of full `kind: Network` documents, read every sync (#199); later the encrypted store, loaded by the CLI (#514) |
 
 - **Install media.** On an internet VM, server-side builds mean a multi-GB transfer across the internet per node, plus VM disk for each copy. The seed is a few KB.
   - IncusOS reads a user-provided FAT or ISO volume labelled `SEED_DATA` beside an unmodified install image (upstream `doc/reference/seed.md`). The stick must be removed after install.
@@ -2315,6 +2319,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
   - **The mkosi image moved from rejected to later and undecided (#393).** Folded into §15's multi-OS work, it shares a build with the helper OS rather than costing a one-off.
 - **2026-11-02 (#466, §31).** The LAN laptop became the bootstrap and break-glass appliance, with DHCP, DNS and Secure Boot settings added to the operator-choice table, and the appliance phase moved ahead of the first Talos node. `bootstrap deploy-web` (#386) used to be kept as how the web app moves into the fleet; with the fleet on Talos that route is static pods, so #386 is parked with the Incus runtime.
 - **2026-11-04 (#505, §32).** The API listener's "TLS later" alternative became TLS from the appliance's step-ca (#506). Three rows were added: the web app's keys (generated and TPM-sealed, #509), the step-ca root's custody (#506), and the browser UI on a LAN host listener (#508). Why: the appliance gained a CA, an IdM and a browser UI (§32), and each new posture is an operator choice with a safe default.
+- **2026-11-04 (#199, §28).** Two rows were added: network addressing in git (`CONFIG_REPO_PRIVATE`, rejected by default) and where state addressing comes from (`NETWORK_ADDRESSING_PATH`). Why: §28's addressing decision was built, and a public repo is the safe assumption.
 
 ## 30. Re-plan around host management: the agent manages only itself and its cluster (2026-10-26)
 

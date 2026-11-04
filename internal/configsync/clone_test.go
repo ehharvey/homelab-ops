@@ -221,3 +221,25 @@ func TestCloneRequiresDir(t *testing.T) {
 		t.Error("Sync without Dir must error")
 	}
 }
+
+// TestCloneAcceptsAStateAddressedNetwork: the agent never reads addressing
+// (docs/Decisions.md §27, §28), so a public repo whose Network carries only
+// its name syncs, and a static_ip on that network still fails.
+func TestCloneAcceptsAStateAddressedNetwork(t *testing.T) {
+	src := t.TempDir()
+	repo := initFixtureRepo(t, src)
+	stateAddressed := strings.Replace(designatedYAML,
+		"cidr: 10.0.0.0/24\ngateway: 10.0.0.1\ndhcp_excluded_range: 10.0.0.200-10.0.0.250\n", "", 1)
+	stateAddressed = strings.Replace(stateAddressed, "static_ip: 10.0.0.210\n", "", 1)
+	head := commitFixtureFile(t, repo, src, "fleet.yaml", stateAddressed)
+	c := newClone(t, src, 5)
+	if snap := mustSync(t, c); snap.Commit != head.String() || snap.Config.Networks[0].CIDR.IsValid() {
+		t.Fatalf("Sync = %s with networks %+v, want %s with a name-only network", snap.Commit, snap.Config.Networks, head)
+	}
+
+	pinned := strings.Replace(stateAddressed, "network: dev-lan\n", "network: dev-lan\nstatic_ip: 10.0.0.210\n", 1)
+	commitFixtureFile(t, repo, src, "fleet.yaml", pinned)
+	if _, err := c.Sync(context.Background()); err == nil || !strings.Contains(err.Error(), `network "dev-lan" takes its addressing from the web app's state`) {
+		t.Fatalf("Sync = %v, want the static_ip on a state-addressed network rejected", err)
+	}
+}

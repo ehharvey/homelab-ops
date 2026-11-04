@@ -54,7 +54,61 @@ func (is Issues) Error() string {
 //
 // It returns all issues found rather than stopping at the first, so an
 // operator fixing a bad commit sees every problem at once.
-func Validate(c Config) Issues {
+//
+// Validate wants every Network fully addressed: a local file, or a synced
+// fleet after the web app's resolve step (internal/addressing.Resolve) has
+// filled in its state-addressed networks. A synced fleet before that step is
+// ValidateUnresolved's.
+func Validate(c Config) Issues { return validate(c, false) }
+
+// ValidateUnresolved validates a fleet as synced from git, before any
+// state-addressed network has its addressing filled in (docs/Decisions.md
+// §28). It is Validate plus AddressingIssues, except that a Network setting no
+// addressing at all passes: its addressing lives in the web app's state. The
+// agent's Clone uses it, because the agent never reads addressing (§27).
+func ValidateUnresolved(c Config) Issues {
+	return append(AddressingIssues(c), validate(c, true)...)
+}
+
+// AddressingIssues runs the git-side checks of §28's one-source rule on a
+// synced fleet, naming the network in each message:
+//   - a Network sets all its addressing (at least a cidr) or none of it, so a
+//     gateway, dhcp_excluded_range or dns without a cidr is partial;
+//   - a static_ip is valid in git only on a git-addressed network. A
+//     state-addressed network's instances get IPAM addresses (pins for them,
+//     held in state, are #514's).
+func AddressingIssues(c Config) Issues {
+	var issues Issues
+	unaddressed := make(map[string]bool, len(c.Networks))
+	for i, n := range c.Networks {
+		set := n.AddressingFields()
+		switch {
+		case len(set) == 0:
+			unaddressed[n.Name] = true
+		case !n.CIDR.IsValid():
+			issues = append(issues, Issue{
+				Path: fmt.Sprintf("networks[%d]", i),
+				Message: fmt.Sprintf("network %q sets %s but no cidr: a Network carries all its addressing or none of it (none takes it from the web app's addressing file)",
+					n.Name, strings.Join(set, ", ")),
+			})
+		}
+	}
+	for i, inst := range c.Instances {
+		if inst.StaticIP.IsValid() && unaddressed[inst.Network] {
+			issues = append(issues, Issue{
+				Path: fmt.Sprintf("instances[%d].static_ip", i),
+				Message: fmt.Sprintf("network %q takes its addressing from the web app's state, so instance %q can't set a static_ip in git: omit it and IPAM assigns one",
+					inst.Network, inst.Name),
+			})
+		}
+	}
+	return issues
+}
+
+// validate is Validate's body. With allowUnaddressed, a Network without a
+// cidr skips the address checks, and so do its instances: AddressingIssues
+// reports the partial ones and a static_ip on an unaddressed one.
+func validate(c Config, allowUnaddressed bool) Issues {
 	var issues Issues
 	add := func(path, msg string) { issues = append(issues, Issue{Path: path, Message: msg}) }
 
@@ -72,7 +126,9 @@ func Validate(c Config) Issues {
 			firstIndex[n.Name] = i
 		}
 		if !n.CIDR.IsValid() {
-			add(path+".cidr", "must be a valid CIDR")
+			if !allowUnaddressed {
+				add(path+".cidr", "must be a valid CIDR")
+			}
 			// Without a CIDR, the containment checks below are meaningless.
 			continue
 		}
@@ -131,7 +187,7 @@ func Validate(c Config) Issues {
 			continue // DHCP — nothing address-wise to validate here.
 		}
 		if !n.CIDR.IsValid() {
-			continue // already reported against the network above
+			continue // already reported against the network (or by AddressingIssues)
 		}
 		if !n.CIDR.Contains(inst.StaticIP) {
 			add(path+".static_ip", fmt.Sprintf("%s is not inside cidr %s", inst.StaticIP, n.CIDR))

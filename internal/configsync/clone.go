@@ -43,11 +43,29 @@ type Snapshot struct {
 // acting on a designation it can no longer confirm.
 //
 // A Sync succeeds only if the fetched commit parses and passes
-// config.Validate. Anything else — an unreachable remote, a missing branch, a
+// validation. Anything else — an unreachable remote, a missing branch, a
 // commit that doesn't parse or validate — is a failed sync, and the previous
 // Snapshot stays current (and its commit is what the agent publishes). Unlike
 // the web app's Syncer, validation happens here, since "last good" has to mean
 // usable.
+//
+// The validation is config.ValidateUnresolved, git alone: the agent never
+// reads network addressing (docs/Decisions.md §28), so it accepts a name-only
+// Network whether or not the web app has addressing for it. The two can
+// therefore disagree, by design. Take a commit that drops a network's cidr by
+// mistake while also changing the agent App's image. The web app finds no
+// addressing for that network, rejects the commit and keeps its last good
+// snapshot. The agents accept it and act on it: they roll out the upgrade and
+// follow any Designation change in it. The web app's rejection is logged and
+// returned by POST /sync; nothing carries it to the agents.
+//
+// The check is config.ValidateUnresolved, not Validate: the agent never reads
+// network addressing (docs/Decisions.md §27, §28), so a state-addressed
+// Network, one with only a name in git, is valid here, while partial addressing
+// or a static_ip on such a network is not. Nothing the cache below skips
+// depends on the web app's addressing file, so a same-commit poll can't serve
+// a stale resolution: the resolve step runs only in the web app's sync
+// (internal/server.SyncOnce), which reads the file every time.
 //
 // Safe for concurrent use.
 type Clone struct {
@@ -189,7 +207,7 @@ func (c *Clone) sync(ctx context.Context) (Snapshot, map[plumbing.Hash]bool, err
 	if err != nil {
 		return Snapshot{}, nil, fmt.Errorf("commit %s: %w", ref.Hash(), err)
 	}
-	if issues := config.Validate(cfg); !issues.Empty() {
+	if issues := config.ValidateUnresolved(cfg); !issues.Empty() {
 		return Snapshot{}, nil, fmt.Errorf("commit %s: validate: %w", ref.Hash(), issues)
 	}
 

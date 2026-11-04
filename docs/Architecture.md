@@ -124,8 +124,8 @@ The web app (`internal/server`) currently exposes:
 | Route | Method | Purpose |
 | --- | --- | --- |
 | `/healthz` | GET | Liveness check |
-| `/sync` | POST | Trigger a config-sync run; returns the synced commit, network/instance counts, and diff counts against the prior snapshot |
-| `/status` | GET | Last-synced commit SHA and sync time, if any |
+| `/sync` | POST | Trigger a config-sync run; returns the synced commit, network/instance counts, diff counts against the prior snapshot, and the sync's `warnings` (state-addressed networks whose addressing was loaded or changed, #199) |
+| `/status` | GET | Last-synced commit SHA and sync time, if any, and the addressing changes still in effect since the web app started (`sync_warnings`: each state-addressed network's latest load or change, kept until its addressing changes again or leaves state addressing) |
 | `/networks` | GET | All stored `Network` objects |
 | `/instances` | GET | All stored `Instance` objects |
 | `/instances/{name}/seed` | POST | Renders the four IncusOS seed documents (`install.yaml`, `network.yaml`, `applications.yaml`, `incus.yaml`) for a synced instance, embedding the break-glass cert from `CLIENT_CERT_PATH` and, since #91, WireGuard tunnel config + a one-time bootstrap cert (see the WireGuard tunnel module above). Requires `WIREGUARD_ENDPOINT` to be set; the route reports 503 if it isn't |

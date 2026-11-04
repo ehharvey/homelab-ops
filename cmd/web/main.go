@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/addressing"
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
@@ -83,6 +84,11 @@ func run() error {
 	svc := server.NewService(syncer, st, newCertSource(cfg.ClientCertPath), newImageBuilder(cfg), tunnelSrc, st)
 	// A deployed agent syncs from the same repo as this web app.
 	svc.SetAgentRepo(agentdeploy.Repo{URL: cfg.ConfigRepoURL, Ref: cfg.ConfigRepoRef})
+	addr := networkAddressing(cfg)
+	if err := checkAddressing(ctx, addr); err != nil {
+		return err
+	}
+	svc.SetAddressing(addr)
 
 	// Nodes flashed before this restart must get a handshake reply now, not
 	// after the next sync (#269), and this also registers the operators.
@@ -243,6 +249,45 @@ func newSyncer(cfg deployconfig.Config) server.Syncer {
 		RepoURL: cfg.ConfigRepoURL,
 		Ref:     cfg.ConfigRepoRef,
 	}
+}
+
+// networkAddressing is where syncs take network addressing from
+// (docs/Decisions.md §28, #199): CONFIG_REPO_PRIVATE=true allows addressing
+// in git, and NETWORK_ADDRESSING_PATH names the addressing file for
+// state-addressed networks. Both default off, so by default git addressing
+// is rejected (§29's safe default: a public repo must not publish the LAN's
+// addresses by accident). deployconfig.Load has already refused a
+// CONFIG_REPO_PRIVATE other than "true" or "false".
+func networkAddressing(cfg deployconfig.Config) server.Addressing {
+	a := server.Addressing{RepoPrivate: cfg.ConfigRepoPrivate}
+	if cfg.NetworkAddressingPath != "" {
+		a.State = addressing.File{Path: cfg.NetworkAddressingPath}
+	}
+	return a
+}
+
+// checkAddressing reads the addressing file once at startup and runs the
+// checks on its entries that need no git (addressing.CheckEntries: a name, a
+// cidr, no name twice). So a file that doesn't parse, or fails them, stops
+// the web app here, naming the setting, rather than failing every sync
+// later. Syncs still re-read it each time, and check its entries against
+// git. With neither source set, no network can be addressed, so every sync
+// of a fleet that declares one is rejected; that's a warning, not fatal,
+// since the fleet isn't known until the first sync.
+func checkAddressing(ctx context.Context, a server.Addressing) error {
+	if a.State != nil {
+		nets, err := a.State.Networks(ctx)
+		if err != nil {
+			return fmt.Errorf("NETWORK_ADDRESSING_PATH: %w", err)
+		}
+		if issues := addressing.CheckEntries(nets); !issues.Empty() {
+			return fmt.Errorf("NETWORK_ADDRESSING_PATH: %w", issues)
+		}
+	}
+	if !a.RepoPrivate && a.State == nil {
+		log.Printf("WARNING: neither CONFIG_REPO_PRIVATE=true nor NETWORK_ADDRESSING_PATH is set, so no network can be addressed: every sync of a fleet that declares a network will be rejected (docs/Decisions.md §28)")
+	}
+	return nil
 }
 
 func pollSync(ctx context.Context, svc *server.Service, interval time.Duration) {

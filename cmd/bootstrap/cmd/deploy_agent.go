@@ -72,7 +72,10 @@ func runDeployAgent(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if issues := config.Validate(cfg); !issues.Empty() {
+	// Deploying the agent never reads addressing, and a public repo's
+	// Networks carry only their names (docs/Decisions.md §28), so this
+	// validates as the agent's own sync does.
+	if issues := config.ValidateUnresolved(cfg); !issues.Empty() {
 		return fmt.Errorf("invalid config: %w", issues)
 	}
 	inst, err := selectInstance(cfg.Instances, deployAgentInstance)

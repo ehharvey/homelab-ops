@@ -16,6 +16,13 @@ services:
       - API_HOST_LISTEN_ADDR=:8080
       - CONFIG_REPO_URL=git://config-repo/fleet.git
       - CONFIG_REPO_REF=main
+      # dev/git-fixture and the validate scripts' fleets carry their network
+      # addressing in git, which the web app rejects unless the repo is
+      # declared private (#199, docs/Decisions.md §28). The fixture is a
+      # throwaway local repo, so dev opts in; the shipped default rejects.
+      # scripts/validate/sync-resolves-network-addressing-from-one-source.sh
+      # blanks it to exercise the default.
+      - CONFIG_REPO_PRIVATE=true
       - WIREGUARD_PORT=51820
       # WIREGUARD_ENDPOINT deliberately unset here: this dev stack has no
       # real node to tunnel to, so the tunnel stays unconfigured (see

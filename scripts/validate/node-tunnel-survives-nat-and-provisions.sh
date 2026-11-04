@@ -542,6 +542,7 @@ incus_exec_bg "$WORK_DIR/webapp.log" "$REMOTE:$WEBAPP_NAME" -- env \
   STORE_PATH=/root/store.db \
   CLIENT_CERT_PATH=/root/client.crt \
   CONFIG_REPO_URL=/root/fleet-repo.git \
+  CONFIG_REPO_PRIVATE=true \
   CONFIG_SYNC_INTERVAL=5s \
   WIREGUARD_ENDPOINT="$WEBAPP_WAN_IP:$WG_PORT" \
   WIREGUARD_PORT="$WG_PORT" \

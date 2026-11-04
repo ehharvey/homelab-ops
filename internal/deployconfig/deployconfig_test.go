@@ -60,7 +60,8 @@ func TestLoadDefaults(t *testing.T) {
 	cfg := mustLoad(t)
 	if cfg.Dir != "" || cfg.HealthListenAddr != DefaultHealthListenAddr || cfg.WireGuardPort != DefaultWireGuardPort ||
 		cfg.StorePath != DefaultStorePath || cfg.SyncInterval != 0 || cfg.WireGuardEndpoint != "" ||
-		cfg.APIHostListenAddr != "" || cfg.ClientCertPath != "" || len(cfg.OperatorPeers) != 0 {
+		cfg.APIHostListenAddr != "" || cfg.ClientCertPath != "" || len(cfg.OperatorPeers) != 0 ||
+		cfg.ConfigRepoPrivate || cfg.NetworkAddressingPath != "" {
 		t.Errorf("Load with nothing set = %+v, want only the defaults", cfg)
 	}
 }
@@ -233,6 +234,9 @@ func TestLoadFailsFast(t *testing.T) {
 		{name: "CONFIG_SYNC_INTERVAL not a duration", webEnv: "CONFIG_SYNC_INTERVAL=5\n", want: []string{`CONFIG_SYNC_INTERVAL: "5" is not a duration`}},
 		{name: "CONFIG_SYNC_INTERVAL zero", webEnv: "CONFIG_SYNC_INTERVAL=0s\n", want: []string{`CONFIG_SYNC_INTERVAL: "0s" must be positive`}},
 		{name: "bad listen address", env: map[string]string{"API_HOST_LISTEN_ADDR": "8080", "HEALTH_LISTEN_ADDR": "localhost"}, want: []string{"API_HOST_LISTEN_ADDR: \"8080\"", "HEALTH_LISTEN_ADDR: \"localhost\""}},
+		{name: "CONFIG_REPO_PRIVATE not true or false", webEnv: "CONFIG_REPO_PRIVATE=yes\n", want: []string{`CONFIG_REPO_PRIVATE: "yes": want "true" or "false"`}},
+		{name: "CONFIG_REPO_PRIVATE in capitals", env: map[string]string{"CONFIG_REPO_PRIVATE": "TRUE"}, want: []string{`CONFIG_REPO_PRIVATE: "TRUE"`}},
+		{name: "missing addressing file", webEnv: "NETWORK_ADDRESSING_PATH=/nonexistent/networks.yaml\n", want: []string{"NETWORK_ADDRESSING_PATH: "}},
 		{name: "missing cert and image files", env: map[string]string{"CLIENT_CERT_PATH": "/nonexistent/client.crt", "BASE_IMAGE_PATH": "/nonexistent/base.img"}, want: []string{"CLIENT_CERT_PATH: ", "BASE_IMAGE_PATH: "}},
 		{
 			name:   "every problem named at once",
@@ -265,6 +269,28 @@ func TestLoadFailsFast(t *testing.T) {
 				t.Errorf("error echoes %q:\n%v", tc.notWant, err)
 			}
 		})
+	}
+}
+
+// CONFIG_REPO_PRIVATE and NETWORK_ADDRESSING_PATH (#199) load from web.env,
+// and an env var set to "" puts CONFIG_REPO_PRIVATE back to its default.
+func TestLoadNetworkAddressing(t *testing.T) {
+	clearEnv(t)
+	networks := filepath.Join(t.TempDir(), "networks.yaml")
+	if err := os.WriteFile(networks, []byte("kind: Network\nname: lab\ncidr: 10.0.2.0/24\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configDir(t, map[string]string{WebEnvFile: "CONFIG_REPO_PRIVATE=true\nNETWORK_ADDRESSING_PATH=" + networks + "\n"})
+	if cfg := mustLoad(t); !cfg.ConfigRepoPrivate || cfg.NetworkAddressingPath != networks {
+		t.Errorf("from web.env: ConfigRepoPrivate = %v, NetworkAddressingPath = %q; want true, %q", cfg.ConfigRepoPrivate, cfg.NetworkAddressingPath, networks)
+	}
+	t.Setenv("CONFIG_REPO_PRIVATE", "")
+	if cfg := mustLoad(t); cfg.ConfigRepoPrivate {
+		t.Error("CONFIG_REPO_PRIVATE set empty in the env: ConfigRepoPrivate = true, want the default false")
+	}
+	t.Setenv("CONFIG_REPO_PRIVATE", "false")
+	if cfg := mustLoad(t); cfg.ConfigRepoPrivate {
+		t.Error("CONFIG_REPO_PRIVATE=false in the env: ConfigRepoPrivate = true, want false")
 	}
 }
 
