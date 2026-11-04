@@ -355,8 +355,8 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
   deployment config — see #197
 - [ ] Encrypted seed, image and snapshot downloads; the CLI decrypts
   straight to the install media — see #198
-- [ ] Network addressing from git (private repo) or web app state, exactly
-  one source per network — see #199
+- [x] Network addressing from git (private repo) or web app state, exactly
+  one source per network: DONE; see #199
 - [ ] One operator client cert for both Incus and the web app's tunnel API;
   its custody is #397's to decide (`docs/Decisions.md` §30) — see #397
 

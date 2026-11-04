@@ -41,6 +41,17 @@ func (f fakeSyncer) Sync(context.Context) (config.Config, string, error) {
 	return f.cfg, f.sha, f.err
 }
 
+// privateRepo allows git addressing (CONFIG_REPO_PRIVATE=true): the fleets in
+// these tests are git-addressed, as every fleet was before #199.
+var privateRepo = Addressing{RepoPrivate: true}
+
+// newPrivateRepo is New over syncer and store with privateRepo set.
+func newPrivateRepo(syncer Syncer, store Store) http.Handler {
+	svc := NewService(syncer, store, nil, nil, nil, nil)
+	svc.SetAddressing(privateRepo)
+	return NewFromService(svc)
+}
+
 type fakeStore struct {
 	replaceCfg    config.Config
 	replaceCommit string
@@ -214,7 +225,7 @@ func TestSyncSuccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+	newPrivateRepo(syncer, store).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -227,15 +238,21 @@ func TestSyncSuccess(t *testing.T) {
 	// fakeStore{} has never synced (LastSync.ok == false), so this is a
 	// first sync: no prior state to diff against, no warnings expected.
 	want := syncResponse{Commit: "deadbeef", Networks: 1, Instances: 1}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("response = %+v, want %+v", got, want)
 	}
 
 	if !store.replaced {
 		t.Fatalf("POST /sync did not call Store.Replace")
 	}
-	if store.replaceCommit != "deadbeef" || !reflect.DeepEqual(store.replaceCfg, cfg) {
-		t.Errorf("Replace called with (%+v, %q), want (%+v, %q)", store.replaceCfg, store.replaceCommit, cfg, "deadbeef")
+	// The stored snapshot is the synced fleet plus the tunnel address the
+	// sync assigned. The resolve step copies the fleet, so that address isn't
+	// written back into the syncer's cfg.
+	want2 := cfg
+	want2.Instances = []config.Instance{cfg.Instances[0]}
+	want2.Instances[0].TunnelIP = addr("10.100.0.2")
+	if store.replaceCommit != "deadbeef" || !reflect.DeepEqual(store.replaceCfg, want2) {
+		t.Errorf("Replace called with (%+v, %q), want (%+v, %q)", store.replaceCfg, store.replaceCommit, want2, "deadbeef")
 	}
 }
 
@@ -257,7 +274,7 @@ func TestSyncWithDiff(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+	newPrivateRepo(syncer, store).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -284,7 +301,7 @@ func TestSyncDiffReadFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+	newPrivateRepo(syncer, store).ServeHTTP(rec, req)
 
 	// A failure reading prior state for the diff must not fail the sync.
 	if rec.Code != http.StatusOK {
@@ -326,7 +343,7 @@ func TestSyncStoreFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+	newPrivateRepo(syncer, store).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /sync with failing store = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -348,7 +365,7 @@ func TestSyncOnceReturnsDiffToCaller(t *testing.T) {
 		{Name: "new-lan", CIDR: prefix("10.0.2.0/24")}, // added
 	}}
 
-	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, privateRepo, time.Now())
 	if err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
@@ -367,7 +384,7 @@ func TestSyncOnceReturnsDiffToCaller(t *testing.T) {
 
 func TestSyncOnceClassifiesErrors(t *testing.T) {
 	t.Run("sync failure wraps ErrSync", func(t *testing.T) {
-		_, err := SyncOnce(context.Background(), fakeSyncer{err: errors.New("clone failed")}, &fakeStore{}, nil, nil, time.Now())
+		_, err := SyncOnce(context.Background(), fakeSyncer{err: errors.New("clone failed")}, &fakeStore{}, nil, nil, privateRepo, time.Now())
 		if !errors.Is(err, ErrSync) {
 			t.Errorf("err = %v, want it to wrap ErrSync", err)
 		}
@@ -378,7 +395,7 @@ func TestSyncOnceClassifiesErrors(t *testing.T) {
 
 	t.Run("store failure wraps ErrStore", func(t *testing.T) {
 		syncer := fakeSyncer{cfg: config.Config{}, sha: "deadbeef"}
-		_, err := SyncOnce(context.Background(), syncer, &fakeStore{replaceErr: errors.New("disk full")}, nil, nil, time.Now())
+		_, err := SyncOnce(context.Background(), syncer, &fakeStore{replaceErr: errors.New("disk full")}, nil, nil, privateRepo, time.Now())
 		if !errors.Is(err, ErrStore) {
 			t.Errorf("err = %v, want it to wrap ErrStore", err)
 		}
@@ -399,7 +416,7 @@ func TestSyncOnceAutoAssignsStaticIP(t *testing.T) {
 	}
 	store := &fakeStore{}
 
-	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, privateRepo, time.Now())
 	if err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
@@ -422,7 +439,7 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	}
 	store := &fakeStore{}
 
-	first, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha1"}, store, nil, nil, time.Now())
+	first, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha1"}, store, nil, nil, privateRepo, time.Now())
 	if err != nil {
 		t.Fatalf("first SyncOnce: %v", err)
 	}
@@ -434,7 +451,7 @@ func TestSyncOnceAutoAssignmentIsStableAcrossResyncs(t *testing.T) {
 	store.networks = cfg.Networks
 	store.instances = first.Config.Instances
 
-	second, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha2"}, store, nil, nil, time.Now())
+	second, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "sha2"}, store, nil, nil, privateRepo, time.Now())
 	if err != nil {
 		t.Fatalf("second SyncOnce: %v", err)
 	}
@@ -465,7 +482,7 @@ func TestSyncOnceExplicitStaticIPConflictsWithPriorAssignedIP(t *testing.T) {
 		},
 	}
 
-	_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
+	_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, privateRepo, time.Now())
 	if !errors.Is(err, ErrIPAM) {
 		t.Fatalf("err = %v, want it to wrap ErrIPAM", err)
 	}
@@ -508,7 +525,7 @@ func TestSyncOnceIPAMFailures(t *testing.T) {
 			cfg := config.Config{Networks: []config.Network{lan}, Instances: tc.instances}
 			store := &fakeStore{}
 
-			_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
+			_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, privateRepo, time.Now())
 			if !errors.Is(err, ErrIPAM) {
 				t.Fatalf("err = %v, want it to wrap ErrIPAM", err)
 			}
@@ -531,7 +548,7 @@ func TestSyncOnceValidationFailure(t *testing.T) {
 
 	t.Run("SyncOnce wraps ErrValidate and skips Replace", func(t *testing.T) {
 		store := &fakeStore{}
-		_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, time.Now())
+		_, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, store, nil, nil, privateRepo, time.Now())
 		if !errors.Is(err, ErrValidate) {
 			t.Fatalf("err = %v, want it to wrap ErrValidate", err)
 		}
@@ -546,7 +563,7 @@ func TestSyncOnceValidationFailure(t *testing.T) {
 	t.Run("POST /sync maps ErrValidate to 502", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 		rec := httptest.NewRecorder()
-		New(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}, nil, nil, nil, nil).ServeHTTP(rec, req)
+		newPrivateRepo(fakeSyncer{cfg: cfg, sha: "deadbeef"}, &fakeStore{}).ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadGateway {
 			t.Fatalf("POST /sync with invalid config = %d, want %d", rec.Code, http.StatusBadGateway)
 		}
@@ -601,7 +618,7 @@ func TestServiceSyncSerializesCalls(t *testing.T) {
 func TestSyncOnceNilStoreSkipsReplace(t *testing.T) {
 	cfg := config.Config{Networks: []config.Network{{Name: "dev-lan"}}}
 
-	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, nil, nil, nil, time.Now())
+	res, err := SyncOnce(context.Background(), fakeSyncer{cfg: cfg, sha: "deadbeef"}, nil, nil, nil, privateRepo, time.Now())
 	if err != nil {
 		t.Fatalf("SyncOnce with nil store: %v", err)
 	}
@@ -811,7 +828,7 @@ func TestStatusSynced(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	want := statusResponse{Synced: true, Commit: "deadbeef", SyncedAt: syncedAt.Format(time.RFC3339)}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("status = %+v, want %+v", got, want)
 	}
 }
@@ -930,7 +947,7 @@ func TestSyncWithAppDiff(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+	newPrivateRepo(syncer, store).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync = %d, want %d", rec.Code, http.StatusOK)
@@ -961,7 +978,7 @@ func TestSyncAppsReadFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/sync", nil)
 	rec := httptest.NewRecorder()
 
-	New(syncer, store, nil, nil, nil, nil).ServeHTTP(rec, req)
+	newPrivateRepo(syncer, store).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sync with failing apps read = %d, want %d", rec.Code, http.StatusOK)
@@ -982,7 +999,7 @@ func TestSyncOnceRejectsInvalidApp(t *testing.T) {
 	syncer := fakeSyncer{cfg: cfg, sha: "deadbeef"}
 	store := &fakeStore{}
 
-	_, err := SyncOnce(context.Background(), syncer, store, nil, nil, time.Now())
+	_, err := SyncOnce(context.Background(), syncer, store, nil, nil, privateRepo, time.Now())
 	if !errors.Is(err, ErrValidate) {
 		t.Fatalf("SyncOnce error = %v, want ErrValidate", err)
 	}

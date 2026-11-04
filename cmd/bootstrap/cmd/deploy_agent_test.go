@@ -139,6 +139,40 @@ func TestDeployAgentCreatesThenReportsAlreadyDeployed(t *testing.T) {
 	}
 }
 
+// TestDeployAgentAcceptsNameOnlyNetwork: a public repo's Networks carry only
+// their names (docs/Decisions.md §28, #199), and deploying the agent never
+// reads addressing, so deploy-agent validates as the agent's sync does
+// (config.ValidateUnresolved) and deploys.
+func TestDeployAgentAcceptsNameOnlyNetwork(t *testing.T) {
+	env := newDeployAgentEnv(t)
+	fleet := env.file(t, "fleet.yaml", `
+kind: Network
+name: home-lan
+---
+kind: Instance
+name: node0
+mac: aa:bb:cc:dd:ee:ff
+network: home-lan
+disk: single
+nic: single
+applications: [incus]
+`)
+	apps := env.file(t, "apps.yaml", deployAgentAppFixture)
+	node := nodeprovisiontest.New(t)
+	out, err := execDeployAgent(t,
+		"--file", fleet, "--file", apps,
+		"--cert", env.certPath, "--key", env.keyPath,
+		"--addr", node.Addr(),
+		"--config-repo-url", "https://example.test/fleet.git",
+	)
+	if err != nil {
+		t.Fatalf("deploy-agent: %v\n%s", err, out)
+	}
+	if created := node.Created(); len(created) != 1 || created[0].Name != "agent-node0-g0" {
+		t.Errorf("created = %+v, want one agent-node0-g0", created)
+	}
+}
+
 func TestDeployAgentSelectsInstance(t *testing.T) {
 	env := newDeployAgentEnv(t)
 	fleet := env.file(t, "fleet.yaml", renderSeedFixture+"---\n"+deployAgentSecondInstance+"---\n"+deployAgentAppFixture)

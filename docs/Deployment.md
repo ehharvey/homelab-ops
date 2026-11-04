@@ -93,6 +93,8 @@ rather than failing later where a setting is first used (#67).
 | `CONFIG_REPO_URL` | unset (sync off) | `web.env` | The fleet config repo, any go-git transport. **Fails if it carries a credential**, without echoing it: any userinfo on a non-SSH URL (`https://user:token@…`, `https://token@…`), or a password on an SSH one (`ssh://user:pass@…`, `user:pass@host:path`). An SSH user alone (`git@host:path`, `ssh://git@host/…`) is a login name, not a secret, so it's accepted; the key comes from ssh-agent. Credentials never go in the URL or `web.env`. Git credentials are #218's, under `secrets/`. |
 | `CONFIG_REPO_REF` | `main` | `web.env` | The branch to sync. |
 | `CONFIG_SYNC_INTERVAL` | unset (sync on `POST /sync` only) | `web.env` | Background poll interval, a Go duration such as `5m`. Fails unless a positive duration. |
+| `CONFIG_REPO_PRIVATE` | `false` (git addressing rejected) | `web.env` | Declares the config repo private, so a `kind: Network` in it may carry its addressing (§28, #199). Unset, the repo is assumed public: a sync fails on any Network with a `cidr` in git, naming it. Fails startup unless `true` or `false`. |
+| `NETWORK_ADDRESSING_PATH` | unset (no state addressing) | `web.env` | A file of full `kind: Network` documents addressing the networks git names without a `cidr` (§28, #199), read on every sync. Unset, a name-only Network fails the sync. A path, inside the directory or not. Fails if set and not a regular file, or if it doesn't parse. Interim: the encrypted store, loaded by the CLI, replaces it (#514). |
 | `STORE_PATH` | `:memory:` | `web.env` | The sqlite store's file. The default keeps nothing across a restart; an appliance mounts a volume and sets a path on it. |
 | `CLIENT_CERT_PATH` | unset (seed and image routes off) | `client.crt` file | The break-glass cert's public half (§4). Fails if set and not a regular file. |
 | `BASE_IMAGE_PATH` | unset (server-side image builds off) | `web.env` | The operator-supplied base IncusOS raw image; setting it turns on the image route (§29's server-side default). A path outside the directory. Fails if set and not a regular file. |
@@ -151,8 +153,9 @@ var here.
 | Web app keys: WireGuard identity and store key (§32) | Operator-supplied identity (`secrets/wireguard.key`), operator-held store key | TPM sealing is #509's, whose design is open; it names its own setting when it lands |
 | step-ca root (§32) | Offline; only an intermediate online | #506 names its settings |
 | Browser UI on a LAN host listener (§32) | Off; the UI is on the tunnel listener only | #508 names its settings |
+| Network addressing in git (§28) | Rejected: the repo is assumed public | `CONFIG_REPO_PRIVATE` above |
+| Where state addressing comes from (§28) | Unset: no state addressing | `NETWORK_ADDRESSING_PATH` above; later the encrypted store (#514) |
 
-Settings that later issues add (#199's addressing path and
-`CONFIG_REPO_PRIVATE`, #197's identity, #218's git credentials, #397's operator
-cert list and TLS) each become a row in `deployconfig.Settings` and in
+Settings that later issues add (#197's identity, #218's git credentials, #397's
+operator cert list and TLS) each become a row in `deployconfig.Settings` and in
 [§ Settings](#settings), or a file under `secrets/`.

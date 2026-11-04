@@ -3,7 +3,7 @@
 > **Direction (2026-11-02, `docs/Decisions.md` §31, §5):** IPAM will also drive DHCP reservations (Kea) and DNS records, with a DHCP mode per `Network` (`off`, `proxy`, `reservations`, `full`). In `full` mode IPAM owns the whole subnet and the dynamic pool is explicit, which changes the role of the DHCP excluded range below. Not built yet (Roadmap Phase 4 for the `dhcp.mode` field, Phase 5 for serving DHCP and DNS from the appliance); the policy below is what's built today.
 
 Purpose
-- Track Network definitions (CIDR + DHCP excluded range).
+- Track Network definitions (CIDR + DHCP excluded range), as resolved by the sync: each network's addressing comes from git (a private repo) or from the web app's addressing file, one source per network (`docs/Decisions.md` §28, #199). IPAM sees only the resolved Network and doesn't know which.
 - Assign stable IPv4 addresses to Instances when `static_ip` is omitted.
 - Validate explicit `static_ip` values.
 - Persist assignments in the durable store so IPs survive restarts.
@@ -19,9 +19,9 @@ High-level policy (0.x)
 - Pool exhaustion (no free IPs in the DHCP excluded range) results in a clear error (ErrPoolExhausted).
 
 Network & field validation
-- Network fields to validate (post-Parse):
+- Network fields to validate (post-Parse, and in the web app post-resolve: the address checks below run on the joined Network, whichever source addressed it):
   - name: non-empty and unique within the Config.
-  - cidr: parseable as IPv4 CIDR.
+  - cidr: parseable as IPv4 CIDR. In git it may be omitted together with the other addressing fields, for a state-addressed network; the resolve step fills them in from the addressing file before these checks, and rejects a partial set, a network addressed in both sources, and a `static_ip` in git on a state-addressed network (`docs/Config Schema.md` § Network addressing).
   - gateway: parseable IP and contained in the CIDR.
   - dhcp_excluded_range: optional; when present must be "start-end" with parseable IPv4s, both inside the CIDR, start <= end.
   - dns: syntactic sanity checks for entries.

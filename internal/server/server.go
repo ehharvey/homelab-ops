@@ -13,10 +13,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ehharvey/homelab-ops/internal/addressing"
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
 	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/configdiff"
@@ -94,7 +96,80 @@ type Service struct {
 	// agentRepo is the config repo a deployed agent syncs from; see
 	// SetAgentRepo.
 	agentRepo agentdeploy.Repo
-	mu        sync.Mutex
+	// addressing is where a sync's network addressing may come from; see
+	// SetAddressing.
+	addressing Addressing
+	mu         sync.Mutex
+	// warnings are the addressing changes GET /status serves, one per
+	// network at most (carryWarnings): each stays until its network's
+	// addressing changes again or leaves state addressing, not just until
+	// the next poll. In memory only: a restart clears them until a sync
+	// reports more. warnMu, not mu, guards them, so /status doesn't wait out
+	// a sync in progress.
+	warnMu   sync.Mutex
+	warnings []addressing.Change
+}
+
+// Addressing is where a sync's network addressing may come from
+// (docs/Decisions.md §28, #199): git, for a private config repo, or the web
+// app's state, one source per network. The zero value is the safe default:
+// git addressing is rejected and there is no state source, so only a fleet
+// with no Networks would sync.
+type Addressing struct {
+	// RepoPrivate allows git-addressed networks: CONFIG_REPO_PRIVATE=true.
+	RepoPrivate bool
+	// State supplies the state-addressed networks' addressing
+	// (NETWORK_ADDRESSING_PATH's addressing.File). nil means none.
+	State AddressingSource
+}
+
+// AddressingSource supplies the addressing of state-addressed networks, as
+// full config.Networks. SyncOnce calls it on every sync, so a change to it is
+// never hidden behind an unchanged commit.
+type AddressingSource interface {
+	Networks(ctx context.Context) ([]config.Network, error)
+}
+
+// SetAddressing sets where syncs take network addressing from. Like
+// SetAgentRepo, call it before serving or polling.
+func (s *Service) SetAddressing(a Addressing) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.addressing = a
+}
+
+// Warnings returns the addressing changes still in effect: the latest one
+// for each network that is still state-addressed (carryWarnings).
+func (s *Service) Warnings() []string {
+	s.warnMu.Lock()
+	defer s.warnMu.Unlock()
+	return messages(s.warnings)
+}
+
+// carryWarnings is what Service.Warnings holds after the successful sync
+// res, given prev, what it held before: res's warnings, and each of prev's
+// whose network is still state-addressed and has no newer one in res. A
+// network that left state addressing, moved into git or deleted, takes its
+// warning with it, so /status never reports addressing that no longer
+// applies.
+func carryWarnings(prev []addressing.Change, res SyncResult) []addressing.Change {
+	var kept []addressing.Change
+	for _, w := range prev {
+		superseded := slices.ContainsFunc(res.Warnings, func(c addressing.Change) bool { return c.Network == w.Network })
+		if !superseded && slices.Contains(res.StateAddressed, w.Network) {
+			kept = append(kept, w)
+		}
+	}
+	return append(kept, res.Warnings...)
+}
+
+// messages is each change's Message, in order.
+func messages(cs []addressing.Change) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Message)
+	}
+	return out
 }
 
 // NewService builds a Service over syncer and store, either of which may be
@@ -120,7 +195,13 @@ func (s *Service) SetAgentRepo(repo agentdeploy.Repo) {
 func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return SyncOnce(ctx, s.syncer, s.store, s.tunnels, s.creds, now)
+	res, err := SyncOnce(ctx, s.syncer, s.store, s.tunnels, s.creds, s.addressing, now)
+	if err == nil {
+		s.warnMu.Lock()
+		s.warnings = carryWarnings(s.warnings, res)
+		s.warnMu.Unlock()
+	}
+	return res, err
 }
 
 // RestoreTunnelPeers registers the peers of every instance already in the
@@ -174,7 +255,7 @@ func NewFromService(svc *Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("POST /sync", handleSync(svc))
-	mux.HandleFunc("GET /status", handleStatus(svc.store))
+	mux.HandleFunc("GET /status", handleStatus(svc))
 	mux.HandleFunc("GET /networks", handleNetworks(svc.store))
 	mux.HandleFunc("GET /instances", handleInstances(svc.store))
 	mux.HandleFunc("POST /instances/{name}/seed", handleInstanceSeed(svc.store, svc.certs, svc.tunnels, svc.creds))
@@ -192,6 +273,9 @@ type syncResponse struct {
 	Networks  int        `json:"networks"`
 	Instances int        `json:"instances"`
 	Diff      diffCounts `json:"diff"`
+	// Warnings are this sync's own (SyncResult.Warnings). GET /status's
+	// sync_warnings carries them on, with earlier ones still in effect.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // diffCounts summarizes a configdiff.Result for the sync response — counts
@@ -227,31 +311,51 @@ func newDiffCounts(d configdiff.Result) diffCounts {
 	}
 }
 
-// ErrSync, ErrValidate, ErrIPAM, and ErrStore classify a SyncOnce failure by
-// stage: a pull/parse failure, a semantic-validation failure, or an
-// IP-assignment data problem (all three upstream's fault — bad repo content —
-// map to 502) versus a persistence failure (ours, maps to 500). Callers use
-// errors.Is to tell them apart.
+// ErrSync, ErrValidate, ErrIPAM, ErrStore, ErrAddressing and ErrResolve
+// classify a SyncOnce failure by stage: a pull/parse failure, a
+// semantic-validation failure, or an IP-assignment data problem (all three
+// upstream's fault — bad repo content — map to 502) versus a persistence
+// failure or an unreadable addressing file (this deployment's own, map to
+// 500), or git's networks not resolving against this web app's addressing
+// (409, since the fix may be on either side). Callers use errors.Is to tell
+// them apart.
 var (
 	ErrSync      = errors.New("sync failed")
 	ErrValidate  = errors.New("config validation failed")
 	ErrIPAM      = errors.New("ip assignment failed")
 	ErrWireGuard = errors.New("wireguard tunnel ip assignment failed")
 	ErrStore     = errors.New("store failed")
+	// ErrAddressing is a failure to read the addressing source
+	// (NETWORK_ADDRESSING_PATH), a local fault, not the git remote's.
+	ErrAddressing = errors.New("network addressing unavailable")
+	// ErrResolve is a resolution addressing.Resolve rejected for
+	// Rejection.Resolve's reasons: git's networks and this web app's
+	// addressing (CONFIG_REPO_PRIVATE, the addressing file) don't fit
+	// together. The commit may be sound: the agents' sync accepts it. A
+	// rejection with Rejection.Git issues is ErrValidate, since the commit
+	// is wrong on its own.
+	ErrResolve = errors.New("network addressing does not resolve")
 )
 
 // SyncResult is the outcome of one successful SyncOnce: the synced commit,
-// the parsed Config, and its diff against the prior stored snapshot.
+// the resolved Config, its diff against the prior stored snapshot, the
+// networks whose addressing came from state, and the sync's warnings:
+// today, one per state-addressed network whose addressing was loaded for
+// the first time or changed (addressing.Changes).
 type SyncResult struct {
-	Commit string
-	Config config.Config
-	Diff   configdiff.Result
+	Commit         string
+	Config         config.Config
+	Diff           configdiff.Result
+	StateAddressed []string
+	Warnings       []addressing.Change
 }
 
 // SyncOnce runs one config-sync cycle, shared by POST /sync and cmd/web's
 // background poller so both surface the same diff warnings and IP
-// assignments: pull from syncer, semantically validate the parsed config
-// (config.Validate), assign/validate static_ips (ipam.Assign) and WireGuard
+// assignments: pull from syncer, resolve each network's addressing from git
+// or from addr.State (addressing.Resolve, docs/Decisions.md §28, read afresh
+// every sync), semantically validate the resolved config (config.Validate),
+// assign/validate static_ips (ipam.Assign) and WireGuard
 // tunnel IPs (wireguard.AssignTunnelIPs) against the store's prior
 // snapshot (so auto-assigned addresses are stable across re-syncs), diff
 // the result against that same prior snapshot (logging warnings — the only
@@ -261,7 +365,9 @@ type SyncResult struct {
 // informational and a missing baseline only means auto-assignment can't
 // reuse a prior address this one time. A nil store skips validation, IPAM,
 // the diff, and the replace (sync-only mode). Errors wrap ErrSync
-// (pull/parse), ErrValidate (gateway/range/static_ip semantics), ErrIPAM
+// (pull/parse), ErrAddressing (the addressing source can't be read),
+// ErrResolve (git's networks don't resolve against the addressing),
+// ErrValidate (git's addressing is wrong on its own, or gateway/range/static_ip semantics), ErrIPAM
 // (duplicate/out-of-range/exhausted static_ip), ErrWireGuard (tunnel IP
 // pool exhausted), or ErrStore (persistence).
 //
@@ -275,19 +381,41 @@ type SyncResult struct {
 // diff-and-warn posture rather than failing an otherwise-successful sync.
 // Peer removal for instances no longer present is not done here — see
 // docs/Out of Scope.md's existing cert-rotation/revocation deferral.
-func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSource, creds nodeprovision.CredentialStore, now time.Time) (SyncResult, error) {
+func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSource, creds nodeprovision.CredentialStore, addr Addressing, now time.Time) (SyncResult, error) {
 	cfg, sha, err := syncer.Sync(ctx)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("%w: %w", ErrSync, err)
 	}
 
 	var diff configdiff.Result
+	var warnings []addressing.Change
+	var stateAddressed []string
 	if store != nil {
 		oldCfg, firstSync, err := readSnapshot(ctx, store)
+		priorRead := err == nil
 		if err != nil {
 			log.Printf("read prior state: %v", err)
 			firstSync = true
 		}
+
+		// Join git's networks with the state addressing first, so every
+		// check below sees one resolved Network per name whichever source
+		// addressed it. The source is read on every sync, never cached by
+		// commit: the addressing file can change while the commit doesn't.
+		var state []config.Network
+		if addr.State != nil {
+			if state, err = addr.State.Networks(ctx); err != nil {
+				return SyncResult{}, fmt.Errorf("%w: %w", ErrAddressing, err)
+			}
+		}
+		resolved, rej := addressing.Resolve(cfg, state, addressing.Options{RepoPrivate: addr.RepoPrivate})
+		switch {
+		case !rej.Git.Empty():
+			return SyncResult{}, fmt.Errorf("%w: addressing: %w", ErrValidate, rej.All())
+		case !rej.Resolve.Empty():
+			return SyncResult{}, fmt.Errorf("%w: %w", ErrResolve, rej.Resolve)
+		}
+		cfg, stateAddressed = resolved.Config, resolved.StateAddressed
 
 		// Validate the operator-authored config before IPAM fills in any
 		// auto-assigned addresses, so explicit static_ips/gateways/ranges are
@@ -324,12 +452,28 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 			return SyncResult{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}
 
+		// Reported once the sync has landed, so a rejected sync never
+		// announces addressing it didn't apply. With no prior snapshot read,
+		// there's nothing to compare: every state-addressed network would be
+		// reported as loaded, which would be false.
+		switch {
+		case !priorRead:
+			log.Printf("addressing: prior state unreadable, so this sync reports no addressing changes")
+		case firstSync:
+			warnings = addressing.Changes(configdiff.Diff(config.Config{}, cfg), resolved)
+		default:
+			warnings = addressing.Changes(diff, resolved)
+		}
+		for _, w := range warnings {
+			log.Printf("addressing: %s", w.Message)
+		}
+
 		if tunnels != nil {
 			reconcileTunnelPeers(ctx, tunnels, creds, cfg.Instances)
 		}
 	}
 
-	return SyncResult{Commit: sha, Config: cfg, Diff: diff}, nil
+	return SyncResult{Commit: sha, Config: cfg, Diff: diff, StateAddressed: stateAddressed, Warnings: warnings}, nil
 }
 
 // logMovedTunnelIPs logs each instance whose tunnel address AssignTunnelIPs
@@ -413,11 +557,20 @@ func handleSync(svc *Service) http.HandlerFunc {
 			// Avoid returning raw internal errors to clients; keep the
 			// detail in the server log instead.
 			log.Printf("sync failed: %v", err)
-			if errors.Is(err, ErrStore) {
+			switch {
+			case errors.Is(err, ErrStore):
 				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
+			case errors.Is(err, ErrAddressing):
+				// The web app's own addressing file, not the git remote:
+				// a 502 would point the operator at the wrong cause.
+				http.Error(w, "sync failed: can't read the network addressing file (NETWORK_ADDRESSING_PATH); see the server log", http.StatusInternalServerError)
+			case errors.Is(err, ErrResolve):
+				// Neither the remote's fault alone nor this deployment's:
+				// the fix may be in git or in these settings.
+				http.Error(w, "sync failed: git's networks don't resolve against this web app's network addressing (CONFIG_REPO_PRIVATE, NETWORK_ADDRESSING_PATH); see the server log", http.StatusConflict)
+			default:
+				http.Error(w, "sync failed", http.StatusBadGateway)
 			}
-			http.Error(w, "sync failed", http.StatusBadGateway)
 			return
 		}
 
@@ -426,6 +579,7 @@ func handleSync(svc *Service) http.HandlerFunc {
 			Networks:  len(res.Config.Networks),
 			Instances: len(res.Config.Instances),
 			Diff:      newDiffCounts(res.Diff),
+			Warnings:  messages(res.Warnings),
 		})
 	}
 }
@@ -460,9 +614,16 @@ type statusResponse struct {
 	Synced   bool   `json:"synced"`
 	Commit   string `json:"commit,omitempty"`
 	SyncedAt string `json:"synced_at,omitempty"`
+	// SyncWarnings are the addressing changes still in effect since this
+	// web app started (Service.Warnings): for each state-addressed network,
+	// the last time its addressing was loaded or changed, which configdiff
+	// can't attribute. Each stays until its network's addressing changes
+	// again or leaves state addressing.
+	SyncWarnings []string `json:"sync_warnings,omitempty"`
 }
 
-func handleStatus(store Store) http.HandlerFunc {
+func handleStatus(svc *Service) http.HandlerFunc {
+	store := svc.store
 	return func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
 			http.Error(w, "store not configured", http.StatusServiceUnavailable)
@@ -479,7 +640,7 @@ func handleStatus(store Store) http.HandlerFunc {
 			writeJSON(w, statusResponse{Synced: false})
 			return
 		}
-		writeJSON(w, statusResponse{Synced: true, Commit: commit, SyncedAt: syncedAt.Format(time.RFC3339)})
+		writeJSON(w, statusResponse{Synced: true, Commit: commit, SyncedAt: syncedAt.Format(time.RFC3339), SyncWarnings: svc.Warnings()})
 	}
 }
 

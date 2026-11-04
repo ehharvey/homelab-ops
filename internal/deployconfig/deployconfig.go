@@ -89,6 +89,8 @@ var Settings = []Setting{
 	{Name: "CONFIG_REPO_URL", Source: WebEnv},
 	{Name: "CONFIG_REPO_REF", Source: WebEnv},
 	{Name: "CONFIG_SYNC_INTERVAL", Source: WebEnv},
+	{Name: "CONFIG_REPO_PRIVATE", Source: WebEnv},
+	{Name: "NETWORK_ADDRESSING_PATH", Source: WebEnv},
 	{Name: "STORE_PATH", Source: WebEnv},
 	{Name: "CLIENT_CERT_PATH", Source: File, File: ClientCertFile},
 	{Name: "BASE_IMAGE_PATH", Source: WebEnv},
@@ -128,6 +130,13 @@ type Config struct {
 	// SyncInterval is the background poll interval; 0 means sync only on
 	// POST /sync.
 	SyncInterval time.Duration
+	// ConfigRepoPrivate allows network addressing in git (docs/Decisions.md
+	// §28, #199). False, the default, rejects it at sync: a public repo must
+	// not publish the LAN's addresses.
+	ConfigRepoPrivate bool
+	// NetworkAddressingPath is the file of kind: Network documents that
+	// addresses the state-addressed networks (§28, #199); "" means none.
+	NetworkAddressingPath string
 
 	StorePath       string
 	ClientCertPath  string
@@ -164,6 +173,8 @@ func Load() (Config, error) {
 	c.ConfigRepoURL = l.get("CONFIG_REPO_URL")
 	c.ConfigRepoRef = l.get("CONFIG_REPO_REF")
 	c.SyncInterval = l.duration("CONFIG_SYNC_INTERVAL")
+	c.ConfigRepoPrivate = l.boolean("CONFIG_REPO_PRIVATE")
+	c.NetworkAddressingPath = l.get("NETWORK_ADDRESSING_PATH")
 	c.StorePath = l.get("STORE_PATH")
 	if c.StorePath == "" {
 		c.StorePath = DefaultStorePath
@@ -373,6 +384,20 @@ func (l *loader) duration(name string) time.Duration {
 	return d
 }
 
+// boolean reads "true" or "false", or false when unset or empty. Nothing else
+// is accepted, so a typo can't silently pick either side.
+func (l *loader) boolean(name string) bool {
+	switch raw := l.get(name); raw {
+	case "", "false":
+		return false
+	case "true":
+		return true
+	default:
+		l.fail(name, "%q: want \"true\" or \"false\"", raw)
+		return false
+	}
+}
+
 // validate checks the settings against each other and the filesystem.
 func (l *loader) validate() {
 	c := &l.cfg
@@ -401,6 +426,7 @@ func (l *loader) validate() {
 	for _, f := range []struct{ name, path string }{
 		{"CLIENT_CERT_PATH", c.ClientCertPath},
 		{"BASE_IMAGE_PATH", c.BaseImagePath},
+		{"NETWORK_ADDRESSING_PATH", c.NetworkAddressingPath},
 	} {
 		if f.path == "" {
 			continue

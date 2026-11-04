@@ -77,8 +77,7 @@ trap cleanup EXIT
 # environment replaced (!override) by DEPLOYMENT_CONFIG_DIR and the given
 # lines alone. CONFIG_REPO_PRIVATE=true is there because the dev fixture's
 # fleet is git-addressed, which #199 refuses from a repo not declared
-# private; until #199 lands nothing reads it, and an env var cmd/web doesn't
-# know is ignored (only web.env's keys are checked).
+# private.
 write_override() {
   {
     cat <<'EOF'
