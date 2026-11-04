@@ -14,6 +14,17 @@
 # Locked worktrees (Claude Code locks a subagent's while it runs) and the one
 # you're standing in are never touched.
 #
+# "Clean" is `git status`, which also reports modified or untracked files
+# inside a checked-out submodule (third_party/incus-os). gc removes with
+# --force, since plain `worktree remove` refuses any worktree with an
+# initialized submodule (#375). Accepted risk: work that leaves the submodule
+# at its recorded commit with a clean tree (commits made inside it and then
+# checked back out of, or a stash there) is lost. The submodule is a
+# read-only upstream reference, so no work should be made there.
+#
+# A removal that fails is reported as `failed` with git's error and the sweep
+# carries on; gc then exits 1.
+#
 # No per-worktree setup is needed for hooks. `make hooks` sets core.hooksPath
 # to the relative `.githooks`, but Claude Code's worktree setup rewrites the
 # shared config to the main checkout's absolute .githooks (#279). Then git
@@ -98,11 +109,12 @@ verdict() {
 }
 
 # walk <apply:0|1> — one line per linked worktree: action, path, branch, reason.
+# Returns 1 if any removal failed (gc's exit status), else 0.
 walk() {
 	local apply="$1"
 	git -C "$root" fetch -q origin main
 
-	local path="" head="" branch="" flag="" first=1
+	local path="" head="" branch="" flag="" first=1 failed=0
 	# A blank line ends each record; the trailing echo flushes the last one.
 	while IFS= read -r line; do
 		case "$line" in
@@ -122,9 +134,14 @@ walk() {
 				*) IFS=$'\t' read -r action reason < <(verdict "$path" "$head" "$branch") ;;
 				esac
 				if [ "$apply" = 1 ] && [ "$action" = remove ]; then
-					git -C "$root" worktree remove "$path"
-					[ -n "$branch" ] && git -C "$root" branch -q -D "$branch"
-					action=removed
+					local err
+					if ! err=$(git -C "$root" worktree remove --force "$path" 2>&1); then
+						action=failed reason="${err//$'\n'/ }" failed=1
+					elif [ -n "$branch" ] && ! err=$(git -C "$root" branch -q -D "$branch" 2>&1); then
+						action=failed reason="worktree removed, branch kept: ${err//$'\n'/ }" failed=1
+					else
+						action=removed
+					fi
 				elif [ "$apply" = 1 ] && [ "$action" = prune ]; then
 					action=pruned # by the `worktree prune` below
 				elif [ "$apply" = 0 ] && [ "$action" != keep ]; then
@@ -138,7 +155,7 @@ walk() {
 	done < <(git -C "$root" worktree list --porcelain; echo)
 
 	[ "$apply" = 1 ] && git -C "$root" worktree prune
-	return 0
+	return "$failed"
 }
 
 case "${1:-}" in
