@@ -1,6 +1,6 @@
 # One node, for the bootstrap CLI: exactly one Network and one Instance.
 #
-#   ./bin/bootstrap render-seed --file examples/single-node/fleet.yaml \
+#   ./bin/bootstrap render-seed --file examples/nodes/single-node/fleet.yaml \
 #     --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed
 #
 # The CLI has no IPAM, so static_ip is what makes this node a one-member Incus

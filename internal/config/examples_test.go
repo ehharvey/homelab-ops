@@ -8,11 +8,13 @@ import (
 	"testing"
 )
 
-// examplesDir is the repo's examples/ directory, relative to this package.
-const examplesDir = "../../examples"
+// examplesDir is the repo's examples/nodes/ directory, relative to this
+// package: the fleet config repos. examples/webapp/ is a deployment config
+// directory (#241), not a config repo, so it sits outside it.
+const examplesDir = "../../examples/nodes"
 
-// TestExamplesParseAndValidate reads each examples/<name>/ directory the way
-// internal/configsync reads a config repo — every *.yaml/*.yml file at its
+// TestExamplesParseAndValidate reads each examples/nodes/<name>/ directory the
+// way internal/configsync reads a config repo — every *.yaml/*.yml file at its
 // root, in file-name order, merged — and requires the result to parse and pass
 // Validate. It exists so the examples can't drift from the schema they
 // document: a renamed field or a new required one fails here, not in an

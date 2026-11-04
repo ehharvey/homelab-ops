@@ -17,7 +17,7 @@ browsability; never edit the wiki directly.
    checkout.
 3. Run the bootstrap pipeline for node #0 (`fleet.yaml`: one `kind: Network`
    + one `kind: Instance` doc — see [`docs/Config Schema.md`](docs/Config%20Schema.md), or start from
-   [`examples/single-node/fleet.yaml`](examples/single-node/fleet.yaml)):
+   [`examples/nodes/single-node/fleet.yaml`](examples/nodes/single-node/fleet.yaml)):
 
        ./bin/bootstrap gen-cert --output-dir ./bootstrap-output/cert
        ./bin/bootstrap render-seed --file fleet.yaml --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed

@@ -88,7 +88,7 @@ func execDeployAgent(t *testing.T, args ...string) (string, error) {
 
 func TestDeployAgentCreatesThenReportsAlreadyDeployed(t *testing.T) {
 	env := newDeployAgentEnv(t)
-	// Split across two files, as in examples/fleet/.
+	// Split across two files, as in examples/nodes/fleet/.
 	fleet := env.file(t, "fleet.yaml", renderSeedFixture)
 	apps := env.file(t, "apps.yaml", deployAgentAppFixture)
 	node := nodeprovisiontest.New(t, "unrelated")

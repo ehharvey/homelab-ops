@@ -112,7 +112,7 @@ jobs:
 
   # Builds the agent image (#102) on every PR and push, and publishes it to
   # GHCR from main only: tagged with the commit SHA, plus latest, which the
-  # agent App's image.alias tracks (examples/fleet/apps.yaml). The push step
+  # agent App's image.alias tracks (examples/nodes/fleet/apps.yaml). The push step
   # is gated with `if:` rather than splitting the job, so the job reports a
   # status on PRs too. The concurrency group keeps two quick merges to main
   # from racing: without it the older commit's run can push latest last.

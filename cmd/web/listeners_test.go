@@ -64,10 +64,9 @@ func get(t *testing.T, client *http.Client, url string) (int, string, error) {
 }
 
 func TestListenDefaultServesHealthOnly(t *testing.T) {
-	t.Setenv("HEALTH_LISTEN_ADDR", "127.0.0.1:0")
 	logs := captureLog(t)
 
-	ls, err := listen(apiStub, nil, nil, "")
+	ls, err := listen(apiStub, nil, nil, "127.0.0.1:0", "")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -89,10 +88,9 @@ func TestListenDefaultServesHealthOnly(t *testing.T) {
 }
 
 func TestListenHostListenerServesAPIAndWarns(t *testing.T) {
-	t.Setenv("HEALTH_LISTEN_ADDR", "127.0.0.1:0")
 	logs := captureLog(t)
 
-	ls, err := listen(apiStub, nil, nil, "127.0.0.1:0")
+	ls, err := listen(apiStub, nil, nil, "127.0.0.1:0", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -113,9 +111,8 @@ func TestListenHostListenerServesAPIAndWarns(t *testing.T) {
 }
 
 func TestListenRejectsABadHostAddress(t *testing.T) {
-	t.Setenv("HEALTH_LISTEN_ADDR", "127.0.0.1:0")
 	captureLog(t)
-	if _, err := listen(apiStub, nil, nil, "not-an-address"); err == nil {
+	if _, err := listen(apiStub, nil, nil, "127.0.0.1:0", "not-an-address"); err == nil {
 		t.Fatal("listen with an unparseable API_HOST_LISTEN_ADDR succeeded, want an error")
 	}
 }
@@ -126,8 +123,6 @@ func TestListenRejectsABadHostAddress(t *testing.T) {
 // on WebAppAddr, an operator peer reaches it, and a node peer, registered
 // the way a sync registers instances, is refused.
 func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
-	t.Setenv("HEALTH_LISTEN_ADDR", "127.0.0.1:0")
-	t.Setenv("WIREGUARD_PORT", "0")
 	captureLog(t)
 
 	st, err := store.Open(context.Background(), ":memory:")
@@ -143,7 +138,7 @@ func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 	opAddr := netip.MustParseAddr("10.100.0.240")
 	operators := []wireguard.OperatorPeer{{PublicKey: opPub, Addr: opAddr}}
 
-	ts, err := newTunnelSource(context.Background(), st, "127.0.0.1:51820", operators)
+	ts, err := newTunnelSource(context.Background(), st, "127.0.0.1:51820", 0, operators)
 	if err != nil {
 		t.Fatalf("newTunnelSource: %v", err)
 	}
@@ -165,7 +160,7 @@ func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 		t.Fatalf("register node peer: %v", err)
 	}
 
-	ls, err := listen(apiStub, ts.tun, operators, "")
+	ls, err := listen(apiStub, ts.tun, operators, "127.0.0.1:0", "")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -210,26 +205,20 @@ func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 	}
 }
 
-func TestCheckRetiredPort(t *testing.T) {
+// A set PORT is only logged here: deployconfig.Load refuses one with no API
+// listener (TestLoadRefusesRetiredPortWithoutAListener).
+func TestNoteRetiredPort(t *testing.T) {
 	cases := []struct {
-		name, port, endpoint, hostAddr string
-		wantErr, wantLog               bool
+		name, port string
+		wantLog    bool
 	}{
-		{"PORT unset", "", "", "", false, false},
-		{"PORT with no API listener", "8080", "", "", true, false},
-		{"PORT with the tunnel", "8080", "203.0.113.1:51820", "", false, true},
-		{"PORT with a host listener", "8080", "", ":8080", false, true},
+		{"PORT unset", "", false},
+		{"PORT set", "8080", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := captureLog(t)
-			err := checkRetiredPort(tc.port, tc.endpoint, tc.hostAddr)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("checkRetiredPort err = %v, want error: %v", err, tc.wantErr)
-			}
-			if err != nil && !strings.Contains(err.Error(), "API_HOST_LISTEN_ADDR=:8080") {
-				t.Errorf("error %q doesn't name the opt-in that keeps the old port", err)
-			}
+			noteRetiredPort(tc.port)
 			if got := strings.Contains(logs.String(), "is no longer read"); got != tc.wantLog {
 				t.Errorf("logged the retired-PORT notice: %v, want %v (log: %q)", got, tc.wantLog, logs.String())
 			}
