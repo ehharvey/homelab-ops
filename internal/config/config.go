@@ -103,6 +103,15 @@ type Instance struct {
 	// yet) compare equal in configdiff. omitempty keeps GET /instances
 	// unchanged for the default.
 	OS string `yaml:"os" json:",omitempty"`
+	// Runtime is the cluster runtime this machine runs workloads under, as
+	// written in the fleet YAML: empty when omitted. Read it through
+	// ClusterRuntime, which applies the DefaultRuntime default. It lives on
+	// the Instance because config has no cluster entity: every Instance in a
+	// fleet is a member of its one cluster, so Validate requires them all to
+	// resolve to the same runtime (docs/Config Schema.md § kind: Instance).
+	// The raw value is kept, as for OS, and the store keeps it raw too, so
+	// omitempty keeps GET /instances unchanged for the default.
+	Runtime string `yaml:"runtime" json:",omitempty"`
 	// TunnelIP is this instance's assigned address on the WireGuard overlay
 	// (internal/wireguard.OverlayCIDR) — always app-assigned
 	// (internal/wireguard.AssignTunnelIPs), never accepted from synced
@@ -159,6 +168,66 @@ func (i Instance) HostOS() string {
 		return DefaultOS
 	}
 	return i.OS
+}
+
+// Cluster runtime names an Instance's runtime field accepts
+// (docs/Decisions.md §31). As with host OSes, every name here is known to the
+// config format, but only those in implementedRuntimes have a backend;
+// Validate rejects the rest with a message distinct from an unknown name's.
+const (
+	RuntimeIncus      = "incus"
+	RuntimeKubernetes = "kubernetes"
+)
+
+// DefaultRuntime is the cluster runtime of an Instance whose runtime is
+// omitted: every cluster was Incus before the field existed.
+const DefaultRuntime = RuntimeIncus
+
+// runtimes lists the known cluster runtime names, in the order messages name
+// them.
+var runtimes = []string{RuntimeIncus, RuntimeKubernetes}
+
+// implementedRuntimes are the cluster runtimes this build can run.
+var implementedRuntimes = map[string]bool{RuntimeIncus: true}
+
+// implementedRuntimeList is implementedRuntimes in runtimes order, for
+// messages.
+var implementedRuntimeList = func() []string {
+	var out []string
+	for _, name := range runtimes {
+		if implementedRuntimes[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}()
+
+// allowedRuntimes is the allowed-pairs table of host OS and cluster runtime
+// (docs/Decisions.md §31): for each known host OS, the runtimes it can run,
+// in runtimes order. It's the one place the pairing is encoded, so a new host
+// OS or runtime adds or extends a row here; TestAllowedRuntimesCoversKnownNames
+// fails if a known host OS has no row or a row names an unknown runtime.
+var allowedRuntimes = map[string][]string{
+	OSIncusOS: {RuntimeIncus},
+	OSTalos:   {RuntimeKubernetes},
+	OSDebian:  {RuntimeIncus, RuntimeKubernetes},
+}
+
+// Runtimes returns every cluster runtime name the config format knows,
+// implemented or not.
+func Runtimes() []string { return append([]string(nil), runtimes...) }
+
+// RuntimeImplemented reports whether name is a cluster runtime this build can
+// run.
+func RuntimeImplemented(name string) bool { return implementedRuntimes[name] }
+
+// ClusterRuntime returns the instance's cluster runtime: its runtime field,
+// or DefaultRuntime when that's omitted.
+func (i Instance) ClusterRuntime() string {
+	if i.Runtime == "" {
+		return DefaultRuntime
+	}
+	return i.Runtime
 }
 
 // Replicas is an App's cardinality: a fixed count, or one per known Instance

@@ -51,8 +51,38 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed Open
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := addMissingColumns(ctx, db); err != nil {
+		db.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed Open
+		return nil, err
+	}
 
 	return &Store{db: db}, nil
+}
+
+// addedColumns are columns added to a table after a store file holding it
+// could already exist. schema.sql's CREATE TABLE IF NOT EXISTS leaves an
+// existing table as it was, so Open adds each one that's missing. A new
+// column goes into schema.sql (for a fresh file) and here (for an old one),
+// with a DEFAULT so existing rows get a value.
+var addedColumns = []struct{ table, column, addSQL string }{
+	{"instances", "runtime", addInstancesRuntimeSQL},
+}
+
+// addMissingColumns adds every addedColumns entry the open store lacks.
+func addMissingColumns(ctx context.Context, db *sql.DB) error {
+	for _, c := range addedColumns {
+		var n int
+		if err := db.QueryRowContext(ctx, countColumnSQL, c.table, c.column).Scan(&n); err != nil {
+			return fmt.Errorf("look up column %s.%s: %w", c.table, c.column, err)
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, c.addSQL); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
 }
 
 // Close closes the underlying database handle.
@@ -122,7 +152,7 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 		}
 		if _, err := tx.ExecContext(ctx, replaceInstanceSQL,
 			i.Name, i.MAC, i.Network, asText(i.StaticIP), i.Disk, i.NIC,
-			boolToInt(i.Security.TPM), boolToInt(i.Security.SecureBoot), string(apps), asText(i.TunnelIP),
+			boolToInt(i.Security.TPM), boolToInt(i.Security.SecureBoot), string(apps), asText(i.TunnelIP), i.Runtime,
 		); err != nil {
 			return fmt.Errorf("store instance %q: %w", i.Name, err)
 		}
@@ -313,7 +343,7 @@ func scanInstance(r row) (config.Instance, error) {
 	var i config.Instance
 	var tpm, secureBoot int
 	var staticIP, apps, tunnelIP string
-	if err := r.Scan(&i.Name, &i.MAC, &i.Network, &staticIP, &i.Disk, &i.NIC, &tpm, &secureBoot, &apps, &tunnelIP); err != nil {
+	if err := r.Scan(&i.Name, &i.MAC, &i.Network, &staticIP, &i.Disk, &i.NIC, &tpm, &secureBoot, &apps, &tunnelIP, &i.Runtime); err != nil {
 		return config.Instance{}, err
 	}
 	if err := i.StaticIP.UnmarshalText([]byte(staticIP)); err != nil {

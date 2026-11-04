@@ -82,7 +82,8 @@ dns: [192.168.1.1]
 
 ### `kind: Instance`
 
-One physical machine, and the host OS it runs (`os`, IncusOS unless set).
+One physical machine, the host OS it runs (`os`, IncusOS unless set), and the
+cluster runtime it runs workloads under (`runtime`, Incus unless set).
 
 ```yaml
 kind: Instance
@@ -101,6 +102,7 @@ applications: [incus]
 | Field | Type | Required | Rules and meaning |
 |---|---|---|---|
 | `os` | string | no, default `incusos` | The host OS, which picks how the machine's seed and image are rendered (`internal/hostos`, `docs/Decisions.md` §31). Only `incusos` is implemented. `talos` and `debian` are known but have no backend yet, and any other value is unknown; each is rejected with its own message (`instances[N].os`). |
+| `runtime` | string | no, default `incus` | The cluster runtime, `incus` or `kubernetes` (§31). It must be one the `os` can run (the table below), and every Instance in the repo must share it. Only `incus` is implemented; `kubernetes` is known but has no backend yet. It's on the Instance because there's no cluster entity: every Instance in a repo is a member of its one cluster. |
 | `name` | string | yes | Unique among Instances, and a lowercase hostname label: 1–63 of `a-z`, `0-9` and `-`, not starting or ending with `-`, not all digits. Lowercase only, because `Node0` and `node0` would be "unique" and yet name the same host. It's the node's identity everywhere downstream: its Incus cluster member name, its cert names, its web-app store key, and the agent's `AGENT_NODE_NAME`. #193 also makes it the node's hostname. The rule is stricter than Incus's own member-name check, so a name that passes is valid everywhere. |
 | `mac` | string | yes, in effect | The NIC IncusOS configures as `eth0`. Not validated; a wrong MAC leaves the node's network unconfigured at boot. Quoting is optional. |
 | `network` | string | yes | A declared Network's `name`, checked for every instance, DHCP or not. The instance must sit on that network. |
@@ -110,6 +112,40 @@ applications: [incus]
 | `security.tpm` | bool | no, default `false` | Whether the machine has a TPM. `false` tells the IncusOS installer to proceed without one. |
 | `security.secure_boot` | bool | no, default `false` | The same, for Secure Boot. |
 | `applications` | list | yes | IncusOS host applications. Only `[incus]` is supported (checked at render). This is unrelated to `kind: App`. |
+
+#### `os` and `runtime`
+
+Which runtimes each host OS can run (§31). `internal/config` holds this as one
+table, and a new host OS or runtime adds a row:
+
+| `os` | allowed `runtime` |
+|---|---|
+| `incusos` | `incus` |
+| `talos` | `kubernetes` |
+| `debian` | `incus` or `kubernetes` |
+
+`Validate` checks each Instance in this order and reports the first that
+applies, so each Instance gets the one error that names its fix:
+
+1. An unknown `os` reports "not a known host OS", and no pair check.
+2. An unknown `runtime` reports "not a known runtime; known: incus,
+   kubernetes", and no pair check.
+3. A pair the table doesn't allow reports only that, for example
+   `os "talos" only runs kubernetes, not "incus"` (at
+   `instances[N].runtime`). That holds even when the `os` or `runtime` also has
+   no backend: adding the backend wouldn't make the pair valid.
+4. An allowed pair goes on to the no-backend errors, `os` then `runtime`. So
+   `os: talos` with `runtime: kubernetes` reports that neither has a backend
+   yet.
+
+**One cluster per repo.** Every Instance must resolve to the same `os` and the
+same `runtime`, because a cluster's members all run one host OS (§30) and one
+runtime. Resolved values are compared, so an omitted field equals its default.
+Each Instance that differs from the first is reported at `instances[N].os` or
+`instances[N].runtime`, in addition to its own errors above. An Instance whose
+`os` or `runtime` is unknown is left out of the comparison, since it already
+has its own error. If #181 or #440 later lets a repo hold several clusters,
+this check narrows to each cluster's members.
 
 `tunnel_ip` is **not** a config field. The web app assigns each node's
 WireGuard overlay address itself, and a `tunnel_ip:` in git is rejected as an

@@ -2341,7 +2341,7 @@ There is one acting instance per cluster throughout, §25's invariant unchanged.
 
 ### Clusters are same-OS, joined by the agent
 
-A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The `os` field exists (#398, Phase 4, §31), but the check that a cluster's members declare one `os` arrives in #487, together with the per-cluster `runtime`: config has no cluster entity until #181's membership model exists. Until then `incusos` is the only `os` with a backend, so every host is IncusOS and #181 (parked) has nothing to check.
+A cluster's members all run one host OS. Incus rejects a joiner whose schema or API version differs from the cluster's at `Accept` (§27), and members on different OSes, each updating on its own schedule, would never reliably converge. A host in no cluster is standalone, a one-member cluster (above), and still runs an agent. The `os` field (#398, Phase 4, §31) and the cluster `runtime` (#487) are on `kind: Instance`, because config has no cluster entity. So every Instance in a repo is a member of its one cluster, and `config.Validate` requires them all to resolve to the same `os` and the same `runtime`. That matches one `kind: Designation` per repo (#440) and #181's one `bootstrap` per fleet; if either later lets a repo hold several clusters, the check narrows to each cluster's members. `incusos` is still the only `os` with a backend, so in practice every host is IncusOS.
 
 ### Host OS order
 
@@ -2367,6 +2367,7 @@ Superseded by §31's layout (see History). Phase 3 is unchanged and is finished 
 ### History
 
 - **2026-11-02 (#466, §31):** the pivot to bare-metal Kubernetes on Talos. This section's rules now describe the Incus runtime, which is kept building but parked after Phase 3. Superseded: the host OS order (IncusOS → Debian → NixOS → Talos, Phase 6) and the Roadmap layout (3: the agent; 4: web app appliance and hardening; 5: same-OS Incus clusters; 6: multi-OS hosts; 7: Tailscale; 8: App management). Node access and auth stand; the SSH CA for Debian and NixOS hosts is parked with them.
+- **2026-11-04 (#487, operator):** the same-OS check no longer waits for #181's membership model. It applies fleet-wide, to `os` and `runtime` alike, until a repo can hold several clusters. It used to say the check would arrive with a per-cluster `runtime` once config had a cluster entity. §31's Config bullet is corrected in place to match: `runtime` is on `Instance`, and the allowed-pairs table is checked in `config.Validate`, not at parse.
 
 ## 31. Pivot to bare-metal Kubernetes on Talos; the project becomes runtime-agnostic (2026-11-02)
 
@@ -2376,7 +2377,7 @@ The main line moves from IncusOS hosts, with Kubernetes later on top, to **bare-
 
 ### Runtime-agnostic seams
 
-- **Config.** `Instance.os` (`incusos | talos | debian | <own distro>`; #398's field) and a per-cluster `runtime` (`incus | kubernetes`), with an allowed-pairs table checked at parse:
+- **Config.** `Instance.os` (`incusos | talos | debian | <own distro>`; #398's field) and a cluster `runtime` (`incus | kubernetes`; on `Instance`, since config has no cluster entity, #487), with an allowed-pairs table checked by `config.Validate`:
 
   | `os` | allowed `runtime` |
   |---|---|
@@ -2474,6 +2475,7 @@ In `full` mode IPAM owns the whole subnet and the pool is configured explicitly,
 
 - **2026-10-27 (#109 refinement, operator):** a standalone host needs a `kind: Designation` naming its node, like any cluster. It used to be its own primary implicitly, with no Designation; that rule was dropped before it was built, so `Designated` and `MayAct` never gained it. The consequence, one unattended cluster or standalone host per repo, waits on #440.
 - **2026-10-28 (#109):** the agent's self-upgrade built as above, with #103's validate script folded in.
+- **2026-11-04 (#487, operator):** `config.Validate`'s allowed-pairs table leaves out the own-distro row: that OS has no config name yet, so the issue that names it adds the row and decides about `incus`.
 
 ## Sources consulted
 

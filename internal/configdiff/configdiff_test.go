@@ -304,3 +304,30 @@ func TestDiffExplicitDefaultOSIsUnchanged(t *testing.T) {
 		t.Errorf("Diff(os omitted, os: talos) = %+v, want one ChangedInstance", got)
 	}
 }
+
+// TestDiffRuntime pins that runtime is compared resolved: an omitted runtime
+// and `runtime: incus` are the same machine, in either direction, while incus
+// and kubernetes differ.
+func TestDiffRuntime(t *testing.T) {
+	omitted := inst("devnode0", "10.0.0.10")
+	incus := omitted
+	incus.Runtime = config.RuntimeIncus
+	k8s := omitted
+	k8s.Runtime = config.RuntimeKubernetes
+	diff := func(a, b config.Instance) Result {
+		return Diff(config.Config{Instances: []config.Instance{a}}, config.Config{Instances: []config.Instance{b}})
+	}
+
+	if got := diff(omitted, incus); !got.Empty() {
+		t.Errorf("Diff(runtime omitted, runtime: incus) = %+v, want Empty()", got)
+	}
+	if got := diff(incus, omitted); !got.Empty() {
+		t.Errorf("Diff(runtime: incus, runtime omitted) = %+v, want Empty()", got)
+	}
+	if got := diff(incus, k8s); len(got.ChangedInstances) != 1 {
+		t.Errorf("Diff(runtime: incus, runtime: kubernetes) = %+v, want one ChangedInstance", got)
+	}
+	if got := diff(omitted, k8s); len(got.ChangedInstances) != 1 {
+		t.Errorf("Diff(runtime omitted, runtime: kubernetes) = %+v, want one ChangedInstance", got)
+	}
+}
