@@ -2,6 +2,11 @@ FROM mcr.microsoft.com/devcontainers/base:bookworm
 
 RUN apt-get update && apt-get upgrade -y
 RUN apt-get install -y curl openssl ca-certificates unzip
+# sbsigntool (sbverify) and efitools (sig-list-to-certs, sign-efi-sig-list)
+# check internal/secureboot's output independently in
+# scripts/validate/secureboot-keys-sign-and-verify-a-test-binary.sh (#489);
+# efitools' HelloWorld.efi is its test binary.
+RUN apt-get install -y sbsigntool efitools
 RUN curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
 
 RUN <<EOT

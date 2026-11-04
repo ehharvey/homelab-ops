@@ -81,9 +81,9 @@ it is tracked separately, and the "runs in CI" column below states intent, not
 current fact.
 
 Tags in use: `base-image`, `ct-image`, `flasher-tool`, `host-os`, `incus-cluster`, `incus-instances`,
-`incus-remote`, `incus-socket`, `opt-in`, `upstream`. Six describe a prerequisite the environment
+`incus-remote`, `incus-socket`, `opt-in`, `secureboot-tools`, `upstream`. Seven describe a prerequisite the environment
 didn't supply — an IncusOS image, a container image, the `flasher-tool`
-binary, a readable/writable Incus unix socket, (`incus-cluster`) a
+binary, sbsigntool or efitools (`secureboot-tools`), a readable/writable Incus unix socket, (`incus-cluster`) a
 clustered daemon, for a check that needs cluster members or a create's
 `target=` (at least two Online members for the targeted create, so that an
 ignored target would land elsewhere), or (`incus-remote`) a reachable
@@ -329,7 +329,7 @@ a failure.
 
 | group | what it needs | belongs in CI |
 |---|---|---|
-| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` needs `jq`, `git` (a stub `gh`), `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos), `commit-identity-guard-refuses-other-addresses.sh` only `git` (local repos), `backfill-refuses-non-adjacent-unit.sh` `git`, `jq` (a local repo, no GitHub), and `commit-msg-no-closes-checks-sections-only.sh` nothing (stdin) | yes |
+| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` needs `jq`, `git` (a stub `gh`), `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos), `commit-identity-guard-refuses-other-addresses.sh` only `git` (local repos), `backfill-refuses-non-adjacent-unit.sh` `git`, `jq` (a local repo, no GitHub), `commit-msg-no-closes-checks-sections-only.sh` nothing (stdin), and `secureboot-keys-sign-and-verify-a-test-binary.sh` `openssl`, plus sbsigntool and efitools (skipped, tagged `secureboot-tools`, without them; the devcontainer installs both) | yes |
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images) | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
