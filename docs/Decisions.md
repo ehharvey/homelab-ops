@@ -68,7 +68,13 @@ Certs are for initial Incus client authentication against IncusOS (not Operation
 
 Worked out across #36/#37's implementation discussion: the cert is a single break-glass credential for the whole deployment, not one per node — Incus's trusted-client-cert list is already cluster-wide by construction, and minting a unique keypair per node bought no real isolation anyway, since custody would still be centralized in one place. Taken one step further than that discussion's first conclusion: the web app doesn't generate or persist this cert in *any* form, not even just the public half. The operator runs the existing `bootstrap gen-cert` once — the same step node #0 already requires — and points the web app at the resulting public cert via local deployment config (e.g. a `CLIENT_CERT_PATH` file path, mirroring `STORE_PATH`'s pattern); the web app reads and embeds that public cert into every node's seed and never sees, generates, or stores the private key.
 
-This resolves both questions left open on #37's review thread: key custody (moot — the app holds no key, full stop) and whether node #0's cert is the same credential as the cluster's break-glass cert (yes, by construction — it's literally the same file pointed at by config, not a separately generated or imported copy). `internal/cert` itself is unchanged by this — it's still exactly the CLI-only, offline generator it always was; the web app simply never calls it.
+This resolves both questions left open on #37's review thread: key custody (moot for this cert — the app holds no break-glass key; it first held no key at all, see History) and whether node #0's cert is the same credential as the cluster's break-glass cert (yes, by construction — it's literally the same file pointed at by config, not a separately generated or imported copy). `internal/cert` itself is unchanged by this — it's still exactly the CLI-only, offline generator it always was; the web app simply never calls it.
+
+The web app does hold other credentials, for the appliance's CA and IdM (§32): the step-ca intermediate's password and kanidm's admin, both only in its encrypted store. step-ca runs as its own sidecar, issues TLS certs for the web app, kanidm and Kea's HA peers, and never issues or holds the break-glass cert. §32 gives their blast radius.
+
+### History
+
+- **2026-11-04 (#505, §32).** "The app holds no key, full stop" narrowed to "the app holds no break-glass key". The web app now keeps the step-ca intermediate's password and kanidm's admin credentials in its encrypted store. Why: the appliance issues the certs and identities the later phases need, and the web app bootstraps and manages both sidecars (§32).
 
 ## 5. IPAM (note 7)
 
@@ -2096,7 +2102,7 @@ Also found:
 
 ## 28. The web app's interim security posture: WireGuard API by default, one operator-held key (2026-09-28)
 
-Raised alongside §27 but independent of it: none of this blocks the cluster work. It is scheduled in `docs/Roadmap.md` Phase 5, the web app appliance (#195–#200, #397; folded in by §30, renumbered by §31). Proper auth is deferred (end of this section); this is what stands in for it meanwhile.
+Raised alongside §27 but independent of it: none of this blocks the cluster work. It is scheduled in `docs/Roadmap.md` Phase 5, the web app appliance (#195–#200, #397; folded in by §30, renumbered by §31). Proper auth was deferred (end of this section) and is now decided by §32 (#505): a browser UI behind OIDC login via kanidm. This section remains the CLI's and the tunnel's posture.
 
 **The problem.**
 
@@ -2126,20 +2132,22 @@ By default, the HTTP API moves off the host port and onto the web app's existing
 
   At least one validate script exercises the tunnel-only default. `/healthz` stays on a local port for container health checks.
 
-### Decision: a CLI first, no web UI yet (#196)
+### Decision: a CLI, and a browser UI behind kanidm (#196, #505)
 
 The web app's API is small (sync, status, list networks and instances, seed, image) and nearly read-only, because desired state is edited in git, not in the app. There is one operator. A CLI subcommand group fits that: in the existing `bootstrap` binary, or a sibling `cmd/` binary. It:
 
-- authenticates by being a WireGuard peer — the address check above. No mTLS, sessions or OIDC;
+- authenticates by being a WireGuard peer — the address check above. No mTLS, sessions or OIDC for the CLI;
 - streams multi-GB image downloads straight to a file or device;
 - decrypts downloads locally, where the key is (below);
 - is scriptable from `scripts/validate/`.
 
-Incus's own web UI already covers cluster- and instance-level views. A UI of our own would earn its place later, for at-a-glance fleet status: sync warnings, tunnel handshakes, cluster membership, agent health.
+A browser UI comes in Phase 5 too (§32, #508), for at-a-glance fleet status and the lock state. It is served only over TLS, with a cert from the appliance's step-ca. Login is OIDC against kanidm, and the operator's client cert (#397) is the break-glass login. It is server-rendered, so the repo still gains no Node toolchain. (First decided as "no web UI yet"; see History.)
 
 ### Decision: one operator-held symmetric key; the store encrypted at rest (#197)
 
 The operator holds one symmetric key: a random 256-bit key generated by the CLI, not a passphrase. If a passphrase is ever wanted, derive the key with `x/crypto/argon2`. The web app only ever keeps the key in memory, and everything the web app writes or serves is encrypted with it.
+
+This is the default. As an operator choice (§29), the web app instead generates the key on first boot and seals it to the host's TPM, so it comes back unlocked after a reboot. The key is also wrapped by an operator recovery key, and with no TPM it falls back to this model (§32, #509).
 
 - **Separate verbs, so a mistake can't destroy state:**
   - `init` sets the key when no store exists yet.
@@ -2152,13 +2160,13 @@ The operator holds one symmetric key: a random 256-bit key generated by the CLI,
 - **A reset's blast radius.** Losing the key loses the stored credentials and the IPAM history. The tunnel identity survives (next decision). Management of existing nodes is lost until they're re-enrolled, but the cluster keeps running.
 - **Accepted:** the web app can read everything whenever it is unlocked. That's fine while it is the operator's own single-tenant tool. Asymmetric encryption, which would let it write backups it can't read, is deferred (below).
 
-### Decision: the web app's WireGuard identity is operator-supplied deployment config (#197)
+### Decision: the web app's WireGuard identity is operator-supplied deployment config, or generated and TPM-sealed (#197, #505)
 
 The tunnel's own key can't be inside the encrypted store. The operator unlocks over the tunnel, so the tunnel has to come up before the key arrives. The identity follows the break-glass cert's pattern (§4) instead:
 
 - The operator generates the WireGuard identity once and keeps their own backup of it.
-- The web app reads it from deployment config, alongside the operator peer list, and never generates it.
-- Snapshots don't include it, so it is the one secret on the web app's disk in plaintext. That key alone grants no Incus access, since each node's API still requires a trusted client cert.
+- The web app reads it from deployment config, alongside the operator peer list, and never generates it. The exception is when the operator chose first-boot generation (§32, #509): the web app then generates it once and seals it to the TPM, never writing it in plaintext.
+- Snapshots don't include it. Operator-supplied, it is the one secret on the web app's disk in plaintext; generated, it is on disk only sealed. That key alone grants no Incus access, since each node's API still requires a trusted client cert.
 
 **Migrate, don't regenerate.** Today's identity lives in the store's `wireguard_identity` table, and its public half is baked into every node's seed. It must be exported to the new config file once. Regenerating it would break every node's tunnel until that node is reflashed.
 
@@ -2202,7 +2210,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 
 ### Considered and deferred
 
-- **Proper auth and a JS client** (sized 2026-09-28).
+- **Proper auth and a JS client** (sized 2026-09-28). The auth half is now decided by §32 (#505): TLS from step-ca, OIDC login via `coreos/go-oidc`, session and CSRF middleware, and kanidm instead of Dex. The JS client stays deferred, because the UI is server-rendered. The sizing below is kept as the estimate.
   - Auth alone is roughly three to four issues: TLS; OIDC login (Authorization Code + PKCE via `coreos/go-oidc`, with the server holding the login so the browser only ever gets a session cookie); session and CSRF middleware; an identity provider (Dex) in compose for validation; and device-code or mTLS access for the CLI.
   - The JS client is the larger cost. The repo has no Node toolchain, build stage or CI job yet, and every screen adds to it.
   - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 10).
@@ -2210,7 +2218,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
   - GPG fits best if the operator already has a key, especially on a hardware token: one key both decrypts backups and verifies signatures. Its Go dependency is the cost. `golang.org/x/crypto/openpgp` is frozen and deprecated, and the maintained `github.com/ProtonMail/go-crypto` is heavier than this repo usually accepts (Development Conventions' "small dependency" rule).
   - age X25519 plus stdlib `crypto/ed25519` is lighter, and age can encrypt to an SSH key the operator already has.
 - **OIDC.** Incus supports OIDC natively (`oidc.issuer`, `oidc.client.id`, `oidc.audience`, optionally OpenFGA for authorization). An identity provider could replace much of this project's cert handling: short-lived, revocable tokens instead of one-shot certs (§4, `internal/nodeprovision`) and the joiner cert; human login to Incus; and a real answer to #63. Open questions before a spike:
-  - **Where the provider runs.** Inside the cluster is circular: the cluster would depend on an identity provider it hosts, so losing the cluster loses auth. Running it alongside the web app keeps the dependency where one already exists. An external hosted provider adds an internet dependency, though node0 already needs the internet (§23). The break-glass cert stays regardless, as the recovery path when the provider is down.
+  - **Where the provider runs.** Answered by §32 (#505): kanidm, as a sidecar beside the web app on the appliance. Incus OIDC itself stays parked with Incus. The reasoning: inside the cluster is circular: the cluster would depend on an identity provider it hosts, so losing the cluster loses auth. Running it alongside the web app keeps the dependency where one already exists. An external hosted provider adds an internet dependency, though node0 already needs the internet (§23). The break-glass cert stays regardless, as the recovery path when the provider is down.
   - **Machine identities.** Incus's OIDC support is designed around user login. Whether it accepts client-credentials tokens for the agent and the web app is unverified.
   - **Joiners.** OIDC config is cluster-wide, so it arrives with the join. A fresh unjoined node would still need its own seed-time trust, so OIDC shrinks the joiner-cert problem rather than removing it.
   - **Candidates**, lightest first: Dex, Pocket ID, Kanidm, Authelia; Zitadel and Keycloak are heavier.
@@ -2220,6 +2228,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 
 - **2026-10-03 (#247, #195).** The tunnel-only API became the default rather than the only mode. An explicit, opt-in host listener on an operator-chosen address replaced the earlier dev-only localhost flag, and TLS was named as a later third mode. Why: the web app now runs on appliance machines in several topologies (§29), and every deployment setting is an operator choice with a safe default.
 - **2026-11-02 (#466, §31).** Renumbered only: the appliance phase is now Phase 5 (it was Phase 4), and the cluster work this never blocked (then Phase 5, multi-member Incus clusters) is parked.
+- **2026-11-04 (#505, §32).** "A CLI first, no web UI yet" became "a CLI, and a browser UI behind kanidm". The operator-held, memory-only key and the operator-supplied WireGuard identity stay the default, now with an opt-in where the web app generates both on first boot and seals them to the TPM. The deferred auth's provider question is answered: kanidm, beside the web app. Why: the appliance is the bootstrap and break-glass anchor (§31), and the operator wanted it usable from a browser and able to restart unattended.
 
 ## 29. The web app runs on an appliance machine; every deployment setting is an operator choice (2026-10-03)
 
@@ -2255,13 +2264,16 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 | Host form | Stock Debian cloud image set up by cloud-init (#243) | Any Docker host running #243's compose file by hand; IncusOS turnkey host (#246, parked); mkosi-built image (#393, undecided); plain binary + systemd (§9's other target, not yet planned) |
 | Host OS updates | `unattended-upgrades`, rebooting only when an update requires it, in a window (#243) | An operator-set window; the operator patches by hand |
 | How the config directory reaches the host | Inline in cloud-init `user-data` (#243), so the WireGuard key also sits in the provider's metadata | `--no-secrets`: the secret files are left out, the operator copies them in after boot, and the web app starts once they're present |
-| API listener | Tunnel only, operator peers (§28, #195) | Opt-in plain-HTTP host listener on a chosen address; TLS later |
+| API listener | Tunnel only, operator peers (§28, #195) | Opt-in plain-HTTP host listener on a chosen address; TLS from the appliance's step-ca (§32, #506) |
 | Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set (today's image route, kept as the default because it works now; costly on an internet VM, see below) | Client-side image build from a downloaded seed; a `SEED_DATA` stick beside a stock IncusOS image (#242) |
 | node0 provisioning | By the web app over the tunnel (#244) | Bootstrap CLI, offline, no tunnel (today's Flow A) |
 | WireGuard endpoint | No default; the operator supplies it. Recommended: a DNS name | An IP address |
 | Snapshots | Local | Local plus off-cluster S3 (#200) |
 | DHCP, per `Network` (§31) | `off`: the router does DHCP | `proxy`, `reservations` or `full`, served by Kea from IPAM |
 | Microsoft UEFI CA in enrolled Secure Boot keys (§31) | Enrolled | Left out, on hardware known to need no Microsoft-signed option ROMs |
+| Web app keys: WireGuard identity and store key (§32) | Operator-supplied identity; operator-held store key, sealed on restart (§28) | Generated on first boot and sealed to the TPM, with an operator recovery key (#509) |
+| step-ca root (§32) | Offline; only an intermediate is online in step-ca (#506) | Generated on the appliance onto a YubiKey; generated on the appliance onto a USB stick; generated on the appliance and kept there |
+| Browser UI on a LAN host listener (§32) | Off; the UI is on the tunnel listener only | On, over TLS, at an operator-chosen address (#508) |
 
 - **Install media.** On an internet VM, server-side builds mean a multi-GB transfer across the internet per node, plus VM disk for each copy. The seed is a few KB.
   - IncusOS reads a user-provided FAT or ISO volume labelled `SEED_DATA` beside an unmodified install image (upstream `doc/reference/seed.md`). The stick must be removed after install.
@@ -2301,6 +2313,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
   - **The IncusOS host was parked.** Its plan assumed the seed could set up the web app. It can't create instances, so the form always needs a post-boot `deploy-web`.
   - **The mkosi image moved from rejected to later and undecided (#393).** Folded into §15's multi-OS work, it shares a build with the helper OS rather than costing a one-off.
 - **2026-11-02 (#466, §31).** The LAN laptop became the bootstrap and break-glass appliance, with DHCP, DNS and Secure Boot settings added to the operator-choice table, and the appliance phase moved ahead of the first Talos node. `bootstrap deploy-web` (#386) used to be kept as how the web app moves into the fleet; with the fleet on Talos that route is static pods, so #386 is parked with the Incus runtime.
+- **2026-11-04 (#505, §32).** The API listener's "TLS later" alternative became TLS from the appliance's step-ca (#506). Three rows were added: the web app's keys (generated and TPM-sealed, #509), the step-ca root's custody (#506), and the browser UI on a LAN host listener (#508). Why: the appliance gained a CA, an IdM and a browser UI (§32), and each new posture is an operator choice with a safe default.
 
 ## 30. Re-plan around host management: the agent manages only itself and its cluster (2026-10-26)
 
@@ -2357,7 +2370,7 @@ Superseded by §31 (see History): Talos is the main line, and Debian and NixOS w
 ### Auth and certs
 
 - One operator client cert for Incus and the web app (#397).
-- The web app as a CA is a later decision (#400).
+- The appliance runs a CA: step-ca, as a sidecar the web app manages (§32, #506). CA-signed Incus node certs and PKI-mode trust stay #400's, parked with Incus.
 - **Not settled here: credential custody.** A bastion that proxies Incus exec or SSH, an SSH CA and a shared operator cert each need either pass-through of the operator's credential or a standing credential or CA key in the web app. That meets §4 (the app never holds the break-glass key) and §28 (one operator-held key). #397, #399 and #400 decide it; this section doesn't.
 
 ### Roadmap layout
@@ -2368,6 +2381,7 @@ Superseded by §31's layout (see History). Phase 3 is unchanged and is finished 
 
 - **2026-11-02 (#466, §31):** the pivot to bare-metal Kubernetes on Talos. This section's rules now describe the Incus runtime, which is kept building but parked after Phase 3. Superseded: the host OS order (IncusOS → Debian → NixOS → Talos, Phase 6) and the Roadmap layout (3: the agent; 4: web app appliance and hardening; 5: same-OS Incus clusters; 6: multi-OS hosts; 7: Tailscale; 8: App management). Node access and auth stand; the SSH CA for Debian and NixOS hosts is parked with them.
 - **2026-11-04 (#487, operator):** the same-OS check no longer waits for #181's membership model. It applies fleet-wide, to `os` and `runtime` alike, until a repo can hold several clusters. It used to say the check would arrive with a per-cluster `runtime` once config had a cluster entity. §31's Config bullet is corrected in place to match: `runtime` is on `Instance`, and the allowed-pairs table is checked in `config.Validate`, not at parse.
+- **2026-11-04 (#505, §32).** "The web app as a CA is a later decision (#400)" became the appliance's step-ca, a sidecar the web app manages (§32, #506). #400 keeps only CA-signed Incus node certs and PKI-mode trust, parked with Incus.
 
 ## 31. Pivot to bare-metal Kubernetes on Talos; the project becomes runtime-agnostic (2026-11-02)
 
@@ -2440,7 +2454,7 @@ In `full` mode IPAM owns the whole subnet and the pool is configured explicitly,
 - **The laptop is a permanent HA backup peer while connected,** so its break-glass copy of the leases stays current. Unverified: whether a backup that was offline catches up on reconnect; if not, it pulls `lease4-get-all`.
 - **After a power cut** the laptop starts from its last copy. Clients decline addresses they find in use, and Ping Check tests an address before it's offered.
 - **Deferred:** v2, a no-gap handoff through a temporary HA pair.
-- **Risks to carry:** clock sync between peers (reported as a cause of HA sync failures), TLS between peers (its issuer is #400), host networking for raw sockets.
+- **Risks to carry:** clock sync between peers (reported as a cause of HA sync failures), TLS between peers (certs from the appliance's step-ca, §32, #506; first left to #400, see History), host networking for raw sockets.
 
 ### The web app in the cluster, and leadership
 
@@ -2475,7 +2489,85 @@ In `full` mode IPAM owns the whole subnet and the pool is configured explicitly,
 
 - **2026-10-27 (#109 refinement, operator):** a standalone host needs a `kind: Designation` naming its node, like any cluster. It used to be its own primary implicitly, with no Designation; that rule was dropped before it was built, so `Designated` and `MayAct` never gained it. The consequence, one unattended cluster or standalone host per repo, waits on #440.
 - **2026-10-28 (#109):** the agent's self-upgrade built as above, with #103's validate script folded in.
+- **2026-11-04 (#505, §32):** Kea's HA peer TLS was left to #400, the web app as a CA. The appliance's step-ca (§32, #506) issues those certs now, and #400 is narrowed to Incus node certs and parked with Incus.
 - **2026-11-04 (#487, operator):** `config.Validate`'s allowed-pairs table leaves out the own-distro row: that OS has no config name yet, so the issue that names it adds the row and decides about `incus`.
+
+## 32. The appliance's operator surface, keys, CA and IdM: a browser UI behind kanidm, TPM-sealed first-boot keys, step-ca and kanidm as sidecars (2026-11-04, #505)
+
+The appliance (§29, §31) becomes the bootstrap and break-glass anchor before the first Talos node. This section settles three questions about it. Each amends an earlier rule in place: §28's CLI-only surface and its key custody, and §4's "the app holds no key". They are scheduled in `docs/Roadmap.md` Phase 5.
+
+**Why.** The appliance laptop has to come back after a full power cut with nobody at a terminal. It also has to be usable by an operator who isn't running the CLI. And it has to issue the certs and identities the later phases need: Kea's HA peers (§31), then `kube-apiserver` and Grafana. Deferring auth (§28) was right while the web app only served the CLI. It stops being right once the web app is the place everything else trusts.
+
+### Decision: a browser UI, not a console TUI (#508)
+
+- **Served over TLS only**, with a cert from the appliance's step-ca (below). Browsers need a secure context (§28).
+- **Login.**
+  - OIDC against kanidm: Authorization Code + PKCE via `coreos/go-oidc`. The server holds the login, so the browser only ever gets a session cookie.
+  - Session and CSRF middleware.
+  - Access is granted by kanidm group membership.
+- **Break-glass login.** The operator's client cert (#397), by mTLS, works when kanidm is down. The recovery path stays independent of the identity provider, as §28's OIDC entry required.
+- **Server-rendered** with `html/template`, with at most a small vendored script. The repo gains no Node toolchain. This is the default and revisitable.
+- **First pages are read-only**, plus unlock: fleet status, sync warnings, sidecar health and the lock state. Desired state is still edited in git, and the CLI (#196) stays for scripting and downloads.
+- **Listeners.** The UI is on the tunnel listener (§28). Serving it on a LAN host listener, over TLS, is an operator choice (§29), off by default.
+- **Considered: a console TUI** on the appliance's local console, for setup, status and unlock. Rejected for now. Physical presence would become a credential that nothing else uses, and a browser UI was wanted anyway. First-boot setup gets its own flow instead (#510).
+
+### Decision: first-boot keys sealed to the TPM, as an operator choice (#509)
+
+- **What's generated.** On first boot the web app generates its WireGuard identity and its 256-bit store key, and seals both to the host's TPM. Neither secret is ever written in plaintext.
+- **Restart.** The web app unseals from the TPM and comes up unlocked. The cluster never depended on it being unlocked (§27), but break-glass after a power cut now needs no operator present.
+- **Recovery key.** The store key is also wrapped by an operator recovery key (age), shown once at setup and never stored by the web app. If unsealing fails (PCRs changed, TPM cleared, a new host), the web app stays sealed and the recovery key unlocks it, as in §28. A failed unseal never resets anything.
+- **No TPM:** the web app falls back to §28 for both secrets: the operator-held, memory-only store key and an operator-supplied WireGuard identity.
+- **Default stays §28's.** That means an operator-supplied WireGuard identity and an operator-held key. TPM sealing is the opt-in (§29's table). The operator-supplied identity is also how the web app moves hosts without reflashing nodes (#245): the same identity, plus the recovery key, plus a snapshot.
+- **Accepted:** an intact, stolen appliance boots unlocked. That is the cost of unattended restart. Disk theft alone doesn't expose the secrets.
+- **Open, settled by #509 and recorded here:**
+  - whether sealing runs in-process (go-tpm on `/dev/tpmrm0`) or on the host (`systemd-creds`, passed into the container);
+  - which PCRs to bind, given the laptop's Secure Boot state (§31).
+  - Both are unverified.
+
+### Decision: step-ca and kanidm as sidecars the web app manages (#506, #507)
+
+Both run as containers in the appliance's compose stack, beside the web app (§29's compose file, #243), pinned by digest. The web app bootstraps both on first start, keeps their admin credentials in its encrypted store, and shows their health. Licences, checked 2026-11-04: `smallstep/certificates` is Apache-2.0 (Go), and `kanidm/kanidm` is MPL-2.0 (Rust). Both fit §31's no-commercial-dependencies rule.
+
+- **step-ca (#506).**
+  - It issues TLS certs for the web app (answering #397's open question about where the web app's TLS key comes from), for kanidm, and for Kea's HA peers (§31).
+  - Default custody: the root is created and kept offline, like PK and KEK (§31), and only an intermediate is online. The intermediate's password lives in the web app's encrypted store, so a sealed web app can't hand it out.
+  - Operator choices, when the root is generated on the appliance (#506):
+    - **Onto a YubiKey.** The root key is generated in a YubiKey PIV slot, so it never exists outside the key. The appliance signs the intermediate with it, writes the root cert to the slot, and the operator then removes the YubiKey and stores it offline.
+      - Renewing the intermediate means plugging it back in.
+      - The PIV PIN and management key are the operator's; the web app doesn't store them.
+      - Needs step-ca's cgo build with `pcscd`: the YubiKey KMS is `//go:build cgo` in `smallstep/crypto`, and upstream ships it as `docker/Dockerfile.hsm` (checked 2026-11-04). It also needs the YubiKey passed through to the container. Both are needed only for the signing step, so it can run as a one-shot container.
+    - **Onto a USB stick.** The root is generated in the appliance's memory and written to an operator-supplied USB stick, encrypted under an operator passphrase (age scrypt). The appliance signs the intermediate, then drops the root key. The stick is stored offline.
+      - Weaker than the YubiKey: the key existed in the appliance's memory once, and the passphrase guards the copy.
+    - **Kept on the appliance.** For a lab with no offline media. The root then sits in the encrypted store beside the intermediate.
+  - Not its job: Incus node server certs and Incus PKI-mode trust (#400, parked with Incus), and Talos's own machine, Kubernetes and etcd CAs, which `talosctl gen secrets` makes. Revisit if a cluster phase shows step-ca should issue them.
+  - SSH certs belong to the bastion decision (#399).
+- **kanidm (#507).**
+  - The OIDC provider: for the web app now, and for `kube-apiserver` and Grafana in later phases.
+  - The web app recovers its admin accounts and registers its own OIDC client.
+  - The operator enrolls through kanidm's one-time credential-reset link, so the web app never sees the operator's passkey or password.
+  - It runs beside the web app, not in the cluster. Inside the cluster would be circular (§28).
+- **§4, amended.** The break-glass cert is still operator-supplied and never held. What changes is that the web app now holds credentials that can mint certs and identities: the step-ca intermediate's password and kanidm's admin. Their blast radius:
+  - A leaked intermediate lets someone impersonate the web app, kanidm or a Kea peer to clients.
+  - It grants no node access. Talos's PKI and the break-glass cert are separate.
+  - Both credentials sit only in the encrypted store, readable while it is unlocked, which §28 already accepts.
+- **Considered:**
+  - step-ca embedded as a Go library, rejected: a large dependency tree for an unsupported embedding.
+  - An own stdlib CA extending `internal/cert`, rejected: ACME, renewal and provisioners would all be ours to build.
+  - kanidm can't be in-process anyway (Rust).
+
+### Open: first-boot setup without a console (#510)
+
+An appliance that generated its own keys has to tell the operator its WireGuard public key, its TLS fingerprint, and how to enroll the first kanidm account, without trusting the network. The candidate:
+
+- On first boot, the web app prints a one-time setup token and the fingerprints to the console and the journal.
+- A LAN setup page accepts the token. The operator adds their WireGuard peer and gets the enrollment link and the recovery key.
+- The page closes for good once setup completes.
+
+#510 settles it and records the threat model here.
+
+### Open: Phase 8
+
+When the web app moves into the cluster (§31), it is undecided whether kanidm and step-ca follow it, and how break-glass login works with the cluster down. The appliance laptop keeps the break-glass role either way.
 
 ## Sources consulted
 
