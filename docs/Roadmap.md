@@ -347,7 +347,7 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
   operator peers, by default; a plain-HTTP host listener only by explicit
   opt-in (`docs/Decisions.md` §28, §29). Closes the leak where the seed and image
   routes hand any caller a node's WireGuard private key (#63): DONE; see #195
-- [ ] Operator CLI for the API, over the tunnel — see #196
+- [x] Operator CLI for the API, over the tunnel: DONE; see #196
 - [ ] Operator-held symmetric key: held only in memory, web app locked on
   restart, store encrypted at rest, and a wrong key on unlock never resets
   anything. The web app's WireGuard identity becomes operator-supplied
