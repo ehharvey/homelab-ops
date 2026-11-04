@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
+	"github.com/ehharvey/homelab-ops/internal/clusterruntime"
 	"github.com/ehharvey/homelab-ops/internal/config"
-	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 )
 
 var (
@@ -79,43 +79,45 @@ func runDeployAgent(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	app, ok := agentdeploy.FindApp(cfg.Apps)
-	if !ok {
-		return fmt.Errorf("no agent App declared (kind: App, type: %s, replicas: per-node)", agentdeploy.AppType)
-	}
-
-	certPEM, err := os.ReadFile(deployAgentCertPath) //nolint:gosec // path is operator-supplied via --cert, not untrusted external input
+	rt, err := clusterruntime.ForInstance(inst)
 	if err != nil {
-		return fmt.Errorf("read client cert (run gen-cert first, or pass --cert): %w", err)
-	}
-	keyPEM, err := os.ReadFile(deployAgentKeyPath) //nolint:gosec // path is operator-supplied via --key, not untrusted external input
-	if err != nil {
-		return fmt.Errorf("read client key (run gen-cert first, or pass --key): %w", err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), deployAgentTimeout)
 	defer cancel()
-	// Direct over the LAN, not through a WireGuard tunnel: this path exists
-	// for nodes the web app can't reach.
-	dial := (&net.Dialer{}).DialContext
-
-	existing, err := nodeprovision.InstanceNames(ctx, dial, deployAgentAddr, certPEM, keyPEM)
+	res, err := rt.Bootstrap(ctx, clusterruntime.BootstrapInput{
+		Apps:     cfg.Apps,
+		Instance: inst,
+		Repo:     agentdeploy.Repo{URL: deployAgentRepoURL, Ref: deployAgentRepoRef},
+		// Direct over the LAN, not through a WireGuard tunnel: this path
+		// exists for nodes the web app can't reach.
+		Dial:       (&net.Dialer{}).DialContext,
+		Addr:       deployAgentAddr,
+		Credential: readBreakGlassCert, // not OneShot: the break-glass cert is never revoked
+	})
 	if err != nil {
-		return fmt.Errorf("list instances on %s: %w", deployAgentAddr, err)
-	}
-	for _, name := range existing {
-		if agentdeploy.IsAgentInstance(app, inst, name) {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "already deployed: %s on %s\n", name, inst.Name)
-			return nil
-		}
-	}
-
-	req := agentdeploy.Desired(app, inst, agentdeploy.Repo{URL: deployAgentRepoURL, Ref: deployAgentRepoRef}, agentdeploy.FirstGeneration)
-	if err := nodeprovision.CreateInstanceNoRevoke(ctx, dial, deployAgentAddr, certPEM, keyPEM, req); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deployed %s on %s\n", req.Name, inst.Name)
+	if res.AlreadyDeployed {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "already deployed: %s on %s\n", res.Agent, inst.Name)
+		return nil
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deployed %s on %s\n", res.Agent, inst.Name)
 	return nil
+}
+
+// readBreakGlassCert reads --cert and --key, for Bootstrap's Credential.
+func readBreakGlassCert(context.Context) (certPEM, keyPEM []byte, err error) {
+	certPEM, err = os.ReadFile(deployAgentCertPath) //nolint:gosec // path is operator-supplied via --cert, not untrusted external input
+	if err != nil {
+		return nil, nil, fmt.Errorf("read client cert (run gen-cert first, or pass --cert): %w", err)
+	}
+	keyPEM, err = os.ReadFile(deployAgentKeyPath) //nolint:gosec // path is operator-supplied via --key, not untrusted external input
+	if err != nil {
+		return nil, nil, fmt.Errorf("read client key (run gen-cert first, or pass --key): %w", err)
+	}
+	return certPEM, keyPEM, nil
 }
 
 // loadFleetFiles parses each path and merges the results.

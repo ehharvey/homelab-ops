@@ -175,9 +175,15 @@ func TestInstanceDeployAgentErrors(t *testing.T) {
 		setup    func(*deployAgentFixture)
 		noRepo   bool
 		want     int
+		body     string // a substring the response body must hold, if set
 	}{
 		{name: "unknown instance", instance: "nope", want: http.StatusNotFound},
-		{name: "no agent app", setup: func(f *deployAgentFixture) { f.store.apps = nil }, want: http.StatusUnprocessableEntity},
+		{name: "no agent app", setup: func(f *deployAgentFixture) { f.store.apps = nil }, want: http.StatusUnprocessableEntity, body: "type: " + agentdeploy.AppType},
+		{name: "unimplemented runtime", setup: func(f *deployAgentFixture) {
+			inst := f.store.instanceByName["devnode0"]
+			inst.Runtime = config.RuntimeKubernetes
+			f.store.instanceByName["devnode0"] = inst
+		}, want: http.StatusUnprocessableEntity, body: `no cluster runtime "kubernetes"`},
 		{name: "instance store error", setup: func(f *deployAgentFixture) { f.store.instanceErr = errors.New("db down") }, want: http.StatusInternalServerError},
 		{name: "apps store error", setup: func(f *deployAgentFixture) { f.store.appsErr = errors.New("db down") }, want: http.StatusInternalServerError},
 		{name: "credential store error", setup: func(f *deployAgentFixture) { f.creds.readErr = errors.New("db down") }, want: http.StatusInternalServerError},
@@ -205,6 +211,9 @@ func TestInstanceDeployAgentErrors(t *testing.T) {
 
 			if rec.Code != tc.want {
 				t.Errorf("status = %d, want %d; body: %s", rec.Code, tc.want, rec.Body)
+			}
+			if !strings.Contains(rec.Body.String(), tc.body) {
+				t.Errorf("body = %q, want it to contain %q", rec.Body, tc.body)
 			}
 		})
 	}

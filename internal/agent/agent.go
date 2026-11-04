@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/agentdeploy"
+	"github.com/ehharvey/homelab-ops/internal/clusterruntime"
 	"github.com/ehharvey/homelab-ops/internal/configsync"
 	"github.com/ehharvey/homelab-ops/internal/incuslocal"
 	"github.com/ehharvey/homelab-ops/internal/incusregistry"
@@ -61,6 +62,10 @@ type Agent struct {
 	// tuning knobs, so an operator's tuning survives a self-upgrade. Desired's
 	// own keys (node, instance name, repo) win over it.
 	ChildEnv map[string]string
+	// Runtime is the cluster runtime whose Join, Upgrade and Health the
+	// leader work runs (runtime.go). cmd/agent sets it to
+	// clusterruntime.Incus, which is also what nil runs.
+	Runtime clusterruntime.Runtime
 
 	self, node string
 	generation int64
