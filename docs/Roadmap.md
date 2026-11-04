@@ -324,6 +324,22 @@ Bootstrap and break-glass (added 2026-11-02, #466, §31):
 - [ ] The web app as a bastion (`docs/Decisions.md` §11, §30). A decision
   first — see #399
 
+Operator surface, keys, CA and IdM (added 2026-11-04, #505, §32):
+
+- [x] Record the decision: a browser UI behind kanidm, TPM-sealed first-boot
+  keys, step-ca and kanidm as sidecars (`docs/Decisions.md` §32): DONE; see #505
+- [ ] step-ca as an app-managed sidecar: offline root (or generated on the
+  appliance onto a YubiKey or a USB stick), online intermediate, TLS certs for
+  the web app and kanidm — see #506
+- [ ] kanidm as an app-managed sidecar, bootstrapped by the web app, with an
+  OIDC client for the UI — see #507
+- [ ] Browser UI behind OIDC login via kanidm, with the operator cert as
+  break-glass — see #508
+- [ ] *(operator choice)* First-boot WireGuard identity and store key, sealed
+  to the TPM, with an operator recovery key — see #509
+- [ ] First-boot setup without a console: one-time token, fingerprints, a
+  setup page that closes after use — see #510
+
 Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
 
 - [x] Serve the HTTP API over the web app's in-process WireGuard tunnel, to
@@ -344,8 +360,9 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
 - [ ] One operator client cert for both Incus and the web app's tunnel API;
   its custody is #397's to decide (`docs/Decisions.md` §30) — see #397
 
-**Done when:** both former sections' done-whens hold, and the laptop appliance
-serves DHCP and DNS from IPAM and holds the signing key.
+**Done when:** both former sections' done-whens hold, the laptop appliance
+serves DHCP and DNS from IPAM and holds the signing key, and the operator logs
+in to its browser UI through kanidm.
 
 - *Appliance:* the web app runs from the published image on a dedicated
   appliance machine, either an internet VM or a LAN machine. The operator
@@ -358,8 +375,14 @@ serves DHCP and DNS from IPAM and holds the signing key.
 - *Hardening:* by default, the web app's API is reachable only by operator
   peers over WireGuard; nothing it stores or serves exists in plaintext outside
   its own memory, apart from its WireGuard identity (operator-supplied
-  deployment config, `docs/Decisions.md` §28); and its state survives the loss
-  of its host.
+  deployment config, `docs/Decisions.md` §28), and in TPM mode not even that
+  (§32); and its state survives the loss of its host.
+- *Operator surface, CA and IdM:* the browser UI is served over TLS with a
+  step-ca cert and admits only a kanidm login or the operator's client cert,
+  proven by `scripts/validate/browser-ui-requires-kanidm-login.sh`; a
+  TPM-sealed appliance comes back unlocked after a reboot, proven by
+  `scripts/validate/web-unseals-from-tpm-after-reboot.sh` (`docs/Decisions.md`
+  §32).
 
 ## Phase 6 — First Talos node
 
@@ -414,8 +437,8 @@ upgrades Talos and Kubernetes from git.
 - [ ] DHCP handoff v1, laptop ↔ cluster, both directions: stop, copy leases
   with `lease_cmds`, start (`docs/Decisions.md` §31). To file.
 - [ ] DNS served in the cluster (`docs/Decisions.md` §31). To file.
-- [ ] The web app as a CA, the issuer for Kea's peer TLS among others. A
-  decision first — see #400
+- [ ] TLS between Kea's peers, with certs from the appliance's step-ca
+  (`docs/Decisions.md` §31, §32; the CA itself is #506). To file.
 
 **Done when:** the web app and DHCP hand off laptop → cluster → laptop with
 no lease lost, proven by a new
@@ -552,8 +575,8 @@ option's cost worth paying.
 - [ ] NixOS + Incus host. Needs its own install-mechanism decision first. To
   file.
 - [ ] SSH-CA host access to Debian and NixOS hosts, through the bastion
-  (#399, Phase 5) with the CA (#400, Phase 8); instances keep Incus's own
-  websocket exec. To file.
+  (#399, Phase 5), which also decides the SSH CA (`docs/Decisions.md` §32);
+  instances keep Incus's own websocket exec. To file.
 
 **Done when:** a Debian host and a NixOS host are each provisioned and run an
 agent joined to a same-OS cluster. (Talos, first listed here, is the main line
