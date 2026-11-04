@@ -1,0 +1,52 @@
+name: Issue triage
+
+# Triage done in the GitHub web UI, or with a bare `gh issue edit --add-label
+# Ready`, adds `Ready` without removing `proposed`, and /run-chain skips an
+# issue carrying both (#385). When `Ready` is added, this drops `proposed`, and
+# comments with the open blocker numbers if the issue has any native
+# blocked-by links still open.
+#
+# `make ready` (scripts/ready.sh) is the way to triage from the shell; it makes
+# both label edits at once and refuses a blocked issue, so this is the
+# backstop, not the rule.
+#
+# GITHUB_TOKEN edits trigger no workflow runs, so this can't loop on its own
+# label removal. The job checks out no code: it acts on the event alone.
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  ready:
+    if: github.event.label.name == 'Ready'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Drop proposed, comment on open blockers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          # Read the labels now, not from the event: `make ready` removes
+          # `proposed` in the same edit that fires this.
+          if gh issue view "$N" --repo "$REPO" --json labels \
+            --jq 'any(.labels[]; .name == "proposed")' | grep -qx true; then
+            gh issue edit "$N" --repo "$REPO" --remove-label proposed
+            echo "#$N: removed proposed"
+          fi
+
+          # The same blockedBy connection as .claude/skills/next/next.sh.
+          # shellcheck disable=SC2016 # the $vars in single quotes are GraphQL's
+          blockers=$(gh api graphql -F owner="${REPO%/*}" -F name="${REPO#*/}" -F n="$N" -f query='
+            query($owner: String!, $name: String!, $n: Int!) {
+              repository(owner: $owner, name: $name) {
+                issue(number: $n) { blockedBy(first: 50) { nodes { number state } } }
+              }
+            }' --jq '[.data.repository.issue.blockedBy.nodes[] | select(.state == "OPEN") | "#\(.number)"] | join(" ")')
+          if [ -n "$blockers" ]; then
+            gh issue comment "$N" --repo "$REPO" --body "Marked \`Ready\` while blocked by open $blockers. \`/next\` flags this as an inconsistency, and \`/run-chain\` won't start it until they close. Remove \`Ready\`, or drop the links if they no longer apply. (\`make ready\` refuses a blocked issue; see \`scripts/ready.sh\`.)"
+            echo "#$N: blocked by open $blockers; commented"
+          fi

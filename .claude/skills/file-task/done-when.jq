@@ -1,7 +1,7 @@
 # The Ready criterion "Done when names a validate script or real-run check"
 # (/file-task § Labels and milestone, #410), as one check every caller shares:
 # .claude/skills/next/next.sh (inconsistencies), .claude/skills/run-chain/queue.sh
-# (skip), and #385's `make ready` when it lands.
+# (skip), and scripts/ready.sh (`make ready` refuses, #385).
 #
 #   jq -L "$repo/.claude/skills" 'include "file-task/done-when"; .body | done_when_ok'
 #

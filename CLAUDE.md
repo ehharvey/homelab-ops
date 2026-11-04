@@ -67,6 +67,8 @@ long multi-issue sessions were ~77% of the cost.
     make lint    # golangci-lint via Docker — slow; run before declaring done
     make fmt     # gofmt + goimports via golangci-lint fmt in Docker, same version as make lint
 
+    make ready N=<n>  # triage: add Ready + drop proposed in one edit; refuses one that's blocked or lacks a Done-when proof; N="a b" for several
+
     make wt N=<n>  # worktree for issue #n on eharvey/#<n>; prints its path
     make wt-gc     # remove worktrees whose PR merged (make wt-list: dry run)
 
@@ -153,7 +155,7 @@ and `background-poll-warns-on-config-diff` are visibly a pair proving the same
 behaviour on two code paths.
 
 `scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`, `worktree.sh`,
-`finding.sh`, `vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `check-commit-msg.sh`, `lgtm.sh`, `auto-rebase.sh`, `hygiene.sh`.
+`finding.sh`, `vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `check-commit-msg.sh`, `lgtm.sh`, `auto-rebase.sh`, `hygiene.sh`, `ready.sh`.
 
 They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
 prerequisite is a **SKIP with exit 3**, never a FAIL — "you didn't install a
@@ -201,8 +203,9 @@ The recurring loops, so a session runs them rather than re-deriving them:
 - **`/refine-issue <n>`** (#274): take an existing stub toward `Ready`:
   classify and retitle it, set blockers, ask the operator the open design
   questions, rewrite the body in template shape, and report every change with
-  its revert command and a Ready verdict. It never adds `Ready` or removes
-  `proposed`; the Ready criteria live in `/file-task`.
+  its revert command and a Ready verdict. On a full Ready verdict it asks
+  the operator and, only on yes, runs `make ready`; the Ready criteria live
+  in `/file-task`.
 - **`/ship-issue`**: the pre-ship checklist, ending at `make ship`. It never
   runs `make lgtm`.
 - **`/review-work <PR | branch | worktree>`** (#272, operator-invoked only):

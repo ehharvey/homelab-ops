@@ -142,7 +142,11 @@ check_eq "template-phases flags the missing dropdown option" 1 "$(count template
 check "template-phases names it" grep -q 'dropdown lacks \\"Parked — Later\\"' <<<"$OUT"
 check_eq "phase-off-roadmap flags #2 only (#1 and #4 are on the Roadmap)" "[2]" "$(issues phase-off-roadmap)"
 check_eq "proposed-age flags #3 (30d), not #5 (0d)" "[3]" "$(issues proposed-age)"
+check "proposed-age points at make ready (#385)" \
+	grep -q '#3 (30d); make ready N=<n>, or close' <<<"$OUT"
 check_eq "ready-proposed (a moved check) flags #5" "[5]" "$(issues ready-proposed)"
+check "ready-proposed points at make ready (#385)" \
+	grep -q 'make ready N=5 drops proposed' <<<"$OUT"
 
 hygiene drift --group deps
 check_eq "--group deps prints only the 6 moved checks" 6 "$(jq -s length <<<"$OUT")"

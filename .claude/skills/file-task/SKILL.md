@@ -89,7 +89,11 @@ Write the "why" into the body. The implementer has only this text and the docs.
 - `proposed` when the issue is **your** idea, not the operator's: a worker's
   "Noticed" item in `/run-chain`, or something you spotted and chose to file.
   A `proposed` issue never gets `Ready` from you. The operator triages it,
-  either adding `Ready` and removing `proposed`, or closing it. `/next` and
+  either with `make ready N=<n>` (`scripts/ready.sh`: adds `Ready` and removes
+  `proposed` in one edit, refused while a blocker is open or the Done-when
+  lacks its proof item), or by closing it.
+  `.github/workflows/issue-triage.yml` drops `proposed` when `Ready` is added
+  any other way. `/next` and
   `/run-chain` pick up only `Ready` issues, which is what makes triage the
   gate. Leave `proposed` off when the operator asked for the issue directly.
   Put `Noticed while working on #<n>.` in a proposed issue's
