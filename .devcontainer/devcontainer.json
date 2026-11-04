@@ -35,7 +35,11 @@
 		}
 	},
 
-	"postStartCommand": "TEMPDIR=$(mktemp -d) && cp -r .devcontainer/scripts/* $TEMPDIR/ && chmod +x $TEMPDIR/*.sh && for f in $TEMPDIR/*.sh; do $f; done && rm -rf $TEMPDIR",
+	// Runs every scripts/*.sh, prints which failed, and exits 1 if any did (#328).
+	// A failed postStartCommand makes the dev-containers CLI skip the commands
+	// after it, so postAttachCommand below doesn't run on that start. That costs
+	// little: script 1 has already run its trust step in full here.
+	"postStartCommand": "bash .devcontainer/run-start-scripts.sh",
 
 	// initializeCommand runs on every connect, including a reload that re-attaches
 	// to a running container, where postStartCommand doesn't run. So the Incus
