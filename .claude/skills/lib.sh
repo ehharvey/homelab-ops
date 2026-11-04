@@ -58,3 +58,59 @@ order_json() {
 	done
 	printf '%s\n' "${keys[@]}" | jq -R . | jq -sc .
 }
+
+# Every open issue as one JSON array, with the fields /next and
+# scripts/hygiene.sh read (#388). $1 is the repo as owner/name.
+open_issues_json() {
+	# shellcheck disable=SC2016 # the $vars in single quotes are GraphQL's
+	gh api graphql --paginate -F owner="${1%/*}" -F name="${1#*/}" -f query='
+query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, first: 100, after: $endCursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title body createdAt
+        milestone { title }
+        labels(first: 20) { nodes { name } }
+        parent { number state title }
+        blockedBy(first: 50) { nodes { number state stateReason } }
+        blocking(first: 50) { nodes { number state } }
+      }
+    }
+  }
+}' | jq -s '[.[].data.repository.issues.nodes[]]'
+}
+
+# Every issue's and PR's state as {"<n>": "OPEN" | "CLOSED" | "MERGED"}, so a
+# blocker or a prose mention can be shown open or closed.
+issue_states_json() {
+	{
+		gh issue list --state all --limit 5000 --json number,state
+		gh pr list --state all --limit 5000 --json number,state
+	} | jq -s 'add | map({key: (.number | tostring), value: .state}) | from_entries'
+}
+
+# docs/Roadmap.md's checklist items as TSV: section, depth, checked, text
+# (continuation lines joined). Run it from the repo root.
+roadmap_tsv() {
+	awk '
+	function flush() { if (text != "") print section "\t" depth "\t" checked "\t" text; text = "" }
+	/^## / { flush(); section = substr($0, 4); next }
+	/^[ \t]*- \[[ xX]\] / {
+		flush()
+		match($0, /^[ \t]*/); depth = int(RLENGTH / 2)
+		checked = ($0 ~ /- \[[xX]\]/) ? "x" : " "
+		text = $0; sub(/^[ \t]*- \[[ xX]\] /, "", text); next
+	}
+	/^[ \t]*$/ || /^[^ \t]/ { flush(); next }
+	{ if (text != "") { line = $0; sub(/^[ \t]+/, "", line); text = text " " line } }
+	END { flush() }
+	' docs/Roadmap.md
+}
+
+# The issues the Roadmap marks paused, as a JSON array of numbers, so a paused
+# blocker reads differently from a live one. Input: roadmap_tsv's output.
+paused_json() {
+	jq -R -s '[split("\n")[] | split("\t") | select(.[2] == " " and (.[3] // "" | startswith("*(paused")))
+	  | .[3] | scan("see #[0-9]+(?:, #[0-9]+)*") | scan("#([0-9]+)") | .[0] | tonumber] | unique'
+}

@@ -38,7 +38,9 @@ comes from.
   heuristic. Name each hit and suggest the fix, either
   `gh issue edit <n> --add-blocked-by <m>`, rewording a sentence that isn't
   a dependency, or a Done-when item in the convention's form (`/refine-issue`),
-  and leave the edit to the operator.
+  and leave the edit to the operator. The checks live in `scripts/hygiene.sh`
+  (#388): `next.sh` prints its `deps` group, and `.github/workflows/hygiene.yml`
+  runs every check nightly into the "Repo hygiene" issue.
 - **`bundled`** marks a sub-issue of an open `/bundle` parent (#409). It ships
   in the parent's commit, so recommend the parent, never the child alone.
 - **Never recommend two issues together when one blocks the other** without
