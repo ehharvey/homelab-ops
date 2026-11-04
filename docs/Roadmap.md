@@ -256,9 +256,9 @@ work is tracked separately and is not part of this section.)
   (`docs/Decisions.md` §31). To file.
 - [x] Validate scripts take the backend as a parameter (`VALIDATE_OS`), still
   named for behaviour (`docs/Decisions.md` §31): DONE; see #486
-- [ ] `internal/secureboot`: the project's PK, KEK and db, with Microsoft's
+- [x] `internal/secureboot`: the project's PK, KEK and db, with Microsoft's
   UEFI CA enrolled by default as an operator choice (`docs/Decisions.md` §6,
-  §31). To file.
+  §31): DONE; see #489
 - [ ] `dhcp.mode` on `Network` (`off`, `proxy`, `reservations`, `full`) and
   IPAM's reservations as an output (`docs/Decisions.md` §5, §31). To file.
 

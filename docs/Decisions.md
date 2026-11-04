@@ -2407,7 +2407,7 @@ Refines §6 for Talos and the own distro.
 
 - **Nodes boot in Setup Mode, and the first boot enrolls the project's own keys.** Start with USB or disk install media, where systemd-boot auto-enrolls. Enrolling during a network boot is a later spike. Clearing the factory keys is a manual firmware step per machine; record which hardware is tested.
 - **The key hierarchy (PK, KEK, db) belongs to the project, not to Talos** (`internal/secureboot`). Talos's `imager` signs with the db key now; mkosi and `ukify` use the same key later.
-- **Microsoft's UEFI CA is enrolled by default**, as an operator choice. Option ROMs on many GPUs, NICs and storage controllers are signed by it, and leaving it out can stop a machine booting.
+- **Microsoft's UEFI CA is enrolled by default**, as an operator choice. Option ROMs on many GPUs, NICs and storage controllers are signed by it, and leaving it out can stop a machine booting. **Microsoft's dbx comes with it**, re-signed by the project's KEK: the CA has also signed shims and boot loaders that were later revoked, and clearing the factory keys can empty dbx, after which they would boot again (PR #503 review).
 - **Custody.** PK and KEK private keys live offline on USB flash storage, later a YubiKey. Images are signed on the appliance laptop, not in CI.
 - **iPXE**, when it arrives, is signed with the db key, so firmware verifies the image iPXE chainloads.
 - **Spike:** TPM-bound disk encryption (Talos binds PCR 7 and a signed PCR 11 policy) across the disk and iPXE boot paths. Expected to measure the same when one db key verified both; unverified.
