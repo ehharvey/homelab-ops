@@ -13,11 +13,14 @@ body:
     attributes:
       label: Roadmap phase
       description: Which phase in docs/Roadmap.md does this belong to?
+      # Every "## " heading of docs/Roadmap.md, verbatim and in order (#388);
+      # scripts/hygiene.sh's template-phases check fails when they differ.
       options:
         - "Phase 0 — Node #0 bootstrap tool"
         - "Phase 1 — Web app skeleton + config sync"
         - "Phase 2 — IPAM + app-driven installer generation"
         - "Phase 3 — The agent and node connectivity"
+        - "Phase 3.5 — The validate suite made runnable"
         - "Phase 4 — Runtime-agnostic seams"
         - "Phase 5 — Web app appliance: bootstrap and break-glass"
         - "Phase 6 — First Talos node"
@@ -26,7 +29,8 @@ body:
         - "Phase 9 — Workloads on Kubernetes"
         - "Phase 10 — Tailscale"
         - "Parked — Incus runtime"
-        - "Deferred / post-1.0"
+        - "Deferred — after the Talos main line"
+        - "Deferred / post-1.0 — tooling and dev-host health"
     validations:
       required: true
   - type: textarea

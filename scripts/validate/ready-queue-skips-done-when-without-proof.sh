@@ -93,8 +93,10 @@ check_eq "null body" false \
 
 REPO="$WORK_DIR/repo"
 mkdir -p "$REPO/.claude/skills/file-task" "$REPO/.claude/skills/next" \
-	"$REPO/.claude/skills/run-chain" "$REPO/docs"
+	"$REPO/.claude/skills/run-chain" "$REPO/docs" "$REPO/scripts"
 cp .claude/skills/lib.jq .claude/skills/lib.sh "$REPO/.claude/skills/"
+# next.sh prints its inconsistencies through scripts/hygiene.sh (#388).
+cp scripts/hygiene.sh "$REPO/scripts/"
 cp .claude/skills/file-task/done-when.jq "$REPO/.claude/skills/file-task/"
 cp .claude/skills/next/next.sh "$REPO/.claude/skills/next/"
 cp .claude/skills/run-chain/queue.sh "$REPO/.claude/skills/run-chain/"

@@ -11,6 +11,8 @@
 # planned, a cycle, and dependency prose that has no matching link. It also
 # flags a Ready issue whose Done-when names no validate script or real-run
 # check, by the check queue.sh shares (.claude/skills/file-task/done-when.jq, #410).
+# Those checks are scripts/hygiene.sh's `deps` group (#388); this script prints
+# them on the data it fetched.
 #
 # A Ready sub-issue of an open bundle (/bundle, #409) is tagged `bundled`, not
 # `clear`: it ships with its parent, so it isn't work to start on its own.
@@ -43,54 +45,19 @@ repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-gh api graphql --paginate -F owner="${repo%/*}" -F name="${repo#*/}" -f query='
-query($owner: String!, $name: String!, $endCursor: String) {
-  repository(owner: $owner, name: $name) {
-    issues(states: OPEN, first: 100, after: $endCursor) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        number title body createdAt
-        labels(first: 20) { nodes { name } }
-        parent { number state title }
-        blockedBy(first: 50) { nodes { number state stateReason } }
-        blocking(first: 50) { nodes { number state } }
-      }
-    }
-  }
-}' | jq -s '[.[].data.repository.issues.nodes[]]' >"$tmp/open.json"
-
-# Every issue's and PR's state, so a blocker can be shown open or closed.
-{
-	gh issue list --state all --limit 5000 --json number,state
-	gh pr list --state all --limit 5000 --json number,state
-} | jq -s 'add | map({key: (.number | tostring), value: .state}) | from_entries' >"$tmp/states.json"
+# The fetches are lib.sh's, shared with scripts/hygiene.sh, which reads these
+# same files for the inconsistencies section (--data).
+open_issues_json "$repo" >"$tmp/open.json"
+issue_states_json >"$tmp/states.json"
 
 gh pr list --state open --json number,title,headRefName,isDraft,autoMergeRequest,statusCheckRollup \
 	>"$tmp/prs.json"
 
-# Roadmap items as TSV: section, depth, checked, text (continuation lines joined).
-awk '
-function flush() { if (text != "") print section "\t" depth "\t" checked "\t" text; text = "" }
-/^## / { flush(); section = substr($0, 4); next }
-/^[ \t]*- \[[ xX]\] / {
-	flush()
-	match($0, /^[ \t]*/); depth = int(RLENGTH / 2)
-	checked = ($0 ~ /- \[[xX]\]/) ? "x" : " "
-	text = $0; sub(/^[ \t]*- \[[ xX]\] /, "", text); next
-}
-/^[ \t]*$/ || /^[^ \t]/ { flush(); next }
-{ if (text != "") { line = $0; sub(/^[ \t]+/, "", line); text = text " " line } }
-END { flush() }
-' docs/Roadmap.md >"$tmp/roadmap.tsv"
-
-# Issues the Roadmap marks paused, so a paused blocker reads differently from a live one.
-jq -R -s '[split("\n")[] | split("\t") | select(.[2] == " " and (.[3] // "" | startswith("*(paused")))
-  | .[3] | scan("see #[0-9]+(?:, #[0-9]+)*") | scan("#([0-9]+)") | .[0] | tonumber] | unique' \
-	"$tmp/roadmap.tsv" >"$tmp/paused.json"
+roadmap_tsv >"$tmp/roadmap.tsv"
+paused_json <"$tmp/roadmap.tsv" >"$tmp/paused.json"
 
 common='
 include "lib";
-include "file-task/done-when";
 def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 90 then .[:89] + "…" else . end;
 def st($n): $states[0][$n | tostring] // "?";
 def blockers: [.blockedBy.nodes[] | select(.state == "OPEN") | .number];
@@ -133,42 +100,13 @@ q -r "$common"'
 ' "$tmp/open.json"
 echo
 
-# Dependency prose with no matching link, for issues filed or edited outside
-# /file-task. Phrasings are #234's keyword set plus the ones its review found
-# in Roadmap phase lines ("needed by", "follows", "should land before" …).
-# Only the #N list right after the phrase counts, quoted text is skipped (that's
-# a mention, not a dependency), and only open targets count: prose about a
-# closed issue can't make /next wrong.
+# The checks live in scripts/hygiene.sh (#388), which the nightly hygiene.yml
+# also runs; --data hands it the files fetched above. It exits 1 when it finds
+# something, which here is a report line, not a failure.
 echo "== Dependency inconsistencies =="
-q -r "$common"'
-  (map({key: (.number | tostring), value: [blockers[]]}) | from_entries) as $g
-  | def reach($s): {seen: [], f: $g[$s | tostring]}
-      | until(.f | length == 0; (.f - .seen) as $new | .seen += $new | .f = ([$new[] | $g[tostring][]?] | unique))
-      | .seen;
-    def prose($re): [(.body // "") | gsub("\"[^\"\n]*\"|“[^”\n]*”|`[^`\n]*`"; "")
-        | scan("(?i)(?:" + $re + ") *(#[0-9]+(?:(?:,| and| or|/) *#[0-9]+)*)") | .[0]
-        | scan("#([0-9]+)") | .[0] | tonumber]
-      | unique | map(select(st(.) == "OPEN"));
-  (map(.number) | map(select(. as $n | reach($n) | index($n)))) as $cyc
-  | [ (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(any(.labels.nodes[]; .name == "proposed"))
-       | "#\(.number) has both Ready and proposed; triage drops proposed (until then /run-chain skips it)"),
-      (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(blockers | length > 0)
-       | "#\(.number) is Ready but blocked by open \(blockers | map(tag(.)) | join(" "))"),
-      (.[] | select(any(.labels.nodes[]; .name == "Ready")) | select(.body | done_when_ok | not)
-       | "#\(.number) is Ready but \(done_when_gap); see /file-task Ready criteria (/run-chain skips it)"),
-      (.[] | . as $i | .blockedBy.nodes[] | select(.stateReason == "NOT_PLANNED" or .stateReason == "DUPLICATE")
-       | "#\($i.number) is blocked by #\(.number), closed as \(.stateReason | ascii_downcase | sub("_"; " ")); drop the link or rethink #\($i.number)"),
-      ($cyc | map(. as $n | [$n] + ([reach($n)[] | select(. as $m | $cyc | index($m)) | select(reach(.) | index($n))]) | unique) | unique[]
-       | "cycle: \(map("#\(.)") | join(" ↔ "))"),
-      (.[] | . as $i
-       | ((prose("depends on|blocked (?:by|on)|waits? on|needs|follows|follow-up to|(?:lands?|land it|sequence it|any time) after")
-           - [.blockedBy.nodes[].number] - [$i.number]) | map("blocked by #\(.)")) as $by
-       | ((prose("(?:un)?blocks|prerequisite (?:for|of)|needed by|(?:should |must )?(?:lands?|be done|done|merged?) before")
-           - [.blocking.nodes[].number] - [$i.number]) | map("blocking #\(.)")) as $bl
-       | select(($by + $bl) | length > 0)
-       | "#\($i.number) prose says \($by + $bl | join(", ")), with no link") ]
-  | if length == 0 then "(none)" else .[] end
-' "$tmp/open.json"
+rc=0
+./scripts/hygiene.sh --summary --group deps --data "$tmp" || rc=$?
+[ "$rc" -le 1 ] || exit "$rc"
 echo
 
 q -R -s -r "$common"'
