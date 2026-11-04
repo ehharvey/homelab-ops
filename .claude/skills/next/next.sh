@@ -17,6 +17,25 @@
 # shellcheck disable=SC2016 # the $vars in single quotes are GraphQL's and jq's
 set -euo pipefail
 
+# shellcheck source=SCRIPTDIR/../lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
+
+# --order sorts the Ready section only (#392): keys p0, unblocks, number, as in
+# lib.sh; run-chain/queue.sh takes the same flag and default.
+usage() {
+	echo "usage: next.sh [--order <key>[,<key>...]]   keys: p0, unblocks, number (default $order_default)" >&2
+	exit 2
+}
+order_arg=$order_default
+while [ $# -gt 0 ]; do
+	case $1 in
+	--order) [ $# -ge 2 ] || usage; order_arg=$2; shift 2 ;;
+	--order=*) order_arg=${1#--order=}; shift ;;
+	*) usage ;;
+	esac
+done
+order=$(order_json "$order_arg") || usage
+
 skills=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$(git rev-parse --show-toplevel)"
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
@@ -76,7 +95,6 @@ def short: sub("^\\[[A-Za-z ]+\\]: *"; "") | if length > 90 then .[:89] + "…" 
 def st($n): $states[0][$n | tostring] // "?";
 def blockers: [.blockedBy.nodes[] | select(.state == "OPEN") | .number];
 def done_deps: [.blockedBy.nodes[] | select(.state != "OPEN") | .number];
-def unblocks: [.blocking.nodes[] | select(.state == "OPEN") | .number];
 def ind: [range(.depth)] | map("  ") | add // "";
 def tag($n): if ($paused[0] | index($n)) then "#\($n) (paused)" else "#\($n)" end;
 def prfor($n): [$prs[0][] | select(.headRefName == "eharvey/#\($n)") | .number];
@@ -86,13 +104,13 @@ def prfor($n): [$prs[0][] | select(.headRefName == "eharvey/#\($n)") | .number];
 q() { jq -L "$skills" --slurpfile states "$tmp/states.json" --slurpfile prs "$tmp/prs.json" \
 	--slurpfile open "$tmp/open.json" --slurpfile paused "$tmp/paused.json" "$@"; }
 
-echo "== Ready issues (blockers: native blocked-by links) =="
-q -r "$common"'
-  .[] | select(any(.labels.nodes[]; .name == "Ready"))
+echo "== Ready issues, by --order $order_arg (blockers: native blocked-by links) =="
+q -r --argjson order "$order" "$common"'
+  [.[] | select(any(.labels.nodes[]; .name == "Ready"))] | ready_order($order) | .[]
   | blockers as $open | done_deps as $done | unblocks as $unblocks
   | ([.labels.nodes[].name | select(startswith("phase-"))] | join(",")) as $phase
   | (if ($open | length) > 0 then "BLOCKED" elif bundled then "bundled" else "clear  " end) as $tag
-  | "#\(.number) \($tag) [\(if $phase == "" then "no phase" else $phase end)] \(.title | short)",
+  | "#\(.number) \($tag) [\(if $phase == "" then "no phase" else $phase end)\(if is_p0 then ",p0" else "" end)] \(.title | short)",
     (if ($open | length) > 0 then "      blocked by: \($open | map(tag(.)) | join(" "))" else empty end),
     (if bundled then "      ships with: bundle #\(.parent.number), not on its own" else empty end),
     (if ($done | length) > 0 then "      done deps:  \($done | map("#\(.)") | join(" "))" else empty end),

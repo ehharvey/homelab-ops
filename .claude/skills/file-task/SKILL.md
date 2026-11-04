@@ -61,6 +61,9 @@ Write the "why" into the body. The implementer has only this text and the docs.
 - `small` per `docs/Development Conventions.md` § Sizing and bundles (#409),
   which defines it and says when to leave it off. Citing a `§N` in the body
   takes a `small` issue out of `/run-chain`'s fast lane.
+- `p0` (#392) only when the operator asks for it, never on your own
+  initiative, the same as `Ready`. It puts the issue first in `/next` and
+  `/run-chain`.
 - `Ready` **only** when the issue meets every one of these **Ready criteria**.
   If you aren't sure, leave it off and say so.
   - No open blockers: no open blocked-by link, no unchecked `- [ ]` prerequisite.
