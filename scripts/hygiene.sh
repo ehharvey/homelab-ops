@@ -193,7 +193,7 @@ if [ "$group" != roadmap ]; then
 	      | unique | map(select(st(.) == "OPEN"));
 	  (map(.number) | map(select(. as $n | reach($n) | index($n)))) as $cyc
 	  | check("ready-proposed"; .[] | select(ready) | select(any(.labels.nodes[]; .name == "proposed"))
-	      | {n: .number, m: "#\(.number) has both Ready and proposed; triage drops proposed (until then /run-chain skips it)"}),
+	      | {n: .number, m: "#\(.number) has both Ready and proposed; make ready N=\(.number) drops proposed (until then /run-chain skips it)"}),
 	    check("ready-blocked"; .[] | select(ready) | select(blockers | length > 0)
 	      | {n: .number, m: "#\(.number) is Ready but blocked by open \(blockers | map(tag(.)) | join(" "))"}),
 	    check("ready-done-when"; .[] | select(ready) | select(.body | done_when_ok | not)
@@ -256,7 +256,7 @@ if [ "$group" != deps ]; then
 	    | [$p[] | select(.age > $max)] as $old
 	    | {check: "proposed-age", count: ($old | length), issues: ($old | map(.n) | sort),
 	       detail: ("\($p | length) proposed awaiting triage\(if ($p | length) > 0 then ", oldest #\($p[0].n) at \($p[0].age)d" else "" end)"
-	         + (if ($old | length) > 0 then "; over the \($max)-day limit: \($old | map("#\(.n) (\(.age)d)") | join(", ")); add Ready and drop proposed, or close" else "" end))}
+	         + (if ($old | length) > 0 then "; over the \($max)-day limit: \($old | map("#\(.n) (\(.age)d)") | join(", ")); make ready N=<n>, or close" else "" end))}
 	' "$open" >>"$out"
 fi
 

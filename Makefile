@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-sh lint-docs fmt tidy clean hooks ship lgtm wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
+.PHONY: build test lint lint-sh lint-docs fmt tidy clean hooks ship lgtm ready wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -100,6 +100,12 @@ ship:
 # make lgtm  /  make lgtm PR=123
 lgtm:
 	./scripts/lgtm.sh $(PR)
+
+# make ready N=310  /  make ready N="310 311": add Ready and drop proposed in
+# one edit, refusing an issue with an open blocker (scripts/ready.sh, #385).
+# Each word is quoted, so the shell doesn't read N=#310 as a comment.
+ready:
+	./scripts/ready.sh $(foreach n,$(N),'$(n)')
 
 # One worktree per issue, outside the operator's checkout (scripts/worktree.sh,
 # #252). `make wt N=123` prints the path; @ keeps it the only stdout line.

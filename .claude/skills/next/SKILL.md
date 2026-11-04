@@ -52,7 +52,8 @@ comes from.
 - **Proposed — awaiting triage** lists issues Claude filed on its own
   (`proposed`, #253), with their age and the issue they came from. They're
   the operator's to triage, not work to pick up. Mention how many are waiting,
-  especially old ones, and never recommend implementing one.
+  especially old ones, and never recommend implementing one. Triage is
+  `make ready N=<n>` or closing it (`/file-task` § Labels and milestone).
 - **`check off?`** on a Roadmap item means its issue is closed but the box is
   unchecked. That's drift worth mentioning.
 - An open issue in the current phase that isn't `Ready` needs design first.

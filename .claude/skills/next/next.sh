@@ -89,7 +89,7 @@ echo
 # Issues Claude filed on its own (/run-chain's "Noticed" items, #253) carry
 # `proposed` and never `Ready`; the operator triages them. The origin is the
 # "Noticed while working on #N" line /file-task writes into the body.
-echo "== Proposed — awaiting triage (add Ready and drop proposed, or close) =="
+echo "== Proposed — awaiting triage (make ready N=<n>, or close) =="
 q -r "$common"'
   [.[] | select(any(.labels.nodes[]; .name == "proposed"))] | sort_by(.number)
   | if length == 0 then "(none)" else .[]

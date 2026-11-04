@@ -12,9 +12,10 @@ are `/file-task`'s (`.claude/skills/file-task/SKILL.md`), context rules are
 `CLAUDE.md` § Keeping context lean and current, and rewriting a body is
 `docs/Development Conventions.md` § Supersede in place.
 
-Two things are the operator's, never yours: **never add `Ready`** to the issue
-you refine and **never remove `proposed`**. And **never invent an answer** to
-a design question.
+Moving the issue to `Ready` is the operator's decision: add `Ready` and remove
+`proposed` **only on the operator's yes, through `make ready`** (step 8), and
+**never as a subagent**, which reports the verdict instead (§ As a subagent).
+And **never invent an answer** to a design question.
 
 ## 1. Read and classify
 
@@ -97,7 +98,12 @@ when the refinement grew the issue past it or left a design question open.
   `/file-task` § Labels and milestone, including the Done-when proof item in
   the form it gives. That criterion's check, on the rewritten body:
   `jq -R -s -L .claude/skills/file-task 'include "done-when"; done_when_ok' <scratch>/<n>-body.md`.
-  Adding `Ready` stays the operator's call.
+- When the verdict is Ready on **every** criterion, ask the operator with
+  `AskUserQuestion`: "Mark #<n> Ready?". On yes, run `make ready N=<n>`
+  (`scripts/ready.sh`: both label edits in one call, refused while a blocker
+  is open or the Done-when check fails) and add its output line, which
+  carries the revert, to the report.
+  On no, or when any criterion fails, stop at the report.
 - If the issue belongs on `docs/Roadmap.md` and isn't there, say so. Don't
   edit the Roadmap here.
 
@@ -112,3 +118,5 @@ Under `/run-chain`, you can't ask the operator or spawn `decisions-scout`:
   exact planned title, body, labels and links.
 - The root asks them with `AskUserQuestion` and resumes you via `SendMessage`
   with the answers. Then apply steps 3 and 5–7 and hand back the step 8 report.
+- Don't ask "Mark #<n> Ready?" or run `make ready`: report the verdict, and
+  the operator triages.
