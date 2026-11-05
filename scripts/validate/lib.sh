@@ -352,6 +352,29 @@ check_prereqs() {
 	fi
 }
 
+# require_github_writes <what it writes> — the opt-in every `github`-group
+# script calls right after validate_parse_args, before any gh, require_cmd or
+# git push (#311). Without VALIDATE_GITHUB_WRITES=1 the script skips as a whole
+# (tag opt-in, exit 3 through summary) before contacting GitHub. Under CI
+# (CI or GITHUB_ACTIONS set) it skips even with the variable set: these scripts
+# open PRs and dispatch workflows, which from a workflow would recurse. A skip,
+# not a FAIL, because nobody asked them to write (§22); --strict still turns it
+# into one unless opt-in is allowed. <what it writes> completes "it ...", e.g.
+# "pushes a throwaway branch and opens and closes a real PR".
+require_github_writes() {
+	local desc
+	desc="$(basename "${BASH_SOURCE[-1]}") writes to the real GitHub repository"
+	if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+		skip_check "$desc" opt-in \
+			"never runs in CI (CI or GITHUB_ACTIONS is set), even with VALIDATE_GITHUB_WRITES=1: it $1"
+		summary
+	fi
+	if [ "${VALIDATE_GITHUB_WRITES:-}" != 1 ]; then
+		skip_check "$desc" opt-in "it $1 — set VALIDATE_GITHUB_WRITES=1 to run it"
+		summary
+	fi
+}
+
 # ---------------------------------------------------------------------------
 # Soft prerequisites — report availability; the caller decides what to skip.
 # ---------------------------------------------------------------------------
