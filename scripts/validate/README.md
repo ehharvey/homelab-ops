@@ -94,8 +94,9 @@ asks the daemon to create one and skips with the daemon's own words if it
 can't, which covers an uninitialized daemon (no storage pool) and a
 devcontainer with no idmap without enumerating either. `upstream` means "a
 prior check already failed, so this couldn't run" — a cascade, not a missing
-prerequisite. `opt-in` is `bump-workflow-opens-pin-only-pr.sh` declining to
-write to the real repository because nobody asked it to (below). `host-os` is
+prerequisite. `opt-in` is a `github`-group script declining to write to the
+real repository because nobody asked it to (`VALIDATE_GITHUB_WRITES=1`, see
+[Groups](#groups)); `lib.sh`'s `require_github_writes` raises it. `host-os` is
 a whole script skipped because `VALIDATE_OS` names a backend it doesn't declare
 ([below](#the-host-os-backend-validate_os-486)); `lib.sh` raises it, so the
 grep below doesn't find it.
@@ -229,6 +230,9 @@ and it never runs in CI. With it, it:
 - asserts the run succeeded, the submodule job was skipped, and exactly one PR
   came of it: on `chore/bump-incusos-base-test-<run id>`, into the throwaway
   branch, one commit, one file, the pin moved to the newest stable;
+- dispatches it again from the same branch *without* `test_mode` (#310) and
+  asserts both jobs were `skipped`, no `chore/*` branch appeared or moved, and
+  no second PR came of it;
 - closes that PR and deletes both branches, in an `EXIT` trap, so also after a
   failed assertion, a timeout or Ctrl-C (a run still in progress is cancelled
   first). It only removes what that run made, never anything matched by name;
@@ -239,15 +243,18 @@ The throwaway push uses `--no-verify`: the branch is two commits ahead of
 `main` by construction and never becomes a PR into `main`, so the pre-push
 hook's one-commit rule doesn't apply to it. The hook is unchanged.
 
-**Why `test_mode` exists: never dispatch `bump-incusos.yml` from a branch
-other than `main` without it.** Both jobs commit on top of the ref the
-workflow was dispatched from. A plain dispatch from a feature branch therefore
-rebuilds `chore/bump-incus-os` on that branch and puts its commits into the
-real submodule bump PR (this happened while proving #296 by hand). The
-`test_mode` input skips the submodule job entirely and gives the pin PR a
-per-run branch, so a test run cannot touch a real bump branch or PR. With the
-input unset, which is every scheduled run and any plain dispatch, the workflow
-behaves as if the input did not exist.
+**Why `test_mode` exists, and the main-ref guard (#310).** Both jobs commit
+on top of the ref the workflow was dispatched from, so an unguarded plain
+dispatch from a feature branch rebuilt `chore/bump-incus-os` on that branch
+and put its commits into the real submodule bump PR (this happened while
+proving #296 by hand). So outside test mode both jobs run only when
+`github.ref` is `refs/heads/main`: a plain dispatch from any other ref runs
+neither job, and the schedule, whose ref is the default branch, is
+unaffected. The `test_mode` input is the one path from another ref: it skips
+the submodule job entirely and gives the pin PR a per-run branch, so a test
+run cannot touch a real bump branch or PR. The guard's limit: GitHub runs the
+workflow file as it exists on the dispatched ref, so only branches that
+contain the guard are protected. Don't dispatch from a branch cut before it.
 
 **The rejections are tested.**
 `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` (group `none`, so it is
@@ -333,7 +340,7 @@ a failure.
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss` | yes |
 | `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images) | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
-| `github` | authenticated `gh` with repo admin (`amended-commit-reships-to-open-pr.sh` and `ship-copies-issue-details-into-commit.sh` open and close a real PR, the latter also reading two closed issues, `FIXTURE_ISSUE` and `OTHER_ISSUE`); `bump-workflow-opens-pin-only-pr.sh` also needs `VALIDATE_GITHUB_WRITES=1` | no — opens real PRs, would recurse |
+| `github` | `VALIDATE_GITHUB_WRITES=1` for every script, since each writes to the real repository: throwaway `validate-<n>/*` branches and PRs, always closed and deleted by the script, and (`bump-workflow-opens-pin-only-pr.sh`) two dispatches of `bump-incusos.yml`. Without it, and always under CI (`CI` or `GITHUB_ACTIONS` set), each skips (`[opt-in]`, exit 3) before any `gh` call (`require_github_writes`, #311), so a bare `run.sh` writes nothing. Also authenticated `gh` with repo admin (`amended-commit-reships-to-open-pr.sh` and `ship-copies-issue-details-into-commit.sh` open and close a real PR, the latter also reading two closed issues, `FIXTURE_ISSUE` and `OTHER_ISSUE`) | never — opens real PRs, would recurse |
 
 `run.sh` derives these from the scripts themselves rather than a list kept here,
 so a new script is covered without editing anything central.
@@ -412,7 +419,7 @@ an older or CI-provided Compose where `down` returns early (#153).
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, the `VALIDATE_OS` gate (`VALIDATE_KNOWN_OS`, `validate_os_known`), arg parsing, `summary` | all, and `run.sh` |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_github_writes` (the `github` group's opt-in, #311), `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, the `VALIDATE_OS` gate (`VALIDATE_KNOWN_OS`, `validate_os_known`), arg parsing, `summary` | all, and `run.sh` |
 | `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose, jq, the credential-helper probe), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
 
@@ -431,8 +438,8 @@ Two deliberate irregularities, both documented in the scripts themselves:
   there is nothing to accumulate after a failure. They use the shared recorders
   for output and exit codes but keep their own aborting `fail`. The bump one is
   fail-fast only until its workflow run has finished; its assertions about that
-  run accumulate. It is also the only one that is opt-in
-  (`VALIDATE_GITHUB_WRITES=1`), because it dispatches a workflow.
+  run accumulate. All four are opt-in (`VALIDATE_GITHUB_WRITES=1`, see
+  [Groups](#groups)).
 - **`cmd/validate-tunnel-harness` is a Go program.** It runs *inside* a container
   to probe the node's Incus over a WireGuard tunnel of its own, which bash can't
   do from outside. It's a fixture the bash drives — the same category as

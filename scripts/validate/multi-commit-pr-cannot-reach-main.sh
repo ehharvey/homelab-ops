@@ -30,6 +30,16 @@
 # The ruleset is found by name (RULESET_NAME), not by a hard-coded id, so a
 # recreated ruleset or a fork doesn't 404 (#330). A missing gh, jq or git is a
 # SKIP (exit 3) reported before anything contacts GitHub (#330).
+#
+# It writes to the real repository, so it is opt-in: without
+# VALIDATE_GITHUB_WRITES=1, or under CI, it skips (tag opt-in, exit 3) before
+# any gh call (require_github_writes, #311). A run that stops on a
+# precondition writes nothing, its cleanup included (#358).
+#
+# Step 1 tests the pre-push hook committed at this checkout's HEAD, whatever
+# the shared core.hooksPath points at (#369): it copies HEAD's .githooks into
+# the temporary worktree, unstaged, and pushes with core.hooksPath set to that
+# copy. A branch whose hook lets a 2-commit push through FAILs step 1.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -38,11 +48,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="a multi-commit PR cannot reach main: hook, check, and ruleset all hold (#119)"
 VALIDATE_GROUP="github"
-VALIDATE_NEEDS="gh authenticated with repo admin (reads rulesets, opens/closes real PRs); jq; git"
+VALIDATE_NEEDS="VALIDATE_GITHUB_WRITES=1 (opt-in: pushes a validate-119/* branch, opens and closes a real PR), gh authenticated with repo admin (reads rulesets); jq; git"
 VALIDATE_DURATION="~3m"
 VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
+
+# Opt-in, before anything reaches GitHub (lib.sh, #311).
+require_github_writes "pushes a throwaway validate-119/* branch and opens and closes a real PR that runs pr-shape.yml"
 
 # A missing tool means the check can't run, not that enforcement is broken, so
 # it's a SKIP naming the tool (exit 3), never a FAIL. This runs before the first
@@ -75,17 +88,28 @@ fail() {
 	summary
 }
 
+# Cleanup undoes only what the run did (#358): a run that stops on a
+# precondition has pushed nothing and created no worktree, so it writes nothing
+# on the way out either. Each flag is set just BEFORE the step it guards, so a
+# step that half-succeeds (a hook that wrongly lets the push through, a
+# worktree add that fails after creating the branch) is still undone.
+PUSHED=""
+WT_ADDED=""
+PR_OPEN=""
+
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
 	set +e
-	if [ -n "${PR_OPEN:-}" ]; then
+	if [ -n "$PR_OPEN" ]; then
 		echo "--- teardown: closing PR and deleting $BRANCH"
 		gh pr close "$BRANCH" --delete-branch >/dev/null 2>&1
 	fi
 	cd "$ROOT_DIR" || return
-	git push -q --no-verify origin --delete "$BRANCH" >/dev/null 2>&1
-	git worktree remove -f "$WT" 2>/dev/null
-	git branch -qD "$BRANCH" 2>/dev/null
+	[ -z "$PUSHED" ] || git push -q --no-verify origin --delete "$BRANCH" >/dev/null 2>&1
+	if [ -n "$WT_ADDED" ]; then
+		git worktree remove -f "$WT" 2>/dev/null
+		git branch -qD "$BRANCH" 2>/dev/null
+	fi
 	rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -139,28 +163,43 @@ echo "$rules" | jq -e '.rules[] | select(.type=="pull_request")
 	|| fail "allowed_merge_methods is not exactly [rebase]"
 pass "linear history required; rebase is the only merge method"
 
-# Step 1 needs the real pre-push hook. core.hooksPath may be relative
-# (`make hooks`) or absolute; ask git where the hook it starts lives rather
-# than matching the setting's spelling. Which copy that hook checks the push
-# with is settled once the worktree exists, below.
-pre_push=$(git rev-parse --path-format=absolute --git-path hooks/pre-push)
-[ "$(basename "$(dirname "$pre_push")")" = ".githooks" ] && [ -x "$pre_push" ] \
-	|| fail "pre-push hook is $pre_push, not .githooks/pre-push — run 'make hooks' first"
+# Step 1 tests the pre-push hook of the branch under test: this checkout's HEAD
+# (#369). Not whichever copy the shared core.hooksPath starts, which Claude
+# Code's worktree setup points at the main checkout (#279), and not $BASE_REF's,
+# which that copy hands off to from the temporary worktree. Uncommitted hook
+# changes aren't under test, as nothing uncommitted is.
+UNDER_TEST=$(git -C "$ROOT_DIR" rev-parse HEAD)
+[ "$(git -C "$ROOT_DIR" ls-tree "$UNDER_TEST" -- .githooks/pre-push | cut -d' ' -f1)" = 100755 ] \
+	|| fail "HEAD (${UNDER_TEST:0:8}) has no executable .githooks/pre-push to test"
+git -C "$ROOT_DIR" diff --quiet HEAD -- .githooks \
+	|| echo "NOTE: this checkout's .githooks has uncommitted changes; step 1 tests HEAD's copy, so commit them to test them"
+
+# The throwaway branch forks from $BASE_REF, which must carry pr-shape.yml.
+git fetch -q origin
+git rev-parse -q --verify "$BASE_REF^{commit}" >/dev/null \
+	|| fail "BASE_REF=$BASE_REF is not a commit"
+git cat-file -e "$BASE_REF:.github/workflows/pr-shape.yml" 2>/dev/null \
+	|| fail "BASE_REF=$BASE_REF has no .github/workflows/pr-shape.yml, so the PR would get no one-commit check"
 
 # --- 1. pre-push hook refuses 2 commits ------------------------------------
 echo "=== building a deliberately 2-commit branch off $BASE_REF in a temporary worktree"
-git fetch -q origin
+WT_ADDED=1
 git worktree add -q --no-track -b "$BRANCH" "$WT" "$BASE_REF"
 cd "$WT" # the rest of the script, step 4's reset included, runs in $WT
 
-# The hook that checks this worktree's pushes is normally $BASE_REF's copy, not
-# this checkout's: git starts it directly under a relative hooksPath, or the
-# copy git starts hands off to it (#279). Only a started copy from before the
-# hand-off checks the push itself. Either way an uncommitted or unmerged hook
-# change here may not be under test, so say so rather than PASS on another hook.
-hook=$(pre_push_under_test)
-cmp -s "$hook" "$ROOT_DIR/.githooks/pre-push" \
-	|| echo "NOTE: the pre-push under test is $hook, which differs from this checkout's .githooks/pre-push; to test this checkout's, commit it and set BASE_REF to that commit"
+# Put the branch under test's .githooks into the worktree, unstaged (only
+# .validate-119-scratch is ever added, so it is never committed), and have git
+# start that copy directly. Its #279 hand-off then finds itself and carries on,
+# whatever the shared core.hooksPath holds, relative or absolute.
+rm -rf .githooks
+git -C "$ROOT_DIR" archive "$UNDER_TEST" .githooks | tar -x -C "$WT" \
+	|| fail "could not put ${UNDER_TEST:0:8}'s .githooks into the temporary worktree"
+HOOKS="$WT/.githooks"
+started=$(git -c core.hooksPath="$HOOKS" rev-parse --path-format=absolute --git-path hooks/pre-push)
+if [ "$started" != "$HOOKS/pre-push" ] || ! cmp -s "$started" <(git -C "$ROOT_DIR" show "$UNDER_TEST:.githooks/pre-push"); then
+	fail "the push would start $started, not ${UNDER_TEST:0:8}'s .githooks/pre-push"
+fi
+echo "=== step 1 tests ${UNDER_TEST:0:8}'s .githooks/pre-push"
 
 for n in 1 2; do
 	echo "validate-119 commit $n" >> .validate-119-scratch
@@ -168,7 +207,9 @@ for n in 1 2; do
 	git commit -qm "chore: validate-119 throwaway commit $n"
 done
 
-if git push -q -u origin "$BRANCH" 2>/dev/null; then
+# PUSHED before the attempt: a hook that wrongly lets it through has pushed.
+PUSHED=1
+if git -c core.hooksPath="$HOOKS" push -q -u origin "$BRANCH" 2>/dev/null; then
 	fail "pre-push hook allowed a 2-commit push"
 fi
 pass "pre-push hook refused the 2-commit push"
@@ -228,7 +269,7 @@ git reset -q --soft "$BASE_REF"
 git commit -qm "chore: validate-119 throwaway (squashed)" \
 	-m "## Plan" -m "Throwaway commit; the PR is closed automatically." \
 	-m "## Test plan" -m "- [x] one-commit goes green" -m "Closes #0"
-git push -q --force-with-lease origin "$BRANCH"
+git -c core.hooksPath="$HOOKS" push -q --force-with-lease origin "$BRANCH"
 
 await_check "$(git rev-parse HEAD)" success
 pass "one-commit went green after the squash"
