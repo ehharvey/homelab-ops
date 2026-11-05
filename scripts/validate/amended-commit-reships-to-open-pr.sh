@@ -35,11 +35,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="make ship force-pushes an amended commit to its open PR, leased on the PR head, and refuses to overwrite a newer push (#273)"
 VALIDATE_GROUP="github"
-VALIDATE_NEEDS="gh authenticated with push access (opens and closes a real PR)"
+VALIDATE_NEEDS="VALIDATE_GITHUB_WRITES=1 (opt-in: pushes a validate-273/* branch, opens and closes a real PR), gh authenticated with push access"
 VALIDATE_DURATION="~1m"
 VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
+
+# Opt-in, before anything reaches GitHub (lib.sh, #311).
+require_github_writes "pushes a throwaway validate-273/* branch and opens and closes a real [skip ci] PR"
 
 require_cmd gh git
 check_prereqs
