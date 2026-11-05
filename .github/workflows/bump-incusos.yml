@@ -29,13 +29,22 @@ name: Bump incus-os submodule
 # image is meant to be a conscious act (docs/Decisions.md §21). See
 # scripts/validate/README.md.
 #
-# Dispatching this from a branch other than main rebuilds the bump branches on
-# top of THAT branch: both jobs commit onto whatever ref was checked out, so the
-# real chore/bump-incus-os PR picks up the branch's commits. The `test_mode`
-# input exists so the pin job can be proven from a feature branch without that:
-# it skips the submodule job entirely and puts the pin PR on a per-run branch.
-# scripts/validate/bump-workflow-opens-pin-only-pr.sh is its only intended
-# caller; never dispatch from a non-main ref without it.
+# Both jobs commit onto whatever ref was checked out, so a run from a branch
+# other than main would rebuild the real bump branches on top of THAT branch
+# and put its commits into their PRs (it happened twice proving #296 by hand).
+# So the real branches are written only from main (#310): outside test mode,
+# each job's `if:` requires github.ref == refs/heads/main, and a plain dispatch
+# from any other ref runs neither job. A scheduled run's github.ref is the
+# default branch, so the schedule is unaffected. The `test_mode` input is the
+# only path from another ref: it skips the submodule job entirely and runs
+# bump-base-pin with its PR on a per-run branch,
+# chore/bump-incusos-base-test-<run id>, so the pin job can be proven from a
+# feature branch. scripts/validate/bump-workflow-opens-pin-only-pr.sh is its
+# only intended caller, and also proves the plain-dispatch guard.
+#
+# The guard's limit: GitHub runs this file as it exists on the dispatched ref,
+# so it protects only branches that contain it. A branch cut before #310
+# landed still has the unguarded jobs; don't dispatch from one.
 
 on:
   schedule:
@@ -52,8 +61,9 @@ permissions:
 
 jobs:
   check-and-bump:
-    # `inputs` is empty on a schedule, so this is true for every real run.
-    if: ${{ !inputs.test_mode }}
+    # `inputs` is empty on a schedule, so this is true for every scheduled run;
+    # a dispatch runs it only from main (#310, see the header).
+    if: ${{ !inputs.test_mode && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -167,6 +177,9 @@ jobs:
           fi
 
   bump-base-pin:
+    # Writes the real chore/bump-incusos-base only from main; test_mode is the
+    # one path from another ref, onto a per-run branch (#310, see the header).
+    if: ${{ inputs.test_mode || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
