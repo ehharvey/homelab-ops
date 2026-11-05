@@ -260,8 +260,9 @@ work is tracked separately and is not part of this section.)
 - [x] `internal/secureboot`: the project's PK, KEK and db, with Microsoft's
   UEFI CA enrolled by default as an operator choice (`docs/Decisions.md` §6,
   §31): DONE; see #489
-- [ ] `dhcp.mode` on `Network` (`off`, `proxy`, `reservations`, `full`) and
-  IPAM's reservations as an output (`docs/Decisions.md` §5, §31). To file.
+- [x] `dhcp.mode` on `Network` (`off`, `proxy`, `reservations`, `full`) and
+  IPAM's reservations as an output (`docs/Decisions.md` §5, §31): DONE; see
+  #490
 
 **Done when:** IncusOS provisioning and the agent work unchanged behind both
 seams, proven by the existing validate scripts (e.g.
@@ -322,7 +323,10 @@ Bootstrap and break-glass (added 2026-11-02, #466, §31):
   on USB flash storage, later a YubiKey (`docs/Decisions.md` §31). To file.
 - [ ] Kea 3.0 on the appliance, its config rendered from IPAM in
   `reservations` and `full` modes, leases in a local file
-  (`docs/Decisions.md` §31). To file.
+  (`docs/Decisions.md` §31). It carries two items #490 deferred: the seed
+  rendering `full`-mode nodes as DHCP clients (until then it writes
+  `static_ip` in every mode), and excluding the appliance's own address from
+  allocation, added to `config.Network.Allocation`'s carve. To file.
 - [ ] DNS records from IPAM, served by the appliance (`docs/Decisions.md`
   §31). To file.
 

@@ -27,6 +27,34 @@ func inst(name, staticIP string, apps ...string) config.Instance {
 	return i
 }
 
+// TestDiffDHCPMode: an omitted dhcp.mode and an explicit "off" are the same
+// network; any other mode, or a changed pool, is a change.
+func TestDiffDHCPMode(t *testing.T) {
+	omitted := net("lan", "10.0.0.0/24")
+	off := omitted
+	off.DHCP.Mode = config.DHCPOff
+	full := omitted
+	full.DHCP.Mode = config.DHCPFull
+	pooled := off
+	pooled.DHCP.Pool = config.Range{Start: netip.MustParseAddr("10.0.0.100"), End: netip.MustParseAddr("10.0.0.200")}
+	diff := func(a, b config.Network) Result {
+		return Diff(config.Config{Networks: []config.Network{a}}, config.Config{Networks: []config.Network{b}})
+	}
+
+	if got := diff(omitted, off); !got.Empty() {
+		t.Errorf("Diff(mode omitted, mode: off) = %+v, want Empty()", got)
+	}
+	if got := diff(off, omitted); !got.Empty() {
+		t.Errorf("Diff(mode: off, mode omitted) = %+v, want Empty()", got)
+	}
+	if got := diff(omitted, full); len(got.ChangedNetworks) != 1 {
+		t.Errorf("Diff(mode omitted, mode: full) = %+v, want one ChangedNetwork", got)
+	}
+	if got := diff(off, pooled); len(got.ChangedNetworks) != 1 {
+		t.Errorf("Diff(no pool, a pool) = %+v, want one ChangedNetwork", got)
+	}
+}
+
 func TestDiffNoChange(t *testing.T) {
 	cfg := config.Config{
 		Networks:  []config.Network{net("dev-lan", "10.0.0.0/24", "10.0.0.1")},

@@ -122,7 +122,7 @@ func Diff(old, newCfg config.Config) Result {
 			r.AddedNetworks = append(r.AddedNetworks, n)
 			continue
 		}
-		if !reflect.DeepEqual(old, n) {
+		if !sameNetwork(old, n) {
 			r.ChangedNetworks = append(r.ChangedNetworks, NetworkChange{Name: name, Old: old, New: n})
 		}
 	}
@@ -210,6 +210,15 @@ func appsByName(apps []config.App) map[string]config.App {
 		m[a.Name] = a
 	}
 	return m
+}
+
+// sameNetwork reports whether a and b are the same Network, comparing their
+// dhcp.mode as config.Network.DHCPMode resolves it: an omitted mode and an
+// explicit "off" are the same network, so adding or dropping the default
+// isn't a change.
+func sameNetwork(a, b config.Network) bool {
+	a.DHCP.Mode, b.DHCP.Mode = a.DHCPMode(), b.DHCPMode()
+	return reflect.DeepEqual(a, b)
 }
 
 // sameInstance reports whether a and b are the same Instance, comparing their

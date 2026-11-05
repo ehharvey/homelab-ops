@@ -194,14 +194,73 @@ func TestCheckEntries(t *testing.T) {
 	bad := parse(t, "kind: Network\nname: lab"+addressed+
 		"---\nkind: Network\nname: lab"+addressed+
 		"---\nkind: Network\nname: \"\""+addressed+
-		"---\nkind: Network\nname: nocidr\ngateway: 10.0.3.1\n").Networks
+		"---\nkind: Network\nname: nocidr\ngateway: 10.0.3.1\n"+
+		"---\nkind: Network\nname: moded"+addressed+"dhcp:\n  mode: full\n").Networks
 	var paths []string
 	for _, is := range addressing.CheckEntries(bad) {
 		paths = append(paths, is.Path)
 	}
-	if want := []string{"addressing[1].name", "addressing[2].name", "addressing[3].cidr"}; !slices.Equal(paths, want) {
+	if want := []string{"addressing[1].name", "addressing[2].name", "addressing[3].cidr", "addressing[4].dhcp.mode"}; !slices.Equal(paths, want) {
 		t.Errorf("CheckEntries paths = %v, want %v", paths, want)
 	}
+}
+
+// TestResolveDHCP: dhcp.pool is addressing, so it follows the one-source
+// rule: from git for a git-addressed network, from the entry for a
+// state-addressed one, and partial without a cidr. dhcp.mode is git's: a
+// state-addressed network keeps git's mode, and an entry can't set one.
+func TestResolveDHCP(t *testing.T) {
+	const pool = "dhcp:\n  pool: 10.0.2.100-10.0.2.199\n"
+	wantPool := config.Range{Start: netip.MustParseAddr("10.0.2.100"), End: netip.MustParseAddr("10.0.2.199")}
+
+	t.Run("git-addressed pool", func(t *testing.T) {
+		git := parse(t, "kind: Network\nname: lab"+addressed+"dhcp:\n  mode: full\n  pool: 10.0.2.100-10.0.2.199\n"+instance)
+		r, rej := addressing.Resolve(git, nil, addressing.Options{RepoPrivate: true})
+		if !rej.Empty() {
+			t.Fatalf("Resolve: %v", rej.All())
+		}
+		if n := r.Config.Networks[0]; n.DHCP.Pool != wantPool || n.DHCPMode() != config.DHCPFull || len(r.StateAddressed) != 0 {
+			t.Errorf("lab = %+v (state-addressed %v), want git's pool and mode", n, r.StateAddressed)
+		}
+	})
+
+	t.Run("state-addressed pool, git's mode", func(t *testing.T) {
+		git := parse(t, "kind: Network\nname: lab\ndhcp:\n  mode: full\n"+instance)
+		entry := parse(t, "kind: Network\nname: lab"+addressed+pool).Networks
+		r, rej := addressing.Resolve(git, entry, addressing.Options{})
+		if !rej.Empty() {
+			t.Fatalf("Resolve: %v", rej.All())
+		}
+		n := r.Config.Networks[0]
+		if n.DHCP.Pool != wantPool || n.DHCP.Mode != config.DHCPFull || n.CIDR != entry[0].CIDR {
+			t.Errorf("lab = %+v, want the entry's addressing and pool with git's mode full", n)
+		}
+		if issues := config.Validate(r.Config); !issues.Empty() {
+			t.Fatalf("Validate(resolved): %v", issues)
+		}
+		if err := ipam.Assign(r.Config.Networks, r.Config.Instances, nil); err != nil {
+			t.Fatalf("Assign: %v", err)
+		}
+		if got, want := r.Config.Instances[0].StaticIP, netip.MustParseAddr("10.0.2.100"); got != want {
+			t.Errorf("node0 = %v, want %v: full mode draws from the state pool", got, want)
+		}
+	})
+
+	t.Run("partial pool", func(t *testing.T) {
+		git := parse(t, "kind: Network\nname: lab\n"+pool)
+		_, rej := addressing.Resolve(git, state(t), addressing.Options{RepoPrivate: true})
+		if issues := rej.Git; len(issues) != 1 || !strings.Contains(issues[0].Message, "sets dhcp.pool but no cidr") {
+			t.Errorf("Rejection.Git = %v, want the partial pool", issues)
+		}
+	})
+
+	t.Run("an entry setting dhcp.mode", func(t *testing.T) {
+		entry := parse(t, "kind: Network\nname: lab"+addressed+"dhcp:\n  mode: \"off\"\n").Networks
+		_, rej := addressing.Resolve(stateAddressed(t), entry, addressing.Options{})
+		if issues := rej.Resolve; len(issues) != 1 || issues[0].Path != "addressing[0].dhcp.mode" {
+			t.Errorf("Rejection.Resolve = %v, want addressing[0].dhcp.mode", issues)
+		}
+	})
 }
 
 // TestResolveMixedFleet: one network from each source resolves, in git's
@@ -348,6 +407,15 @@ func TestChanges(t *testing.T) {
 	}
 	moved := state(t)
 	moved[0].Gateway = netip.MustParseAddr("10.0.2.254")
+	pooled := state(t)
+	pooled[0].DHCP.Pool = config.Range{Start: netip.MustParseAddr("10.0.2.100"), End: netip.MustParseAddr("10.0.2.199")}
+	// The snapshot had another dhcp.mode, from git: configdiff calls the
+	// network changed, but its addressing isn't.
+	remoded := state(t)
+	remoded[0].DHCP.Mode = config.DHCPFull
+	if r.Config.Networks[0].DHCPMode() == config.DHCPFull {
+		t.Fatal("fixture: lab is already dhcp.mode full")
+	}
 	tests := []struct {
 		name  string
 		prior []config.Network
@@ -355,7 +423,9 @@ func TestChanges(t *testing.T) {
 	}{
 		{"first load", nil, []addressing.Change{{"lab", `network "lab": addressing loaded from the web app's state: cidr 10.0.2.0/24, gateway 10.0.2.1, dhcp_excluded_range 10.0.2.200-10.0.2.250, dns [10.0.2.1]`}}},
 		{"unchanged", state(t), nil},
+		{"dhcp.mode only", remoded, nil},
 		{"changed", moved, []addressing.Change{{"lab", `network "lab": addressing from the web app's state changed: cidr 10.0.2.0/24, gateway 10.0.2.1, dhcp_excluded_range 10.0.2.200-10.0.2.250, dns [10.0.2.1], was cidr 10.0.2.0/24, gateway 10.0.2.254, dhcp_excluded_range 10.0.2.200-10.0.2.250, dns [10.0.2.1]`}}},
+		{"pool dropped", pooled, []addressing.Change{{"lab", `network "lab": addressing from the web app's state changed: cidr 10.0.2.0/24, gateway 10.0.2.1, dhcp_excluded_range 10.0.2.200-10.0.2.250, dns [10.0.2.1], was cidr 10.0.2.0/24, gateway 10.0.2.1, dhcp_excluded_range 10.0.2.200-10.0.2.250, dns [10.0.2.1], dhcp.pool 10.0.2.100-10.0.2.199`}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

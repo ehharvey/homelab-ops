@@ -496,3 +496,92 @@ func TestOpenAddsRuntimeToPreRuntimeStore(t *testing.T) {
 		t.Errorf("Instance(node0) after reopen = %+v, %v, %v, want runtime %q", i, ok, err, config.RuntimeKubernetes)
 	}
 }
+
+// TestReplaceRoundTripsDHCP: a Network's dhcp.mode and dhcp.pool round-trip,
+// raw, and an omitted mode reads back omitted.
+func TestReplaceRoundTripsDHCP(t *testing.T) {
+	s, ctx := openTestStore(t)
+	pool := config.Range{Start: netip.MustParseAddr("10.0.1.100"), End: netip.MustParseAddr("10.0.1.200")}
+	cfg := config.Config{Networks: []config.Network{
+		{Name: "a-off", CIDR: netip.MustParsePrefix("10.0.0.0/24")},
+		{Name: "b-full", CIDR: netip.MustParsePrefix("10.0.1.0/24"), DHCP: config.DHCP{Mode: config.DHCPFull, Pool: pool}},
+		{Name: "c-proxy", CIDR: netip.MustParsePrefix("10.0.2.0/24"), DHCP: config.DHCP{Mode: config.DHCPProxy}},
+	}}
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	got, err := s.Networks(ctx)
+	if err != nil {
+		t.Fatalf("Networks: %v", err)
+	}
+	if !reflect.DeepEqual(got, cfg.Networks) {
+		t.Errorf("Networks() = %+v, want %+v", got, cfg.Networks)
+	}
+	one, ok, err := s.Network(ctx, "b-full")
+	if err != nil || !ok || one.DHCP.Mode != config.DHCPFull || one.DHCP.Pool != pool {
+		t.Errorf("Network(b-full) = %+v, %v, %v, want mode full and pool %v", one, ok, err, pool)
+	}
+}
+
+// preDHCPNetworksSQL is the networks table as schema.sql created it before
+// the dhcp_mode and dhcp_pool columns (#490): what an existing store file
+// holds.
+const preDHCPNetworksSQL = `
+CREATE TABLE networks (
+    name                TEXT NOT NULL PRIMARY KEY,
+    cidr                TEXT NOT NULL,
+    gateway             TEXT NOT NULL,
+    dhcp_excluded_range TEXT NOT NULL,
+    dns                 TEXT NOT NULL
+);
+INSERT INTO networks VALUES ('old-lan', '10.0.0.0/24', '10.0.0.1', '', '[]');`
+
+// TestOpenAddsDHCPToPreDHCPStore pins that a store file created before the
+// dhcp columns opens, gains them (its existing rows reading back with mode
+// and pool omitted), stores a Network with both, and reopens.
+func TestOpenAddsDHCPToPreDHCPStore(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "store.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old store: %v", err)
+	}
+	if _, err := old.ExecContext(ctx, preDHCPNetworksSQL); err != nil {
+		t.Fatalf("create pre-dhcp networks table: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close old store: %v", err)
+	}
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open(pre-dhcp store): %v", err)
+	}
+	n, ok, err := s.Network(ctx, "old-lan")
+	if err != nil || !ok || n.DHCP != (config.DHCP{}) || n.DHCPMode() != config.DHCPOff {
+		t.Fatalf("Network(old-lan) = %+v, %v, %v, want the existing row with dhcp omitted", n, ok, err)
+	}
+	pool := config.Range{Start: netip.MustParseAddr("10.0.0.100"), End: netip.MustParseAddr("10.0.0.200")}
+	cfg := config.Config{Networks: []config.Network{{Name: "lan", CIDR: netip.MustParsePrefix("10.0.0.0/24"), DHCP: config.DHCP{Mode: config.DHCPReservations, Pool: pool}}}}
+	if err := s.Replace(ctx, cfg, "deadbeef", time.Now()); err != nil {
+		t.Fatalf("Replace into a migrated store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen a migrated store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	n, ok, err = s.Network(ctx, "lan")
+	if err != nil || !ok || n.DHCP.Mode != config.DHCPReservations || n.DHCP.Pool != pool {
+		t.Errorf("Network(lan) after reopen = %+v, %v, %v, want mode reservations and pool %v", n, ok, err, pool)
+	}
+}
