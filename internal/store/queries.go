@@ -16,8 +16,8 @@ const deleteAppsSQL = `DELETE FROM apps`
 
 // -- name: ReplaceNetwork :exec
 const replaceNetworkSQL = `
-INSERT OR REPLACE INTO networks (name, cidr, gateway, dhcp_excluded_range, dns)
-VALUES (?, ?, ?, ?, ?)`
+INSERT OR REPLACE INTO networks (name, cidr, gateway, dhcp_excluded_range, dns, dhcp_mode, dhcp_pool)
+VALUES (?, ?, ?, ?, ?, ?, ?)`
 
 // -- name: ReplaceInstance :exec
 const replaceInstanceSQL = `
@@ -39,11 +39,11 @@ const getSyncStateSQL = `SELECT commit_sha, synced_at FROM sync_state WHERE id =
 
 // -- name: ListNetworks :many
 const listNetworksSQL = `
-SELECT name, cidr, gateway, dhcp_excluded_range, dns FROM networks ORDER BY name`
+SELECT name, cidr, gateway, dhcp_excluded_range, dns, dhcp_mode, dhcp_pool FROM networks ORDER BY name`
 
 // -- name: GetNetwork :one
 const getNetworkSQL = `
-SELECT name, cidr, gateway, dhcp_excluded_range, dns FROM networks WHERE name = ?`
+SELECT name, cidr, gateway, dhcp_excluded_range, dns, dhcp_mode, dhcp_pool FROM networks WHERE name = ?`
 
 // -- name: ListInstances :many
 const listInstancesSQL = `
@@ -95,3 +95,9 @@ const countColumnSQL = `SELECT count(*) FROM pragma_table_info(?) WHERE name = ?
 
 // -- name: AddInstancesRuntime :exec
 const addInstancesRuntimeSQL = `ALTER TABLE instances ADD COLUMN runtime TEXT NOT NULL DEFAULT ''`
+
+// -- name: AddNetworksDHCPMode :exec
+const addNetworksDHCPModeSQL = `ALTER TABLE networks ADD COLUMN dhcp_mode TEXT NOT NULL DEFAULT ''`
+
+// -- name: AddNetworksDHCPPool :exec
+const addNetworksDHCPPoolSQL = `ALTER TABLE networks ADD COLUMN dhcp_pool TEXT NOT NULL DEFAULT ''`

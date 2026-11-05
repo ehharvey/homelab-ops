@@ -101,7 +101,7 @@ This is a sketch. The field-by-field reference, with the repo layout and what ea
 
 `kind: App` is the app-manager agent's unit of work; the only App it manages is the agent itself (`Decisions.md` §30), and Incus App management is parked (`Decisions.md` §31) (see `docs/AppManager.md` for the schema, the renderer registry and the blue-green reconcile algorithm; `docs/AppClasses.md` for the classes of App a renderer implements). Note the collision to keep straight: `Instance.applications` is the IncusOS *seed* applications list (`applications.yaml`, `[incus]`), which has nothing to do with `kind: App`.
 
-`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync, stably reusing the same instance's prior address across re-syncs (see Decisions §5).
+`static_ip` may be omitted; `internal/ipam` then auto-assigns the next free IPv4 from `dhcp_excluded_range` during sync (from `dhcp.pool` on a `dhcp.mode: full` network; `docs/Ipam.md`), stably reusing the same instance's prior address across re-syncs (see Decisions §5).
 
 ## Key flows
 

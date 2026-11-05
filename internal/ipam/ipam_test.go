@@ -3,6 +3,7 @@ package ipam
 import (
 	"errors"
 	"net/netip"
+	"runtime"
 	"testing"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
@@ -11,6 +12,18 @@ import (
 // rng is a small helper for building a config.Range from two address strings.
 func rng(start, end string) config.Range {
 	return config.Range{Start: netip.MustParseAddr(start), End: netip.MustParseAddr(end)}
+}
+
+// usableIPs is every address auto-assignment may draw from p, in order. Only
+// tests walk the whole range: in full mode with no range written it is the
+// whole cidr, which Assign never materialises.
+func usableIPs(p *NetworkPool) []netip.Addr {
+	var out []netip.Addr
+	c := p.cursor()
+	for ip, ok := c.next(); ok; ip, ok = c.next() {
+		out = append(out, ip)
+	}
+	return out
 }
 
 func sampleNetwork() config.Network {
@@ -65,15 +78,15 @@ func TestUsableIPsTerminatesAtBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNetworkPool: %v", err)
 	}
-	usable := p.UsableIPs()
+	usable := usableIPs(p)
 	// .200-.254 minus the network/broadcast (.255 is the broadcast and must be
 	// dropped); .200-.254 is 55 addresses.
 	if got, want := len(usable), 55; got != want {
-		t.Fatalf("UsableIPs returned %d addresses, want %d", got, want)
+		t.Fatalf("usableIPs returned %d addresses, want %d", got, want)
 	}
 	for _, ip := range usable {
 		if ip == netip.MustParseAddr("255.255.255.255") {
-			t.Fatalf("UsableIPs included the broadcast address %s", ip)
+			t.Fatalf("usableIPs included the broadcast address %s", ip)
 		}
 	}
 }
@@ -205,6 +218,25 @@ func TestAssignmentRedrawnWhenPriorIPNoLongerValid(t *testing.T) {
 	}
 }
 
+// TestNewInstanceDoesNotTakeAnotherInstancesPriorIP: an instance added ahead
+// of an existing node in the order draws a fresh address; the node keeps the
+// one it holds rather than being renumbered because a node was added.
+func TestNewInstanceDoesNotTakeAnotherInstancesPriorIP(t *testing.T) {
+	networks := []config.Network{sampleNetwork()}
+	prior := []config.Instance{{Name: "node0", Network: "lan", StaticIP: netip.MustParseAddr("192.168.1.200")}}
+	instances := []config.Instance{{Name: "aaa", Network: "lan"}, {Name: "node0", Network: "lan"}}
+
+	if err := Assign(networks, instances, prior); err != nil {
+		t.Fatalf("Assign: %v", err)
+	}
+	if got, want := instances[1].StaticIP.String(), "192.168.1.200"; got != want {
+		t.Fatalf("node0 StaticIP = %q, want its prior %q", got, want)
+	}
+	if got, want := instances[0].StaticIP.String(), "192.168.1.201"; got != want {
+		t.Fatalf("aaa StaticIP = %q, want %q", got, want)
+	}
+}
+
 func TestExplicitStaticIPRejectedWhenConflictsWithPriorAssignedIP(t *testing.T) {
 	networks := []config.Network{sampleNetwork()}
 	prior := []config.Instance{
@@ -235,5 +267,39 @@ func TestExplicitStaticIPReassertingOwnPriorIPAccepted(t *testing.T) {
 	}
 	if got, want := instances[0].StaticIP.String(), "192.168.1.200"; got != want {
 		t.Fatalf("StaticIP = %q, want %q", got, want)
+	}
+}
+
+// TestAssignWalksLargePoolLazily: a full network with neither range written
+// draws nodes from the whole cidr. Assign hands out the next free addresses,
+// skipping a pinned one, without building a list of the range: on a /8 that
+// list would be 16M addresses (~400 MB), so the test bounds what Assign
+// allocates well below it.
+func TestAssignWalksLargePoolLazily(t *testing.T) {
+	networks := []config.Network{{
+		Name:    "lan",
+		CIDR:    netip.MustParsePrefix("10.0.0.0/8"),
+		Gateway: netip.MustParseAddr("10.0.0.1"),
+		DHCP:    config.DHCP{Mode: config.DHCPFull},
+	}}
+	instances := []config.Instance{
+		{Name: "pinned", Network: "lan", StaticIP: netip.MustParseAddr("10.0.0.3")},
+		{Name: "a", Network: "lan"},
+		{Name: "b", Network: "lan"},
+		{Name: "c", Network: "lan"},
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if err := Assign(networks, instances, nil); err != nil {
+		t.Fatalf("Assign: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+	for i, want := range []string{"10.0.0.3", "10.0.0.2", "10.0.0.4", "10.0.0.5"} {
+		if got := instances[i].StaticIP; got != netip.MustParseAddr(want) {
+			t.Errorf("%s: StaticIP = %v, want %s", instances[i].Name, got, want)
+		}
+	}
+	if n := after.TotalAlloc - before.TotalAlloc; n > 16<<20 {
+		t.Errorf("Assign allocated %d bytes on a /8, want it not to build the whole pool", n)
 	}
 }

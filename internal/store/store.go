@@ -66,6 +66,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // with a DEFAULT so existing rows get a value.
 var addedColumns = []struct{ table, column, addSQL string }{
 	{"instances", "runtime", addInstancesRuntimeSQL},
+	{"networks", "dhcp_mode", addNetworksDHCPModeSQL},
+	{"networks", "dhcp_pool", addNetworksDHCPPoolSQL},
 }
 
 // addMissingColumns adds every addedColumns entry the open store lacks.
@@ -124,7 +126,7 @@ func (s *Store) Replace(ctx context.Context, cfg config.Config, commit string, n
 		if err != nil {
 			return fmt.Errorf("marshal network %q dns: %w", n.Name, err)
 		}
-		if _, err := tx.ExecContext(ctx, replaceNetworkSQL, n.Name, asText(n.CIDR), asText(n.Gateway), asText(n.DHCPExcludedRange), string(dns)); err != nil {
+		if _, err := tx.ExecContext(ctx, replaceNetworkSQL, n.Name, asText(n.CIDR), asText(n.Gateway), asText(n.DHCPExcludedRange), string(dns), string(n.DHCP.Mode), asText(n.DHCP.Pool)); err != nil {
 			return fmt.Errorf("store network %q: %w", n.Name, err)
 		}
 	}
@@ -320,8 +322,8 @@ type row interface {
 
 func scanNetwork(r row) (config.Network, error) {
 	var n config.Network
-	var cidr, gateway, excluded, dns string
-	if err := r.Scan(&n.Name, &cidr, &gateway, &excluded, &dns); err != nil {
+	var cidr, gateway, excluded, dns, mode, pool string
+	if err := r.Scan(&n.Name, &cidr, &gateway, &excluded, &dns, &mode, &pool); err != nil {
 		return config.Network{}, err
 	}
 	if err := n.CIDR.UnmarshalText([]byte(cidr)); err != nil {
@@ -335,6 +337,12 @@ func scanNetwork(r row) (config.Network, error) {
 	}
 	if err := json.Unmarshal([]byte(dns), &n.DNS); err != nil {
 		return config.Network{}, fmt.Errorf("unmarshal dns for %q: %w", n.Name, err)
+	}
+	if err := n.DHCP.Mode.UnmarshalText([]byte(mode)); err != nil {
+		return config.Network{}, fmt.Errorf("parse dhcp_mode for %q: %w", n.Name, err)
+	}
+	if err := n.DHCP.Pool.UnmarshalText([]byte(pool)); err != nil {
+		return config.Network{}, fmt.Errorf("parse dhcp_pool for %q: %w", n.Name, err)
 	}
 	return n, nil
 }

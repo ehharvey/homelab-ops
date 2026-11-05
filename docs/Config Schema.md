@@ -58,13 +58,14 @@ Every document must set `kind:`. Anything else is a parse error: a missing
 loudly rather than being dropped). Four kinds exist: `Network`, `Instance`,
 `App` and `Designation`.
 
-Addresses (`cidr`, `gateway`, `static_ip`, `dns`, `dhcp_excluded_range`) are
-checked for syntax at parse time. The semantic checks below run afterwards, as
-one pass that reports every issue at once.
+Addresses (`cidr`, `gateway`, `static_ip`, `dns`, `dhcp_excluded_range`,
+`dhcp.pool`) and an Instance's `mac` are checked for syntax at parse time, and
+so is `dhcp.mode`: an unknown mode is a parse error. The semantic checks below
+run afterwards, as one pass that reports every issue at once.
 
 ### `kind: Network`
 
-A LAN the nodes sit on. IPAM draws static addresses from it (`docs/Ipam.md`).
+A LAN the nodes sit on. IPAM draws node addresses from it (`docs/Ipam.md`).
 
 ```yaml
 kind: Network
@@ -73,24 +74,61 @@ cidr: 192.168.1.0/24
 gateway: 192.168.1.1
 dhcp_excluded_range: 192.168.1.200-192.168.1.250
 dns: [192.168.1.1]
+dhcp:                  # optional; mode defaults to off
+  mode: off
+  pool: 192.168.1.100-192.168.1.199
 ```
 
 | Field | Type | Required | Rules and meaning |
 |---|---|---|---|
 | `name` | string | yes | Non-empty and unique among Networks. What `Instance.network` refers to. |
-| `cidr` | prefix | yes, unless the network is state-addressed | The LAN's subnet. IPv4 in practice: IPAM and the network/broadcast checks are IPv4-only. In a repo the web app syncs, a Network may leave out all four addressing fields (`cidr`, `gateway`, `dhcp_excluded_range`, `dns`) and take them from the addressing file instead; see Network addressing, below. `render-seed` always needs them here. |
+| `cidr` | prefix | yes, unless the network is state-addressed | The LAN's subnet. IPv4 in practice: IPAM and the network/broadcast checks are IPv4-only. In a repo the web app syncs, a Network may leave out all its addressing fields (`cidr`, `gateway`, `dhcp_excluded_range`, `dns`, `dhcp.pool`) and take them from the addressing file instead; see Network addressing, below. `render-seed` always needs them here. |
 | `gateway` | address | see rule | Must be inside `cidr`. Needed for seed rendering whenever an instance on this network has a `static_ip`, since it becomes the node's default route. `Validate` doesn't catch its absence; rendering does. |
-| `dhcp_excluded_range` | `"<start>-<end>"` | no | The static range, meaning the addresses the LAN's own DHCP server must not hand out. Both ends must be inside `cidr`, with start ≤ end. When set, every `static_ip` on this network must fall inside it, and IPAM assigns omitted ones from it. |
-| `dns` | list of addresses | no | Nameservers rendered into each node's `network.yaml`. |
+| `dhcp_excluded_range` | `"<start>-<end>"` | no | The static range: addresses no DHCP server leases. Both ends must be inside `cidr`, with start ≤ end, and it must not overlap `dhcp.pool`. Omitted while `dhcp.pool` is written, it's the pool's complement within `cidr`. In `off`, `proxy` and `reservations` it's where node addresses come from: every `static_ip` on this network must fall inside it, and IPAM assigns omitted ones from it, carved (see `dhcp.mode` and the two ranges, below). In `full` no node gets an address from it: it's left for downstream instances to take statically. |
+| `dns` | list of addresses | no | Nameservers rendered into each node's `network.yaml`. Each one inside `cidr` is carved out of both ranges, so IPAM never auto-assigns it, though a `static_ip` may name it (a node that is the DNS server). |
+| `dhcp.mode` | `off`, `proxy`, `reservations` or `full` | no, default `off` | What IPAM hands out over DHCP (`docs/Decisions.md` §31). `off`: nothing, the router does DHCP. `proxy`: boot options only (none are configurable yet). `reservations`: each Instance's reservation, with no dynamic pool. `full`: reservations plus dynamic leases, as the network's one DHCP authority. Any other value is a parse error. Always set in git, even for a state-addressed network: the addressing file can't set it. Nothing serves DHCP yet (Phase 5); today the mode decides where node addresses come from and which `mac` checks apply. |
+| `dhcp.pool` | `"<start>-<end>"` | no | The DHCP pool: the router's dynamic pool in `off`, `proxy` and `reservations`, IPAM's own in `full`, where it holds the nodes' addresses too. Both ends must be inside `cidr`, with start ≤ end, and it must not overlap `dhcp_excluded_range`. Omitted while `dhcp_excluded_range` is written, it's that range's complement within `cidr`; omitted with neither written, it's the whole `cidr` in `full` and absent otherwise. It's addressing, like `dhcp_excluded_range`. |
+
+#### `dhcp.mode` and the two ranges (#490)
+
+Either range, both or neither may be written. When only one is, the other is
+its complement within the `cidr`, which can be two spans, below and above it.
+Each range, written or derived, is **uncarved**. Its **effective** range is the
+uncarved one minus the addresses never allocated: the network, broadcast and
+gateway addresses, and each `dns` address inside the `cidr`. Explicit
+`static_ip`s are checked against the uncarved range; auto-assignment (and, in
+Phase 5, Kea's dynamic pool) uses the effective one. A `static_ip` on the
+gateway, network or broadcast address is still an error.
+
+| `dhcp.mode` | `dhcp_excluded_range` | `dhcp.pool` | Node addresses come from |
+|---|---|---|---|
+| `off` | the static range, which the router never leases | the router's dynamic pool | the static range |
+| `proxy` | as `off` | as `off` | the static range |
+| `reservations` | as `off` | as `off` | the static range |
+| `full` | addresses IPAM never uses, for downstream instances to take statically | IPAM's dynamic pool, which holds the nodes' reservations too | **the pool** |
+
+With neither range written, `off`, `proxy` and `reservations` have no
+auto-assign pool, as before, and a `static_ip` need only be inside the `cidr`.
+`full` treats the whole `cidr` as its pool. For example, `cidr 10.0.0.0/24`,
+`gateway 10.0.0.1`, `dns [10.0.0.53, 1.1.1.1]` and `mode: full`, with neither
+range written, has the uncarved pool `10.0.0.0-10.0.0.255`, the effective pool
+`10.0.0.2-10.0.0.52, 10.0.0.54-10.0.0.254`, and no static range.
+`bootstrap parse-config` prints each network's mode and both ranges, effective,
+marked written or derived, and uncarved where carving changed them.
+
+On a `reservations` or `full` network every Instance needs a `mac`, and no two
+of them may share one (compared normalised). The seed still writes each node's
+`static_ip` in every mode, since nothing answers DHCP yet; rendering `full`
+nodes as DHCP clients waits for Kea (Phase 5).
 
 #### Network addressing: from git or from the web app's state (#199)
 
-A Network's addressing, its `cidr`, `gateway`, `dhcp_excluded_range` and
-`dns`, comes from exactly one place (`docs/Decisions.md` §28). Git always
-holds the network's name.
+A Network's addressing, its `cidr`, `gateway`, `dhcp_excluded_range`, `dns`
+and `dhcp.pool`, comes from exactly one place (`docs/Decisions.md` §28). Git
+always holds the network's name and its `dhcp.mode`.
 
-- **Git-addressed**: the Network in git sets `cidr` (its other three fields
-  stay optional, as in the table). This needs a private repo, so the web app
+- **Git-addressed**: the Network in git sets `cidr` (its other addressing
+  fields stay optional, as in the table). This needs a private repo, so the web app
   rejects it unless `CONFIG_REPO_PRIVATE=true`.
 - **State-addressed**: the Network in git carries only its name, and its
   addressing comes from the web app's addressing file
@@ -100,6 +138,8 @@ holds the network's name.
 # In git (a public repo is fine):
 kind: Network
 name: home-lan
+dhcp:
+  mode: full           # git's, never the addressing file's
 ---
 # In the addressing file, NETWORK_ADDRESSING_PATH on the web app:
 kind: Network
@@ -108,6 +148,8 @@ cidr: 192.168.1.0/24
 gateway: 192.168.1.1
 dhcp_excluded_range: 192.168.1.200-192.168.1.250
 dns: [192.168.1.1]
+dhcp:
+  pool: 192.168.1.2-192.168.1.199
 ```
 
 The addressing file holds full `kind: Network` documents and nothing else,
@@ -117,12 +159,16 @@ above then run on the joined Networks, so a state-addressed network gets the
 same `cidr`, `gateway`, range and `static_ip` checks as a git-addressed one.
 The resolve step rejects each of these, naming the network:
 
-- **Partial addressing in git**: a `gateway`, `dhcp_excluded_range` or `dns`
-  without a `cidr`. A Network carries all its addressing or none.
+- **Partial addressing in git**: a `gateway`, `dhcp_excluded_range`, `dns` or
+  `dhcp.pool` without a `cidr`. A Network carries all its addressing or none;
+  a `dhcp.mode` alone leaves it name-only.
 - **Both sources**: a network addressed in git that also has an entry in the
   file. Neither wins; remove one.
 - **An unknown entry**: an entry in the file for a network git doesn't
   declare, or a second entry for the same network, or one without a `cidr`.
+- **A `dhcp.mode` in the file** (`addressing[N].dhcp.mode`): the mode is
+  git's. The resolve step copies only the addressing fields from an entry,
+  so git's mode stays.
 - **No addressing at all**: a name-only Network with no entry in the file.
 - **A `static_ip` on a state-addressed network.** Its instances get IPAM
   addresses. Pinning one, held in state rather than git, is #514.
@@ -137,8 +183,8 @@ settings.
 
 The file is read on every sync, so an edit to it takes effect on the next sync
 even though the commit hasn't moved. It's also read once at startup: a path
-that can't be read or parsed, or an entry with no name, no `cidr`, or the name
-of an earlier entry, stops the web app, naming the setting. If it becomes
+that can't be read or parsed, or an entry with no name, no `cidr`, the name
+of an earlier entry, or a `dhcp.mode`, stops the web app, naming the setting. If it becomes
 unreadable later, `POST /sync` answers 500 naming the file rather than 502.
 Each state-addressed network whose addressing is loaded for the first time or
 changes is reported: logged, in `POST /sync`'s `warnings`, and in
@@ -178,9 +224,9 @@ applications: [incus]
 | `os` | string | no, default `incusos` | The host OS, which picks how the machine's seed and image are rendered (`internal/hostos`, `docs/Decisions.md` §31). Only `incusos` is implemented. `talos` and `debian` are known but have no backend yet, and any other value is unknown; each is rejected with its own message (`instances[N].os`). |
 | `runtime` | string | no, default `incus` | The cluster runtime, `incus` or `kubernetes`, which picks how the cluster is bootstrapped, joined and upgraded (`internal/clusterruntime`, `docs/Decisions.md` §31). It must be one the `os` can run (the table below), and every Instance in the repo must share it. Only `incus` is implemented; `kubernetes` is known but has no backend yet. It's on the Instance because there's no cluster entity: every Instance in a repo is a member of its one cluster. |
 | `name` | string | yes | Unique among Instances, and a lowercase hostname label: 1–63 of `a-z`, `0-9` and `-`, not starting or ending with `-`, not all digits. Lowercase only, because `Node0` and `node0` would be "unique" and yet name the same host. It's the node's identity everywhere downstream: its Incus cluster member name, its cert names, its web-app store key, and the agent's `AGENT_NODE_NAME`. #193 also makes it the node's hostname. The rule is stricter than Incus's own member-name check, so a name that passes is valid everywhere. |
-| `mac` | string | yes, in effect | The NIC IncusOS configures as `eth0`. Not validated; a wrong MAC leaves the node's network unconfigured at boot. Quoting is optional. |
+| `mac` | string | yes on a `reservations` or `full` network; in effect elsewhere | The NIC IncusOS configures as `eth0`, and what the node's DHCP reservation is keyed on. Checked at parse in every mode: a 48-bit Ethernet MAC in any form Go's `net.ParseMAC` reads (`02:00:00:00:00:01`, `02-00-00-00-00-01`, any case). The 8-octet EUI-64 and 20-octet InfiniBand addresses `net.ParseMAC` also reads are rejected, as no Ethernet NIC matches one. On a `reservations` or `full` network it's required and unique among that network's Instances, compared normalised. A wrong but well-formed MAC still leaves the node's network unconfigured at boot. Quoting is optional. |
 | `network` | string | yes | A declared Network's `name`, checked for every instance, DHCP or not. The instance must sit on that network. |
-| `static_ip` | address | no | Must be inside the network's `cidr` and its `dhcp_excluded_range` (if set). It can't be the gateway, network or broadcast address. Only allowed on a git-addressed network: on a state-addressed one it's rejected, and IPAM assigns. **Omitted means something different per reader**: the web app assigns one, while `render-seed` renders DHCP (see What each reader does). The address matters beyond networking, because it's what makes a node an Incus cluster member (§26). A DHCP node comes up unclustered. |
+| `static_ip` | address | no | Must be inside the network's `cidr` and the uncarved range its nodes draw from: the static range (`dhcp_excluded_range`, written or derived) in `off`, `proxy` and `reservations`, the pool in `full` (see `dhcp.mode` and the two ranges). With neither range written outside `full`, only the `cidr` applies. It can't be the gateway, network or broadcast address, but it may be an in-`cidr` `dns` address. Only allowed on a git-addressed network: on a state-addressed one it's rejected, and IPAM assigns. **Omitted means something different per reader**: the web app assigns one, while `render-seed` renders DHCP (see What each reader does). The address matters beyond networking, because it's what makes a node an Incus cluster member (§26). A DHCP node comes up unclustered. |
 | `disk` | string | yes | Only `single` is implemented (checked at render). |
 | `nic` | string | yes | Only `single` is implemented (checked at render). |
 | `security.tpm` | bool | no, default `false` | Whether the machine has a TPM. `false` tells the IncusOS installer to proceed without one. |
@@ -304,7 +350,7 @@ primary: node0   # an Instance name: a node, not an agent instance
 
 | Reader | Reads | Differences |
 |---|---|---|
-| **Web app** | The branch above, on `POST /sync` or every `CONFIG_SYNC_INTERVAL` | Resolves each Network's addressing from git or the addressing file, runs `Validate` on the result, then IPAM. An omitted `static_ip` gets an address from the network's `dhcp_excluded_range`, stable across syncs. It errors if the range is unset or exhausted. The web app stores the result, reports what changed against the previous sync, and renders each node's seed and image from it. |
+| **Web app** | The branch above, on `POST /sync` or every `CONFIG_SYNC_INTERVAL` | Resolves each Network's addressing from git or the addressing file, runs `Validate` on the result, then IPAM. An omitted `static_ip` gets an address from the effective range the network's nodes draw from (the static range, or the pool in `full`, carved around the network, broadcast, gateway and in-`cidr` `dns` addresses), stable across syncs. It errors if there is no such range (neither written, outside `full`) or it's exhausted. The web app stores the result, reports what changed against the previous sync, and renders each node's seed and image from it. |
 | **`bootstrap render-seed`** | One local file (`--file`), no git | Needs **exactly one** Network and one Instance; Apps are ignored. There's no IPAM, so an omitted `static_ip` means DHCP, and the node comes up unclustered. Use [`examples/nodes/single-node/`](https://github.com/ehharvey/homelab-ops/tree/main/examples/nodes/single-node). |
 | **Agent** (`cmd/agent`, #101) | The same repo, from its own `CONFIG_REPO_URL`/`CONFIG_REPO_REF` | Runs with the web app down. It keeps a persistent full clone (`AGENT_REPO_DIR`) and fetches into it, rather than a fresh shallow clone, because leader election asks whether a peer's commit is in its history. It runs `Validate` too, except that a name-only (state-addressed) Network passes, and a commit that fails keeps the previous one current. Today it reads only the Designation; it never reads addressing. |
 
@@ -321,7 +367,6 @@ Things the checks don't catch today, recorded so nobody assumes they do:
   built (#203, and #98 when it resumes).
 - **A missing `gateway` passes `Validate`.** It's caught at render instead,
   which is later than an operator would expect.
-- **`mac` is free text.**
 - **The web app's store doesn't keep `os`.** A stored Instance reads back with
   `os` omitted, which is right while `incusos` is the only accepted value, and
   the config diff treats `os: incusos` and an omitted `os` as the same. The

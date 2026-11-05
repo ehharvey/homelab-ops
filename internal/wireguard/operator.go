@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+
+	"github.com/ehharvey/homelab-ops/internal/config"
 )
 
 // OperatorCIDR is the slice of OverlayCIDR reserved for operator peers
@@ -53,7 +55,7 @@ func ParseOperatorPeers(raw string) ([]OperatorPeer, error) {
 	entries := strings.FieldsFunc(raw, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
 	})
-	broadcast := lastAddr(OverlayCIDR)
+	broadcast := config.LastAddr(OverlayCIDR)
 
 	peers := make([]OperatorPeer, 0, len(entries))
 	seenAddr := make(map[netip.Addr]bool, len(entries))

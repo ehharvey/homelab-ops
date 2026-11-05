@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS networks (
     cidr                TEXT NOT NULL,
     gateway             TEXT NOT NULL,
     dhcp_excluded_range TEXT NOT NULL,
-    dns                 TEXT NOT NULL -- JSON array of strings
+    dns                 TEXT NOT NULL, -- JSON array of strings
+    dhcp_mode           TEXT NOT NULL DEFAULT '', -- dhcp.mode as written, '' when omitted (config.Network.DHCPMode); store.Open adds it to an older file
+    dhcp_pool           TEXT NOT NULL DEFAULT '' -- dhcp.pool as written, '' when omitted (config.Range's MarshalText); store.Open adds it to an older file
 );
 
 CREATE TABLE IF NOT EXISTS instances (

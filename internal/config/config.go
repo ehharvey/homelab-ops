@@ -4,7 +4,8 @@
 // unknown-field detection); address fields are typed with net/netip, so
 // their *syntactic* well-formedness is checked at parse time via
 // encoding.TextUnmarshaler (which yaml.v3 honors — see
-// ExampleNetwork_yamlUnmarshal). Cross-field *semantic* validation
+// ExampleNetwork_yamlUnmarshal), as are dhcp.mode and dhcp.pool, and an
+// Instance's mac is checked with ParseMAC. Cross-field *semantic* validation
 // (gateway-in-CIDR, range-in-CIDR, etc.) is a separate pass, Validate.
 package config
 
@@ -13,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,26 +29,107 @@ import (
 // an empty (`gateway: ""`) or omitted optional lands as a zero value with
 // IsValid()==false and no error. See ExampleNetwork_yamlUnmarshal.
 //
-// The addressing fields (cidr, gateway, dhcp_excluded_range, dns) are
-// optional in a fleet the web app syncs (docs/Decisions.md §28, #199). A
-// Network that sets cidr is git-addressed, and its other three fields stay
-// optional as they always were. One that sets none of them is
+// The addressing fields (cidr, gateway, dhcp_excluded_range, dns,
+// dhcp.pool) are optional in a fleet the web app syncs (docs/Decisions.md
+// §28, #199). A Network that sets cidr is git-addressed, and its other
+// fields stay optional as they always were. One that sets none of them is
 // state-addressed: the web app's resolve step (internal/addressing) fills its
 // addressing in from the addressing file before Validate runs. Anything in
-// between (a gateway, range or dns without a cidr) is partial, and
+// between (a gateway, range, dns or pool without a cidr) is partial, and
 // AddressingIssues rejects it. Validate itself still requires a cidr, so a
 // local file (bootstrap render-seed, deploy-agent) and a resolved fleet carry
-// full Networks.
+// full Networks. dhcp.mode isn't addressing: it always comes from git.
 type Network struct {
 	Name              string       `yaml:"name"`
 	CIDR              netip.Prefix `yaml:"cidr"`
 	Gateway           netip.Addr   `yaml:"gateway"`
 	DHCPExcludedRange Range        `yaml:"dhcp_excluded_range"`
 	DNS               []netip.Addr `yaml:"dns"`
+	DHCP              DHCP         `yaml:"dhcp"`
+}
+
+// DHCP is a Network's `dhcp:` mapping (docs/Decisions.md §31, #490): what
+// IPAM hands out over DHCP, and the dynamic pool. Read the mode through
+// Network.DHCPMode, which applies the default, and the pool through
+// Network.Allocation, which derives it when it's omitted.
+type DHCP struct {
+	// Mode is the dhcp.mode as written: empty when omitted. It's kept raw,
+	// as Instance.Runtime is, and the store keeps it raw too; configdiff
+	// treats empty and DHCPOff as the same.
+	Mode DHCPMode `yaml:"mode" json:",omitempty"`
+	// Pool is the dynamic pool as written: the zero Range when omitted.
+	Pool Range `yaml:"pool"`
+}
+
+// DHCPMode is a Network's dhcp.mode. It implements encoding.TextUnmarshaler,
+// so an unknown mode is a parse error, like a malformed address.
+type DHCPMode string
+
+// The dhcp.mode values (docs/Decisions.md §31). What each makes of a
+// Network's two ranges is Network.Allocation's.
+const (
+	// DHCPOff means IPAM hands out nothing; the router does DHCP.
+	DHCPOff DHCPMode = "off"
+	// DHCPProxy means IPAM hands out boot options only, beside the router.
+	DHCPProxy DHCPMode = "proxy"
+	// DHCPReservations means IPAM hands out its reservations, with no dynamic
+	// pool, beside the router.
+	DHCPReservations DHCPMode = "reservations"
+	// DHCPFull means IPAM is the one DHCP authority: reservations plus dynamic
+	// leases from dhcp.pool, which holds the nodes' addresses too.
+	DHCPFull DHCPMode = "full"
+)
+
+// DefaultDHCPMode is the mode of a Network whose dhcp.mode is omitted:
+// today's behaviour, with the router doing DHCP.
+const DefaultDHCPMode = DHCPOff
+
+// dhcpModes lists the dhcp.mode values, in the order messages name them.
+var dhcpModes = []DHCPMode{DHCPOff, DHCPProxy, DHCPReservations, DHCPFull}
+
+// UnmarshalText accepts one of the dhcp.mode values. An empty input yields
+// the empty (omitted) mode with no error, as Range does.
+func (m *DHCPMode) UnmarshalText(text []byte) error {
+	s := DHCPMode(strings.TrimSpace(string(text)))
+	if s != "" && !slices.Contains(dhcpModes, s) {
+		names := make([]string, len(dhcpModes))
+		for i, d := range dhcpModes {
+			names[i] = string(d)
+		}
+		return fmt.Errorf("dhcp.mode %q: want one of %s", s, strings.Join(names, ", "))
+	}
+	*m = s
+	return nil
+}
+
+// ReservesByMAC reports whether m hands out a reservation per Instance mac,
+// which is what makes a mac required, and unique, on a network in that mode.
+func (m DHCPMode) ReservesByMAC() bool { return m == DHCPReservations || m == DHCPFull }
+
+// DHCPMode returns n's dhcp.mode, or DefaultDHCPMode when it's omitted.
+func (n Network) DHCPMode() DHCPMode {
+	if n.DHCP.Mode == "" {
+		return DefaultDHCPMode
+	}
+	return n.DHCP.Mode
+}
+
+// WithAddressingOf returns n with its addressing fields (the ones
+// AddressingFields names) taken from s, keeping n's name and dhcp.mode. It's
+// how the web app's resolve step joins a git Network with its addressing-file
+// entry, kept beside AddressingFields so the two lists can't drift.
+func (n Network) WithAddressingOf(s Network) Network {
+	n.CIDR = s.CIDR
+	n.Gateway = s.Gateway
+	n.DHCPExcludedRange = s.DHCPExcludedRange
+	n.DNS = s.DNS
+	n.DHCP.Pool = s.DHCP.Pool
+	return n
 }
 
 // AddressingFields names the addressing fields n sets, in schema order:
-// cidr, gateway, dhcp_excluded_range, dns.
+// cidr, gateway, dhcp_excluded_range, dns, dhcp.pool. WithAddressingOf
+// copies the same set.
 func (n Network) AddressingFields() []string {
 	var set []string
 	if n.CIDR.IsValid() {
@@ -60,6 +144,9 @@ func (n Network) AddressingFields() []string {
 	if len(n.DNS) > 0 {
 		set = append(set, "dns")
 	}
+	if r := n.DHCP.Pool; r.Start.IsValid() || r.End.IsValid() {
+		set = append(set, "dhcp.pool")
+	}
 	return set
 }
 
@@ -68,7 +155,7 @@ func (n Network) AddressingFields() []string {
 func (n Network) Unaddressed() bool { return len(n.AddressingFields()) == 0 }
 
 // Range is a closed inclusive address range written as "<start>-<end>" (used
-// for a Network's DHCP-excluded range). It implements encoding.TextMarshaler/
+// for a Network's dhcp_excluded_range and dhcp.pool). It implements encoding.TextMarshaler/
 // TextUnmarshaler so it round-trips through YAML, JSON, and the store's TEXT
 // columns. The zero Range (unset/omitted) has an invalid Start; detect it with
 // !r.Start.IsValid().
@@ -112,15 +199,42 @@ func (r Range) MarshalText() ([]byte, error) {
 	return []byte(r.Start.String() + "-" + r.End.String()), nil
 }
 
+// String renders the Range as MarshalText does.
+func (r Range) String() string {
+	b, _ := r.MarshalText()
+	return string(b)
+}
+
+// Contains reports whether ip lies in the Range, ends included.
+func (r Range) Contains(ip netip.Addr) bool {
+	return r.Start.IsValid() && ip.Compare(r.Start) >= 0 && ip.Compare(r.End) <= 0
+}
+
 // Security holds an Instance's TPM/Secure Boot configuration.
 type Security struct {
 	TPM        bool `yaml:"tpm"`
 	SecureBoot bool `yaml:"secure_boot"`
 }
 
+// ParseMAC parses s as a 48-bit Ethernet MAC, in any form net.ParseMAC
+// accepts. net.ParseMAC also accepts 8-octet EUI-64 and 20-octet InfiniBand
+// addresses, which no Ethernet NIC carries: a node's eth0 match or a DHCP
+// reservation keyed on one would never match (#490).
+func ParseMAC(s string) (net.HardwareAddr, error) {
+	hw, err := net.ParseMAC(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(hw) != 6 {
+		return nil, fmt.Errorf("a %d-octet hardware address, not a 6-octet Ethernet MAC", len(hw))
+	}
+	return hw, nil
+}
+
 // Instance is a parsed `kind: Instance` document. StaticIP is a netip.Addr
-// (zero/invalid when unset → DHCP); MAC stays a string because
-// net.HardwareAddr has no stdlib TextUnmarshaler.
+// (zero/invalid when unset → DHCP); MAC stays a string, as written, because
+// net.HardwareAddr has no stdlib TextUnmarshaler, but Parse checks it with
+// ParseMAC.
 type Instance struct {
 	Name         string     `yaml:"name"`
 	MAC          string     `yaml:"mac"`
@@ -437,6 +551,14 @@ func Parse(r io.Reader) (Config, error) {
 			}
 			if err := strictDecode(&node, &doc); err != nil {
 				return Config{}, fmt.Errorf("decode document %d as Instance: %w", i, err)
+			}
+			// A mac is syntax-checked here, like an address field: a wrong
+			// one leaves the node's network unconfigured at boot, and a DHCP
+			// reservation keyed on it never matches (#490).
+			if doc.MAC != "" {
+				if _, err := ParseMAC(doc.MAC); err != nil {
+					return Config{}, fmt.Errorf("decode document %d as Instance: mac %q: %w", i, doc.MAC, err)
+				}
 			}
 			cfg.Instances = append(cfg.Instances, doc.Instance)
 		case "App":

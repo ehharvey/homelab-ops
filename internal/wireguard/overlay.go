@@ -1,7 +1,6 @@
 package wireguard
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net/netip"
 
@@ -27,7 +26,7 @@ func AssignTunnelIPs(instances []config.Instance, prior []config.Instance) error
 	}
 
 	network := OverlayCIDR.Masked().Addr()
-	broadcast := lastAddr(OverlayCIDR)
+	broadcast := config.LastAddr(OverlayCIDR)
 
 	taken := make(map[netip.Addr]bool, len(instances))
 	// Reserve every still-valid prior assignment up front, so reuse always
@@ -74,17 +73,4 @@ func nextFree(taken map[netip.Addr]bool, network, broadcast netip.Addr) (netip.A
 		return ip, nil
 	}
 	return netip.Addr{}, fmt.Errorf("overlay address pool %s exhausted", OverlayCIDR)
-}
-
-// lastAddr reports p's broadcast address (all host bits set). IPv4-only,
-// matching internal/ipam's identical helper and this repo's IPv4-only 0.x
-// scope — duplicated rather than exported from internal/ipam, since the two
-// packages' pool shapes (per-Network vs. one fixed app-wide pool) are
-// different enough that sharing the type wouldn't simplify either side.
-func lastAddr(p netip.Prefix) netip.Addr {
-	a := p.Addr().As4()
-	v := binary.BigEndian.Uint32(a[:])
-	v |= uint32(0xffffffff) >> p.Bits()
-	binary.BigEndian.PutUint32(a[:], v)
-	return netip.AddrFrom4(a)
 }

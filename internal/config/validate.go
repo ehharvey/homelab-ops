@@ -1,8 +1,8 @@
 package config
 
 import (
-	"encoding/binary"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -40,8 +40,11 @@ func (is Issues) Error() string {
 // not (Parse is structural/syntactic only). Syntactic well-formedness of the
 // address fields is already guaranteed by net/netip's TextUnmarshaler at parse
 // time; Validate covers the relationships between fields: name non-empty, CIDR
-// present, gateway/DNS/static-IP/DHCP-range membership in the CIDR, and a
-// static IP falling inside its network's DHCP-excluded (static) range. Every
+// present, gateway/DNS/static-IP/DHCP-range membership in the CIDR, the
+// static range and dhcp.pool not overlapping, and a static IP falling inside
+// the uncarved range its network's dhcp.mode draws nodes from
+// (Network.Allocation). On a reservations or full network every Instance
+// needs a mac, unique on that network. Every
 // Instance needs a unique hostname-label name, a declared network, an os
 // with an internal/hostos backend (omitted means DefaultOS), and a runtime
 // (omitted means DefaultRuntime) that its os can run and this build
@@ -73,7 +76,8 @@ func ValidateUnresolved(c Config) Issues {
 // AddressingIssues runs the git-side checks of §28's one-source rule on a
 // synced fleet, naming the network in each message:
 //   - a Network sets all its addressing (at least a cidr) or none of it, so a
-//     gateway, dhcp_excluded_range or dns without a cidr is partial;
+//     gateway, dhcp_excluded_range, dns or dhcp.pool without a cidr is
+//     partial;
 //   - a static_ip is valid in git only on a git-addressed network. A
 //     state-addressed network's instances get IPAM addresses (pins for them,
 //     held in state, are #514's).
@@ -113,10 +117,12 @@ func validate(c Config, allowUnaddressed bool) Issues {
 	add := func(path, msg string) { issues = append(issues, Issue{Path: path, Message: msg}) }
 
 	byName := make(map[string]Network, len(c.Networks))
+	allocs := make(map[string]Allocation, len(c.Networks))
 	firstIndex := make(map[string]int, len(c.Networks))
 	for i, n := range c.Networks {
 		path := fmt.Sprintf("networks[%d]", i)
 		byName[n.Name] = n
+		delete(allocs, n.Name) // a duplicate name is last-one-wins, as byName
 
 		if strings.TrimSpace(n.Name) == "" {
 			add(path+".name", "must not be empty")
@@ -140,20 +146,19 @@ func validate(c Config, allowUnaddressed bool) Issues {
 				add(fmt.Sprintf("%s.dns[%d]", path, j), "must be a valid IP address")
 			}
 		}
-		if r := n.DHCPExcludedRange; r.Start.IsValid() || r.End.IsValid() {
-			rp := path + ".dhcp_excluded_range"
-			switch {
-			case !r.Start.IsValid() || !r.End.IsValid():
-				add(rp, "must be a valid \"<start>-<end>\" range")
-			case r.Start.Compare(r.End) > 0:
-				add(rp, fmt.Sprintf("start %s is after end %s", r.Start, r.End))
-			case !n.CIDR.Contains(r.Start) || !n.CIDR.Contains(r.End):
-				add(rp, fmt.Sprintf("is not contained in cidr %s", n.CIDR))
-			}
+		// The range checks (each inside the cidr, start <= end, the two not
+		// overlapping) are Allocation's, so IPAM reads the same rules.
+		alloc, rangeIssues := n.Allocation()
+		for _, is := range rangeIssues {
+			add(path+"."+is.Path, is.Message)
+		}
+		if rangeIssues.Empty() {
+			allocs[n.Name] = alloc
 		}
 	}
 
 	instFirstIndex := make(map[string]int, len(c.Instances))
+	macFirstIndex := make(map[string]map[string]int) // network -> normalised mac -> instance index
 	for i, inst := range c.Instances {
 		path := fmt.Sprintf("instances[%d]", i)
 
@@ -183,6 +188,7 @@ func validate(c Config, allowUnaddressed bool) Issues {
 			add(path+".network", fmt.Sprintf("references unknown network %q", inst.Network))
 			continue
 		}
+		validateMAC(path, i, inst, n, macFirstIndex, add)
 		if !inst.StaticIP.IsValid() {
 			continue // DHCP — nothing address-wise to validate here.
 		}
@@ -192,9 +198,13 @@ func validate(c Config, allowUnaddressed bool) Issues {
 		if !n.CIDR.Contains(inst.StaticIP) {
 			add(path+".static_ip", fmt.Sprintf("%s is not inside cidr %s", inst.StaticIP, n.CIDR))
 		}
-		if r := n.DHCPExcludedRange; r.Start.IsValid() && r.End.IsValid() &&
-			(inst.StaticIP.Compare(r.Start) < 0 || inst.StaticIP.Compare(r.End) > 0) {
-			add(path+".static_ip", fmt.Sprintf("%s is outside dhcp_excluded_range %s-%s", inst.StaticIP, r.Start, r.End))
+		// Checked against the uncarved range, so a static_ip may be an
+		// in-cidr dns address: a node that is the DNS server pins its own.
+		// The gateway, network and broadcast collisions are errors below.
+		if alloc, ok := allocs[inst.Network]; ok {
+			if nodes := alloc.Nodes(); nodes.Source != SpanUnset && !nodes.ContainsUncarved(inst.StaticIP) {
+				add(path+".static_ip", fmt.Sprintf("%s is outside %s", inst.StaticIP, nodes.Describe()))
+			}
 		}
 		switch network, broadcast, ok := networkAndBroadcast(n.CIDR); {
 		case n.Gateway.IsValid() && inst.StaticIP == n.Gateway:
@@ -252,6 +262,40 @@ func validate(c Config, allowUnaddressed bool) Issues {
 	validateDesignations(c, add)
 
 	return issues
+}
+
+// validateMAC checks inst's mac: when set, it must be what ParseMAC accepts
+// on any network, as Parse requires, because Validate also runs on Configs
+// that never went through Parse. On a network that reserves by mac
+// (reservations, full), it must also be set and unique among that network's
+// instances, compared normalised. seen is keyed by network, then normalised
+// mac.
+func validateMAC(path string, i int, inst Instance, n Network, seen map[string]map[string]int, add func(path, msg string)) {
+	var hw net.HardwareAddr
+	if inst.MAC != "" {
+		var err error
+		if hw, err = ParseMAC(inst.MAC); err != nil {
+			add(path+".mac", fmt.Sprintf("%q: %v", inst.MAC, err))
+			return
+		}
+	}
+	mode := n.DHCPMode()
+	if !mode.ReservesByMAC() {
+		return
+	}
+	if hw == nil {
+		add(path+".mac", fmt.Sprintf("must be set: network %q has dhcp.mode %s, which reserves each instance's address by its mac", n.Name, mode))
+		return
+	}
+	mac := hw.String()
+	if seen[n.Name] == nil {
+		seen[n.Name] = make(map[string]int)
+	}
+	if j, dup := seen[n.Name][mac]; dup {
+		add(path+".mac", fmt.Sprintf("%s is already used by instances[%d] on network %q (dhcp.mode %s): a reservation needs a mac of its own", inst.MAC, j, n.Name, mode))
+		return
+	}
+	seen[n.Name][mac] = i
 }
 
 // validateHostOSAndRuntime checks inst's os and runtime against the known
@@ -391,17 +435,13 @@ func validateDesignations(c Config, add func(path, msg string)) {
 }
 
 // networkAndBroadcast returns p's network (lowest) and broadcast (highest)
-// addresses. IPv4-only, mirroring ipam.NetworkPool's reserved-address
+// addresses; the broadcast is LastAddr's, as Allocation's whole-cidr range
+// ends there. IPv4-only, mirroring ipam.NetworkPool's reserved-address
 // exclusions; ok is false for a non-IPv4 prefix (p is already known-valid by
 // the time callers reach this).
 func networkAndBroadcast(p netip.Prefix) (network, broadcast netip.Addr, ok bool) {
 	if !p.Addr().Is4() {
 		return netip.Addr{}, netip.Addr{}, false
 	}
-	m := p.Masked()
-	a := m.Addr().As4()
-	v := binary.BigEndian.Uint32(a[:])
-	v |= uint32(0xffffffff) >> m.Bits()
-	binary.BigEndian.PutUint32(a[:], v)
-	return m.Addr(), netip.AddrFrom4(a), true
+	return p.Masked().Addr(), LastAddr(p), true
 }

@@ -1,8 +1,8 @@
 // Package addressing is the web app's resolve step for network addressing
 // (docs/Decisions.md §28, #199): a Network's cidr, gateway,
-// dhcp_excluded_range and dns come from git (a private config repo) or from
-// web app state (the addressing file), exactly one source per network. Git
-// always holds each network's name.
+// dhcp_excluded_range, dns and dhcp.pool come from git (a private config
+// repo) or from web app state (the addressing file), exactly one source per
+// network. Git always holds each network's name and its dhcp.mode (#490).
 //
 // The web app's sync is parse → Resolve → config.Validate. Resolve runs the
 // checks on the two inputs (all or nothing, one source per network, an entry
@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -95,7 +96,8 @@ func (r Rejection) Empty() bool { return r.Git.Empty() && r.Resolve.Empty() }
 func (r Rejection) All() config.Issues { return slices.Concat(r.Git, r.Resolve) }
 
 // CheckEntries runs the checks on the addressing entries that need no git:
-// each has a name, a cidr, and a name no earlier entry has. Resolve runs
+// each has a name, a cidr, and a name no earlier entry has, and none sets
+// dhcp.mode, which is git's (#490). Resolve runs
 // them, and cmd/web runs them at startup, so a file that fails them stops
 // the web app there, naming the setting, rather than failing every sync.
 func CheckEntries(state []config.Network) config.Issues {
@@ -120,6 +122,9 @@ func entries(state []config.Network) (config.Issues, map[string]int) {
 			if !s.CIDR.IsValid() {
 				issues = append(issues, config.Issue{Path: path + ".cidr", Message: fmt.Sprintf("network %q: an addressing entry must set a cidr", s.Name)})
 			}
+		}
+		if s.DHCP.Mode != "" {
+			issues = append(issues, config.Issue{Path: path + ".dhcp.mode", Message: fmt.Sprintf("network %q: an addressing entry can't set dhcp.mode: the mode is set in git, on the network's kind: Network; the addressing file carries cidr, gateway, dhcp_excluded_range, dns and dhcp.pool only", s.Name)})
 		}
 	}
 	return issues, index
@@ -189,12 +194,13 @@ func Resolve(git config.Config, state []config.Network, opts Options) (Resolved,
 		s, ok := byName[n.Name]
 		if !ok {
 			if _, entry := stateIndex[n.Name]; !entry {
-				add(fmt.Sprintf("networks[%d]", i), fmt.Sprintf("network %q has no addressing: set its cidr (and gateway, dhcp_excluded_range, dns) in git, or give it an entry in the web app's addressing file (NETWORK_ADDRESSING_PATH)", n.Name))
+				add(fmt.Sprintf("networks[%d]", i), fmt.Sprintf("network %q has no addressing: set its cidr (and gateway, dhcp_excluded_range, dns, dhcp.pool) in git, or give it an entry in the web app's addressing file (NETWORK_ADDRESSING_PATH)", n.Name))
 			}
 			continue
 		}
-		s.Name = n.Name
-		resolved.Networks[i] = s
+		// Only the addressing comes from the entry: git keeps the name and
+		// dhcp.mode, which CheckEntries keeps out of the file.
+		resolved.Networks[i] = n.WithAddressingOf(s)
 		stateAddressed = append(stateAddressed, n.Name)
 	}
 	if !rej.Empty() {
@@ -226,11 +232,20 @@ func Changes(d configdiff.Result, r Resolved) []Change {
 		}
 	}
 	for _, c := range d.ChangedNetworks {
-		if slices.Contains(r.StateAddressed, c.Name) {
+		// configdiff also counts a change to git's half of the network
+		// (dhcp.mode) as a change; only the addressing is the state's.
+		if slices.Contains(r.StateAddressed, c.Name) && !sameAddressing(c.Old, c.New) {
 			cs = append(cs, Change{c.Name, fmt.Sprintf("network %q: addressing from the web app's state changed: %s, was %s", c.Name, describe(c.New), describe(c.Old))})
 		}
 	}
 	return cs
+}
+
+// sameAddressing reports whether a and b carry the same addressing, the
+// fields WithAddressingOf copies, whatever else differs: a with b's
+// addressing is still a.
+func sameAddressing(a, b config.Network) bool {
+	return reflect.DeepEqual(a, a.WithAddressingOf(b))
 }
 
 // describe renders n's addressing as "cidr X, gateway Y, ...", leaving out
@@ -252,6 +267,9 @@ func describe(n config.Network) string {
 			dns[i] = d.String()
 		}
 		parts = append(parts, "dns ["+strings.Join(dns, ", ")+"]")
+	}
+	if r := n.DHCP.Pool; r.Start.IsValid() {
+		parts = append(parts, "dhcp.pool "+r.String())
 	}
 	if len(parts) == 0 {
 		return "no addressing"
