@@ -16,6 +16,12 @@
 #
 # A Ready sub-issue of an open bundle (/bundle, #409) is tagged `bundled`, not
 # `clear`: it ships with its parent, so it isn't work to start on its own.
+#
+# The local-branches section runs `git fetch origin main` (#423) so its ahead
+# counts are fresh. It skips the fetch, saying so, when NEXT_NO_FETCH is set to
+# anything non-empty (a fixture run that must stay offline, as
+# scripts/validate/ready-queue-skips-done-when-without-proof.sh does) or when
+# the repo has no `origin` remote.
 # shellcheck disable=SC2016 # the $vars in single quotes are GraphQL's and jq's
 set -euo pipefail
 
@@ -166,7 +172,13 @@ jq -L scripts -r '
 echo
 
 echo "== Local issue branches (vs origin/main) =="
-git fetch -q origin main 2>/dev/null || echo "(fetch failed; ahead counts may be stale)"
+if [ -n "${NEXT_NO_FETCH:-}" ]; then
+	echo "(fetch skipped: NEXT_NO_FETCH is set; ahead counts are vs the local origin/main)"
+elif ! git remote get-url origin >/dev/null 2>&1; then
+	echo "(fetch skipped: no origin remote)"
+else
+	git fetch -q origin main 2>/dev/null || echo "(fetch failed; ahead counts may be stale)"
+fi
 stale=0 other=0
 while read -r br; do
 	n=${br#eharvey/#}

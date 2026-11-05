@@ -20,12 +20,14 @@ Stop at the first failing step and fix it (or report it) before going on.
    - Unresolved review threads (each thread's id, file, line and comments):
 
      ```sh
-     gh api graphql -F n=<pr> -f query='query($n:Int!){repository(owner:"ehharvey",name:"homelab-ops"){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:20){nodes{author{login} body}}}}}}}' \
+     gh api graphql -F owner='{owner}' -F repo='{repo}' -F n=<pr> -f query='query($owner:String!,$repo:String!,$n:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:20){nodes{author{login} body}}}}}}}' \
        --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)'
      ```
 
    - Review summaries and PR comments:
      `gh pr view <pr> --json reviews,comments --jq '.reviews[], .comments[] | {author: .author.login, body}'`.
+     Skip the `/review-work` verdicts and verdict replies among them (the
+     markers below): the review state says which verdict, if any, is work.
    - Failing checks: `gh pr checks <pr> --json name,state,link --jq '.[] | select(.state=="FAILURE")'`,
      then for each only the tail of its failed log. A check's `link` ends in
      its job id: `gh run view --job "${link##*/}" --log-failed | tail -n 80`.
@@ -40,6 +42,11 @@ Stop at the first failing step and fix it (or report it) before going on.
      `gh pr view <pr> --json comments --jq '.comments[] | select(.id == "<id>") | .body'`
      (an id starting `PRR_` is a verdict posted as a review before #536:
      `gh pr view <pr> --json reviews --jq '.reviews[] | select(.id == "<id>") | .body'`).
+     Only the **latest** verdict's gaps are ever items: a later verdict
+     counts as addressing every earlier one, so the dry run marks at most the
+     latest `unaddressed`, and none when it is `ready` or a verdict reply
+     names it. Plain comments can't be resolved, so this is what keeps a
+     re-run off stale gaps.
      `docs/Development Conventions.md` § Review state labels defines the
      labels, the markers and what counts as addressed.
 

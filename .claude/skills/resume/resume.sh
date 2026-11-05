@@ -14,11 +14,18 @@
 #
 # Sections: the issue (title, state, labels, open native blocked-by links); the
 # PR (state, mergeable, checks, commits); the branch and worktree (clean or
-# dirty, ahead/behind origin/main); the review (the latest PR comment starting
-# `## Review `, its verdict and gap lines, then every comment after it, each
-# truncated); and the mechanical gaps, which are .claude/skills/review-work/
+# dirty, ahead/behind origin/main); the review (the latest /review-work verdict
+# comment, its `## Review ` heading and gap lines, then every comment after it,
+# each truncated); and the mechanical gaps, which are .claude/skills/review-work/
 # audit.sh's own output, trimmed to its FAIL lines and the issue's Done when.
 # Nothing here re-checks what audit.sh checks.
+#
+# A verdict is matched as scripts/review-state.sh's `verdict` matches one
+# (#482): a PR comment or a submitted review whose body starts with the
+# `<!-- review-work:verdict ready|not-ready -->` marker, which /review-work
+# puts on its first line with the `## Review <target>: …` heading under it
+# (#536), or whose body opens with that heading (verdicts posted as reviews
+# before the marker, #516). A marker quoted later in a body doesn't count.
 #
 # An open issue with no branch and no PR is "not started". A merged or closed
 # PR is reported as landed, and audit.sh isn't run on it.
@@ -181,22 +188,35 @@ fi
 if [[ -n $pr ]]; then
 	echo
 	echo "== Review =="
-	# The latest comment starting "## Review " (its body as one JSON line), then
-	# every comment after it as author, date and the text cut to ~3 lines.
-	reviews=$(gh pr view "$pr" --json comments --jq '
-		.comments as $c
-		| ([$c | to_entries[] | select(.value.body | test("^## Review ")) | .key] | last) as $i
+	# The latest verdict (its body as one JSON line), then every comment and
+	# review after it as author, date and the text cut to ~3 lines. Comments and
+	# submitted reviews form one timeline, and the two patterns are
+	# review-state.sh's `verdict`, anchored at the start of the body.
+	reviews=$(gh pr view "$pr" --json comments,reviews --jq '
+		def verdict: (.body // "") | test("\\A\\s*<!-- review-work:verdict (ready|not-ready) -->")
+			or test("\\A## Review[^\n]*: (ready|not ready)[ \t]*(\n|\\z)");
+		([.comments[] | {who: .author.login, at: .createdAt, body, kind: ""}]
+		 + [.reviews[] | select(.state != "PENDING")
+			| {who: .author.login, at: .submittedAt, body, kind: "review \(.state | ascii_downcase)"}]
+		 | sort_by(.at)) as $c
+		| ([$c | to_entries[] | select(.value | verdict) | .key] | last) as $i
 		| if $i == null then "none" else
-			({who: $c[$i].author.login, when: $c[$i].createdAt[:10], body: $c[$i].body} | @json),
-			($c[$i + 1:][] | [.author.login, .createdAt[:10],
-				(.body | gsub("\\s+"; " ") | if length > 270 then .[:269] + "…" else . end)] | @tsv)
+			({who: $c[$i].who, when: $c[$i].at[:10], body: $c[$i].body} | @json),
+			($c[$i + 1:][] | [.who, .at[:10],
+				(((.body // "") | gsub("\\s+"; " ")) as $t
+				 | (if .kind == "" then $t elif $t == "" then "(\(.kind), no body)" else "(\(.kind)) " + $t end)
+				 | if length > 270 then .[:269] + "…" else . end)] | @tsv)
 		  end')
 	if [[ $reviews == none ]]; then
 		echo "no review yet"
 	else
 		latest=$(head -1 <<<"$reviews")
 		body=$(jq -r .body <<<"$latest" | tr -d '\r')
-		echo "$(head -1 <<<"$body" | sed 's/^## //') ($(jq -r '"\(.who) \(.when)"' <<<"$latest"))" | clip 110
+		# The heading, wherever the marker put it; a marker with no heading
+		# under it shows the marker's verdict instead.
+		heading=$(grep -m1 '^## Review' <<<"$body" | sed 's/^## //') ||
+			heading="Review: $(grep -o -m1 'review-work:verdict [a-z-]*' <<<"$body" | sed 's/.* //; s/-/ /')"
+		echo "$heading ($(jq -r '"\(.who) \(.when)"' <<<"$latest"))" | clip 110
 		# The gap lines: the list under "gaps:", without continuation lines.
 		awk '
 			!p && /^(\*\*)?gaps:/ { p = 1; sub(/^(\*\*)?gaps:(\*\*)?[[:space:]]*/, ""); if ($0 != "") print "- " $0; next }
@@ -205,9 +225,9 @@ if [[ -n $pr ]]; then
 			p { exit }' <<<"$body" | clip 110 | bound 8
 		after=$(tail -n +2 <<<"$reviews")
 		if [[ -z $after ]]; then
-			echo "no comments after it"
+			echo "no comments or reviews after it"
 		else
-			echo "comments after it: $(wc -l <<<"$after")"
+			echo "comments and reviews after it: $(wc -l <<<"$after")"
 			while IFS=$'\t' read -r who when text; do
 				printf '%s %s: %s\n' "$who" "$when" "$text" | fold -s -w 108 | sed '1s/^/  /; 2,$s/^/    /; s/ *$//'
 			done <<<"$after"
