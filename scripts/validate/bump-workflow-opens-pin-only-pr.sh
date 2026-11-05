@@ -2,7 +2,9 @@
 # Validates GH issue #296: .github/workflows/bump-incusos.yml's pin job opens a
 # PR that changes only scripts/incusos-base.version when the CDN's newest
 # `stable` IncusOS is not the pinned one, and a test-mode dispatch does that
-# without touching a real bump branch or PR. Nothing lints workflows here, and
+# without touching a real bump branch or PR. And #310: a plain dispatch (no
+# test_mode) from a ref other than main runs neither job. Nothing lints
+# workflows here, and
 # every moving part is GitHub's (a dispatch, a runner, a PR), so a real run is
 # the only check there is.
 #
@@ -22,7 +24,10 @@
 #      one PR came of it: on chore/bump-incusos-base-test-<run id>, into the
 #      throwaway branch, opened by the workflow, one commit, one file, taking
 #      the pin from the old value to the newest stable.
-#   4. Closes that PR and deletes both branches, then asserts the real
+#   4. Dispatches it again from the same branch WITHOUT test_mode (#310) and
+#      asserts both jobs were skipped by the main-ref guard, that no chore/*
+#      branch appeared or moved, and that no second PR came of it.
+#   5. Closes that PR and deletes both branches, then asserts the real
 #      chore/bump-incus-os and chore/bump-incusos-base refs and their PRs are
 #      exactly as they were before step 1.
 #
@@ -31,7 +36,8 @@
 # feature branch therefore rebuilt chore/bump-incus-os on that branch and put
 # its commits into the real submodule bump PR. test_mode skips the submodule
 # job and gives the pin PR a per-run branch, so this script can prove the pin
-# job from an unmerged commit and leave no trace.
+# job from an unmerged commit and leave no trace. Since #310 both jobs also
+# refuse a non-test run from any ref but main, which step 4 proves.
 #
 # Cleanup runs in an EXIT trap, so it also happens on a failed assertion, a
 # timeout or Ctrl-C. It stops a run that is still going first (it would
@@ -60,7 +66,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/validate/lib.sh
 . "$ROOT_DIR/scripts/validate/lib.sh"
 
-VALIDATE_PROVES="bump-incusos.yml's pin job opens a PR changing only the pin file; a test-mode dispatch touches no real bump branch or PR (#296)"
+VALIDATE_PROVES="bump-incusos.yml's pin job opens a PR changing only the pin file; a test-mode dispatch touches no real bump branch or PR (#296); a plain dispatch from a non-main ref runs neither job (#310)"
 VALIDATE_GROUP="github"
 VALIDATE_NEEDS="VALIDATE_GITHUB_WRITES=1 (opt-in: pushes branches, dispatches a workflow, opens and closes a real PR), gh authenticated with push access, git curl openssl jq"
 VALIDATE_DURATION="~1m"
@@ -68,17 +74,8 @@ VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 
-# --- Opt-in, before anything reaches GitHub ----------------------------------
-WHAT="test-mode dispatch of bump-incusos.yml opens a pin-only PR"
-if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
-  skip_check "$WHAT" opt-in "never runs in CI: it dispatches a workflow, and from a workflow that would recurse"
-  summary
-fi
-if [ "${VALIDATE_GITHUB_WRITES:-}" != 1 ]; then
-  skip_check "$WHAT" opt-in \
-    "this pushes branches to the real repository, dispatches a workflow and opens a PR — set VALIDATE_GITHUB_WRITES=1 to run it"
-  summary
-fi
+# Opt-in, before anything reaches GitHub (lib.sh, #311).
+require_github_writes "pushes a throwaway branch, dispatches bump-incusos.yml from it twice and closes the PR that opens"
 
 WORKFLOW="bump-incusos.yml"
 PIN_FILE="scripts/incusos-base.version"
@@ -101,8 +98,13 @@ elif [ "$(gh api "repos/$REPO" --jq .permissions.push 2>/dev/null)" != "true" ];
   _prereq_missing "gh has no push access to $REPO"
 fi
 # The run executes HEAD's workflow and fetch script, not the working tree's.
-if ! git -C "$ROOT_DIR" show "HEAD:.github/workflows/$WORKFLOW" 2>/dev/null | grep -q 'test_mode'; then
+# Read whole, then matched: `git show | grep -q` fails under pipefail once grep
+# matches early and git show takes the SIGPIPE.
+head_workflow=$(git -C "$ROOT_DIR" show "HEAD:.github/workflows/$WORKFLOW" 2>/dev/null)
+if ! grep -q 'test_mode' <<<"$head_workflow"; then
   _prereq_missing "HEAD's $WORKFLOW has no test_mode input; a dispatch would touch the real bump PRs"
+elif ! grep -qF "github.ref == 'refs/heads/main'" <<<"$head_workflow"; then
+  _prereq_missing "HEAD's $WORKFLOW has no main-ref guard (#310); step 4's plain dispatch would rebuild the real bump branches"
 fi
 if ! git -C "$ROOT_DIR" diff --quiet HEAD -- ".github/workflows/$WORKFLOW" scripts/fetch-incusos-base.sh scripts/incusos-keys "$PIN_FILE"; then
   _prereq_missing "uncommitted changes to the workflow, the fetch script, its keys or the pin: this tests HEAD, so commit them first"
@@ -149,6 +151,35 @@ our_runs() {
 }
 
 run_field() { gh run view "$1" --repo "$REPO" --json "$2" --jq ".$2" 2>/dev/null; }
+
+# await_dispatched_run <other-id> — the id of a dispatch run of the throwaway
+# branch's commit other than <other-id> (0 for none), once GitHub lists it;
+# empty if none appears within 90s.
+await_dispatched_run() {
+  local id=""
+  for _ in $(seq 1 30); do
+    id=$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" --event workflow_dispatch \
+      --limit 5 --json databaseId,headSha \
+      --jq "[.[] | select(.headSha == \"$throwaway_sha\" and .databaseId != $1)][0].databaseId // empty" 2>/dev/null)
+    [ -n "$id" ] && break
+    sleep 3
+  done
+  echo "$id"
+}
+
+# job_conclusions <id> — "<job>=<conclusion> ...", sorted by job name, once
+# the run lists both jobs. A run whose jobs are all skipped can report
+# completed while GitHub still lists only one of them (seen on the first real
+# run of #310's check), so give the second up to 30s to appear.
+job_conclusions() {
+  local got=""
+  for _ in $(seq 1 10); do
+    got=$(gh run view "$1" --repo "$REPO" --json jobs --jq '[.jobs[] | "\(.name)=\(.conclusion)"] | sort | join(" ")' 2>/dev/null)
+    [ "$(wc -w <<<"$got")" -ge 2 ] && break
+    sleep 3
+  done
+  echo "$got"
+}
 
 # await_run_done <id> <seconds> — 0 once the run has completed.
 await_run_done() {
@@ -245,13 +276,7 @@ DISPATCHED=1
 out=$(gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" -f test_mode=true 2>&1) ||
   fail "GitHub refused the dispatch" "$out"
 
-RUN_ID=""
-for _ in $(seq 1 30); do
-  RUN_ID=$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" --event workflow_dispatch \
-    --limit 5 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$throwaway_sha\")][0].databaseId // empty" 2>/dev/null)
-  [ -n "$RUN_ID" ] && break
-  sleep 3
-done
+RUN_ID=$(await_dispatched_run 0)
 [ -n "$RUN_ID" ] || fail "the dispatch was accepted but no run on $BRANCH appeared within 90s"
 TEST_BRANCH="chore/bump-incusos-base-test-$RUN_ID"
 echo "    run $RUN_ID: https://github.com/$REPO/actions/runs/$RUN_ID"
@@ -266,8 +291,7 @@ pass "test-mode run $RUN_ID succeeded"
 
 echo
 echo "== 3. What the run did =="
-jobs=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs --jq '[.jobs[] | "\(.name)=\(.conclusion)"] | sort | join(" ")')
-check_eq "the submodule job was skipped and the pin job ran" "bump-base-pin=success check-and-bump=skipped" "$jobs"
+check_eq "the submodule job was skipped and the pin job ran" "bump-base-pin=success check-and-bump=skipped" "$(job_conclusions "$RUN_ID")"
 
 # The PR is listed a moment after the run reports success.
 prs="[]"
@@ -296,7 +320,32 @@ check_eq "no PR was opened from the throwaway branch itself" "0" \
   "$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq length 2>/dev/null)"
 
 echo
-echo "== 4. Teardown, and the real bump branches after =="
+echo "== 4. A plain dispatch from the same branch, no test_mode, runs neither job (#310) =="
+chore_before=$(git -C "$ROOT_DIR" ls-remote --heads origin 'chore/*') || fail "could not list origin's chore/* branches"
+out=$(gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" 2>&1) ||
+  fail "GitHub refused the plain dispatch" "$out"
+PLAIN_ID=$(await_dispatched_run "$RUN_ID")
+[ -n "$PLAIN_ID" ] || fail "the plain dispatch was accepted but no second run on $BRANCH appeared within 90s"
+echo "    run $PLAIN_ID: https://github.com/$REPO/actions/runs/$PLAIN_ID"
+await_run_done "$PLAIN_ID" "$RUN_TIMEOUT" || fail "run $PLAIN_ID did not finish within ${RUN_TIMEOUT}s"
+echo "    concluded: $(run_field "$PLAIN_ID" conclusion)"
+check_eq "both jobs were skipped by the main-ref guard" "bump-base-pin=skipped check-and-bump=skipped" \
+  "$(job_conclusions "$PLAIN_ID")"
+if chore_after=$(git -C "$ROOT_DIR" ls-remote --heads origin 'chore/*'); then
+  if [ "$chore_before" = "$chore_after" ]; then
+    pass "no chore/* branch appeared or moved during the plain run"
+  else
+    diff <(echo "$chore_before") <(echo "$chore_after") | sed 's/^/    /' | cut -c1-200
+    record_fail "no chore/* branch appeared or moved during the plain run" "origin's chore/* heads changed (diff above)"
+  fi
+else
+  record_fail "no chore/* branch appeared or moved during the plain run" "could not list them after the run"
+fi
+check_eq "still exactly one PR targets the throwaway branch" "1" \
+  "$(gh pr list --repo "$REPO" --base "$BRANCH" --state all --json number --jq length 2>/dev/null)"
+
+echo
+echo "== 5. Teardown, and the real bump branches after =="
 teardown
 if [ -n "$PR" ]; then
   check_eq "PR #$PR is closed" "CLOSED" "$(gh pr view "$PR" --repo "$REPO" --json state --jq .state 2>/dev/null)"
