@@ -1,0 +1,84 @@
+{
+  "data": {
+    "repository": {
+      "labels": {
+        "nodes": [
+          {
+            "name": "reviewed-work"
+          },
+          {
+            "name": "review-unaddressed"
+          },
+          {
+            "name": "review-passes-left-0"
+          },
+          {
+            "name": "review-passes-left-1"
+          },
+          {
+            "name": "review-passes-left-2"
+          }
+        ]
+      },
+      "pullRequest": {
+        "number": 900,
+        "state": "OPEN",
+        "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "labels": {
+          "nodes": [
+            {
+              "name": "reviewed-work"
+            },
+            {
+              "name": "review-passes-left-2"
+            }
+          ]
+        },
+        "closingIssuesReferences": {
+          "nodes": [
+            {
+              "number": 901,
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "task"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "reviews": {
+          "pageInfo": {
+            "hasPreviousPage": true
+          },
+          "nodes": []
+        },
+        "reviewThreads": {
+          "pageInfo": {
+            "hasPreviousPage": false
+          },
+          "nodes": []
+        },
+        "comments": {
+          "pageInfo": {
+            "hasPreviousPage": false
+          },
+          "nodes": [
+            {
+              "id": "IC_verdict",
+              "createdAt": "2026-11-01T10:00:00Z",
+              "body": "<!-- review-work:verdict ready -->\n## Review #900: ready"
+            },
+            {
+              "id": "IC_clean",
+              "createdAt": "2026-11-01T11:00:00Z",
+              "body": "<!-- review-state:clean-pass aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->\nClean `/code-review` pass recorded at aaaaaaaaaaaa."
+            }
+          ]
+        },
+        "body": ""
+      }
+    }
+  }
+}

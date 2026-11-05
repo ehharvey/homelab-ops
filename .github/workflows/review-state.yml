@@ -1,0 +1,91 @@
+name: Review state
+
+# Keeps a PR's review-state labels in step with its reviews (#536):
+# scripts/review-state.sh works them out from the PR's reviews, threads and
+# comments (docs/Development Conventions.md § Review state labels). /code-review
+# is built into Claude Code and can't be edited to run the sync itself, so this
+# is what updates the labels after it posts a review; make ship,
+# /review-work and /address-feedback run the same script locally.
+#
+# Triggers:
+#   - pull_request_review: submitted: a /code-review pass, or a thread reply
+#     (each reply is its own review, #515). edited/dismissed: a review's body
+#     or state changed, which can make it a pass or a verdict or stop it being
+#     one.
+#   - issue_comment: created: a /review-work verdict, an /address-feedback
+#     verdict reply, or a --clean-pass comment. edited/deleted: one of those
+#     changed or removed (a mistaken clean pass deleted, say). It fires for
+#     issue comments too, so the job skips anything that isn't a PR.
+#   - pull_request_target: opened/reopened/synchronize: a new PR gets its
+#     labels even when make ship's own sync didn't run or failed, and a push
+#     moves the head, which reopens a clean pass's countdown. edited: a body or
+#     base change, such as a stacked PR retargeted to main once its base
+#     merges, which moves expected passes from the body's issues to GitHub's
+#     closing issues. _target, not pull_request: GitHub documents that
+#     pull_request runs don't start while a PR conflicts with its base, and
+#     this runs the default branch's script anyway (below). GitHub documents
+#     that gap for pull_request only, not for pull_request_review, which has
+#     no _target form; whether a review on a conflicting PR starts a run is
+#     unverified. If it doesn't, the labels catch up at the PR's next comment
+#     or push.
+# Resolving or unresolving a thread starts no run: Actions has no trigger for
+# it (pull_request_review_thread is a webhook event only, and actionlint
+# rejects it). A thread resolved without a reply is synced at the PR's next
+# event.
+# Everything posts as the operator's account, so the script's own comments
+# (verdicts, --clean-pass) trigger it again. It's idempotent: an unchanged state
+# makes no API writes, so a rerun adds no timeline events. Its label edits use
+# GITHUB_TOKEN, whose events start no further workflow runs, so it can't loop.
+#
+# Not a required check, and it must not become one: it reports on review
+# progress, not on whether the code is fit to merge (§ Linting & CI).
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+  issue_comment:
+    types: [created, edited, deleted]
+
+# The least that edits labels. GitHub lists the label endpoints the script
+# calls (create a repo label, add one to and remove one from a PR) under both
+# the Issues and the Pull requests write permissions, each marked as needing
+# additional permissions, so it gets both. pull-requests also covers the
+# GraphQL read of reviews and threads; contents: read is the checkout.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+# One sync per PR at a time. A queued run reads the PR afresh when it starts,
+# so a burst of events (a review and its inline comments' replies) ends in
+# the right state however many runs it queued. GitHub keeps one pending run
+# per group, so the burst cancels the ones in between, and those show on the
+# PR as cancelled checks: only the latest run counts, which is how /next
+# reads them (.claude/skills/next/next.sh).
+concurrency:
+  group: review-state-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      # The default branch's copy of the script, on every event: a PR's
+      # merge ref is missing while it conflicts with main, and the job never
+      # runs a PR's own code with a write token. The script only reads the
+      # PR as data. A PR that changes the script is synced by its new copy
+      # only from make ship, /review-work and /address-feedback until it
+      # merges.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Sync the review-state labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: ./scripts/review-state.sh "$PR"

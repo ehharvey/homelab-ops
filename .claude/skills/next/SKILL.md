@@ -47,6 +47,10 @@ comes from.
   saying which comes first. Check `blocked by` / `unblocks` across your picks.
 - **In-flight work comes first.** An open PR with green checks and auto-merge
   off is waiting on the operator's `make lgtm`. Say so; never run it yourself.
+  Its `review:` line carries the review-state labels and says when it meets
+  the merge gate (`docs/Development Conventions.md` § Review state labels).
+  A PR short of the gate is waiting on `/review-work`, `/code-review` or
+  `/address-feedback`, whichever its labels say; say which.
   A PR with failing checks, or an open issue that has a local branch but no
   PR, is unfinished work to resume.
 - **Proposed — awaiting triage** lists issues Claude filed on its own

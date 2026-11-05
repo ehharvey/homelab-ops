@@ -155,7 +155,7 @@ and `background-poll-warns-on-config-diff` are visibly a pair proving the same
 behaviour on two code paths.
 
 `scripts/` itself holds only non-validation tooling — `lint-mermaid.sh`, `worktree.sh`,
-`finding.sh`, `vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `check-commit-msg.sh`, `lgtm.sh`, `auto-rebase.sh`, `hygiene.sh`, `ready.sh`.
+`finding.sh`, `vendor-incusos.sh`, `fetch-incusos-base.sh`, `ship.sh`, `check-commit-msg.sh`, `lgtm.sh`, `auto-rebase.sh`, `hygiene.sh`, `ready.sh`, `review-state.sh`, and `review-gate.jq` (the merge-gate definition `review-state.sh` and `/next` share).
 
 They share one harness (`scripts/validate/lib.sh`, #140), so an unmet
 prerequisite is a **SKIP with exit 3**, never a FAIL — "you didn't install a

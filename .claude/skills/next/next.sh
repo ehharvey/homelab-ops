@@ -50,7 +50,7 @@ trap 'rm -rf "$tmp"' EXIT
 open_issues_json "$repo" >"$tmp/open.json"
 issue_states_json >"$tmp/states.json"
 
-gh pr list --state open --json number,title,headRefName,isDraft,autoMergeRequest,statusCheckRollup \
+gh pr list --state open --json number,title,headRefName,isDraft,autoMergeRequest,statusCheckRollup,labels \
 	>"$tmp/prs.json"
 
 roadmap_tsv >"$tmp/roadmap.tsv"
@@ -137,15 +137,29 @@ if [ -n "$cur_label" ]; then
 	echo
 fi
 
+# Review labels (#536): scripts/review-state.sh keeps them, and the label
+# names and the merge gate come from scripts/review-gate.jq, which it reads too
+# (docs/Development Conventions.md § Review state labels). -L scripts is
+# relative to the toplevel, which the cd above made the working directory.
+# The Review state workflow is advisory and runs on every review event, so
+# only its latest run counts: a burst cancels the pending ones in between,
+# and an older run is superseded by the next.
 echo "== Open PRs =="
-jq -r '
+jq -L scripts -r '
+  include "review-gate";
+  def latest_review_state:
+    [.[] | select(.workflowName != "Review state")]
+    + ([.[] | select(.workflowName == "Review state")] | sort_by(.startedAt // "") | .[-1:]);
   def bucket: (.conclusion // .state // "") as $c
     | if $c == "SUCCESS" or $c == "SKIPPED" or $c == "NEUTRAL" then "pass"
       elif $c == "" or $c == "PENDING" or $c == "EXPECTED" then "pending"
       else "fail" end;
   if length == 0 then "(none)" else .[] |
-    ([.statusCheckRollup[] | {name: (.name // .context), b: bucket}]) as $c
+    ([.statusCheckRollup | latest_review_state | .[] | {name: (.name // .context), b: bucket}]) as $c
     | "#\(.number) \(.headRefName)\(if .isDraft then " [draft]" else "" end) — \(.title | if length > 70 then .[:69] + "…" else . end)",
+      (([.labels[].name | select(review_label)]) as $r
+       | "      review: \(if ($r | length) == 0 then "no labels (scripts/review-state.sh \(.number))" else $r | join(", ") end)\(
+           if $r | meets_merge_gate then " — meets the merge gate" else "" end)"),
       "      checks: \([$c[] | select(.b == "pass")] | length) pass, \([$c[] | select(.b == "pending")] | length) pending, \([$c[] | select(.b == "fail")] | length) fail\([$c[] | select(.b == "fail") | .name] | if length > 0 then " (" + join(", ") + ")" else "" end); auto-merge \(if .autoMergeRequest then "on" else "off (make lgtm is the operator'"'"'s call)" end)"
   end
 ' "$tmp/prs.json"
