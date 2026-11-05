@@ -57,8 +57,9 @@ cat >"$STUB/gh" <<'EOF'
 echo "$*" >>"$GH_LOG"
 case "$1 $2" in
 "pr view")
-	# ship's final line asks for number,url; its first lookup gets "no PR".
-	[[ $* == *number,url* ]] && { echo "ship: #1 open — stub"; exit 0; }
+	# ship's final read asks for number,url (as "<number> <url>"); its first
+	# lookup gets "no PR".
+	[[ $* == *number,url* ]] && { echo "1 https://stub/pull/1"; exit 0; }
 	exit 1
 	;;
 "pr create") exit 0 ;;

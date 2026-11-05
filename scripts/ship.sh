@@ -48,6 +48,10 @@
 # squash or copy already made stays in the local commit, so a plain
 # `--amend -F` fixes it; nothing is pushed.
 #
+# After the push it runs scripts/review-state.sh on the PR (#536), so a new PR
+# gets its review-passes-left-<n> label. A failed sync warns and ship still
+# succeeds: the PR is already open.
+#
 # Known gap until #281: a branch pushed earlier with no PR open that ship then
 # squashes, rebases or amends is refused by the plain push below as
 # non-fast-forward.
@@ -307,5 +311,21 @@ OPEN)
 	;;
 esac
 
-gh pr view --json number,url --jq '"ship: #\(.number) open — \(.url)"'
+# One read of the PR, guarded: the push and PR are done by now, so nothing
+# after this may fail ship. A failed sync, or a PR that doesn't read back,
+# only warns; the workflow, or a rerun of the script, catches the labels up.
+pr_line=$(gh pr view --json number,url --jq '"\(.number) \(.url)"' 2>/dev/null || true)
+pr_number=${pr_line%% *}
+if [[ $pr_number =~ ^[0-9]+$ ]]; then
+	echo "ship: #$pr_number open — ${pr_line#* }"
+	# The review-state labels (#536): a new PR gets its review-passes-left-<n>,
+	# and a re-ship moves the head, which can reopen a clean pass's countdown.
+	# --head waits for GitHub to show this push, so the sync doesn't read the
+	# old head (or a new PR before its closing issues are linked).
+	if ! "$(dirname "${BASH_SOURCE[0]}")/review-state.sh" "$pr_number" --head "$(git rev-parse HEAD)" | sed 's/^/ship: /'; then
+		echo "ship: warning: the review-state sync failed; run scripts/review-state.sh $pr_number." >&2
+	fi
+else
+	echo "ship: warning: couldn't read the PR back to sync its review-state labels; run scripts/review-state.sh <pr>." >&2
+fi
 echo "ship: review it, then \`make lgtm\` to merge."

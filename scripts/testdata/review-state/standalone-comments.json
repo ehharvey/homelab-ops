@@ -1,0 +1,167 @@
+{
+  "data": {
+    "repository": {
+      "labels": {
+        "nodes": [
+          {
+            "name": "reviewed-work"
+          },
+          {
+            "name": "review-unaddressed"
+          },
+          {
+            "name": "review-passes-left-0"
+          },
+          {
+            "name": "review-passes-left-1"
+          },
+          {
+            "name": "review-passes-left-2"
+          }
+        ]
+      },
+      "pullRequest": {
+        "number": 900,
+        "state": "OPEN",
+        "headRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "labels": {
+          "nodes": [
+            {
+              "name": "reviewed-work"
+            },
+            {
+              "name": "review-passes-left-2"
+            }
+          ]
+        },
+        "closingIssuesReferences": {
+          "nodes": [
+            {
+              "number": 901,
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "task"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "reviews": {
+          "pageInfo": {
+            "hasPreviousPage": false
+          },
+          "nodes": [
+            {
+              "id": "PRR_f1",
+              "state": "COMMENTED",
+              "body": "",
+              "submittedAt": "2026-11-01T11:00:00Z",
+              "commit": {
+                "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            },
+            {
+              "id": "PRR_f2",
+              "state": "COMMENTED",
+              "body": "",
+              "submittedAt": "2026-11-01T11:00:04Z",
+              "commit": {
+                "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            },
+            {
+              "id": "PRR_r1",
+              "state": "COMMENTED",
+              "body": "",
+              "submittedAt": "2026-11-01T12:00:00Z",
+              "commit": {
+                "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }
+            },
+            {
+              "id": "PRR_r2",
+              "state": "COMMENTED",
+              "body": "",
+              "submittedAt": "2026-11-01T12:00:03Z",
+              "commit": {
+                "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "pageInfo": {
+            "hasPreviousPage": false
+          },
+          "nodes": [
+            {
+              "id": "PRRT_1",
+              "isResolved": false,
+              "comments": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "createdAt": "2026-11-01T11:00:00Z",
+                    "pullRequestReview": {
+                      "id": "PRR_f1"
+                    },
+                    "body": "A finding."
+                  },
+                  {
+                    "createdAt": "2026-11-01T12:00:00Z",
+                    "pullRequestReview": {
+                      "id": "PRR_r1"
+                    },
+                    "body": "<!-- address-feedback:reply -->\nFixed in the amend."
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_2",
+              "isResolved": false,
+              "comments": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "createdAt": "2026-11-01T11:00:04Z",
+                    "pullRequestReview": {
+                      "id": "PRR_f2"
+                    },
+                    "body": "A finding."
+                  },
+                  {
+                    "createdAt": "2026-11-01T12:00:03Z",
+                    "pullRequestReview": {
+                      "id": "PRR_r2"
+                    },
+                    "body": "<!-- address-feedback:reply -->\nFixed in the amend."
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "pageInfo": {
+            "hasPreviousPage": false
+          },
+          "nodes": [
+            {
+              "id": "IC_verdict",
+              "createdAt": "2026-11-01T10:00:00Z",
+              "body": "<!-- review-work:verdict ready -->\n## Review #900: ready"
+            }
+          ]
+        },
+        "body": ""
+      }
+    }
+  }
+}

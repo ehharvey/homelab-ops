@@ -1,6 +1,6 @@
 ---
 name: review-work
-description: Repo-specific review of an open PR, an unshipped branch or a worktree before `make lgtm`. Runs the shared mechanical audit, matches each "Done when" item to evidence, checks Decisions conformance through decisions-scout and the repo conventions linters miss, and ends with a verdict and a list of gaps. Refuses a merged or closed PR. Never runs `make lgtm`. Operator-invoked only.
+description: Repo-specific review of an open PR, an unshipped branch or a worktree before `make lgtm`. Runs the shared mechanical audit, matches each "Done when" item to evidence, checks Decisions conformance through decisions-scout and the repo conventions linters miss, and ends with a verdict and a list of gaps, posted as a marked PR comment on a PR target. Refuses a merged or closed PR. Never runs `make lgtm`. Operator-invoked only.
 argument-hint: "<PR | branch | worktree path>"
 disable-model-invocation: true
 ---
@@ -13,8 +13,9 @@ of specific gaps. Finding bugs in the code is `/code-review`'s job, not this
 one's (step 5).
 
 **Never run `make lgtm`**, `gh pr merge`, or anything else that merges or
-enables auto-merge. Don't push, amend, or comment on the PR either: this skill
-reports, and the operator acts.
+enables auto-merge. Don't push or amend either: this skill reports, and the
+operator acts. The one thing it writes is its verdict, as a PR comment on a PR
+target (step 6), so the review-state labels can record it.
 
 Keep it bounded, as `CLAUDE.md` § Keeping context lean says: `--jq`, the
 audit's `--stat`, and `git diff <base>...<head> -- <path>` for one file at a
@@ -101,7 +102,8 @@ skip the call.
 
 ## 5. Verdict
 
-End with this block and nothing after it:
+Write the verdict as this block. Step 6 posts it, and your answer ends with
+it, nothing after:
 
 ```
 ## Review <target>: ready | not ready
@@ -116,3 +118,22 @@ next: run `/code-review high <target>` for bugs. Merging (`make lgtm`) is the op
 but say that CI hasn't run. Always include the `/code-review high <target>`
 line. Don't run `/code-review`, and don't hunt for bugs yourself: this review
 covers the issue and the repo's rules, and that one covers the code.
+
+## 6. Post the verdict (PR target only)
+
+A PR target posts the block as a PR comment, so `reviewed-work` and
+`review-unaddressed` can record it; a branch or worktree with no PR posts
+nothing and skips this step. The comment's first line is the marker the sync
+reads, with `<ready|not-ready>` replaced to match the heading: `ready` for
+`## Review …: ready`, `not-ready` for `not ready` (`docs/Development
+Conventions.md` § Review state labels defines the markers and labels):
+
+```sh
+{ echo '<!-- review-work:verdict <ready|not-ready> -->'; cat <scratchpad>/verdict.md; } >"<scratchpad>/verdict-comment.md"
+gh pr comment <pr> --body-file "<scratchpad>/verdict-comment.md"
+scripts/review-state.sh <pr>
+```
+
+Post it once per run, and nothing else: no replies, no thread comments, no
+labels by hand. The sync sets the labels, and its `labels:` line goes in your
+answer above the block.
