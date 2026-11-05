@@ -14,8 +14,8 @@ one's (step 5).
 
 **Never run `make lgtm`**, `gh pr merge`, or anything else that merges or
 enables auto-merge. Don't push or amend either: this skill reports, and the
-operator acts. The one thing it writes is its verdict, as a PR comment on a PR
-target (step 6), so the review-state labels can record it.
+operator acts. The one thing it writes is its verdict, as a new PR comment on a
+PR target (step 6), so the review-state labels can record it.
 
 Keep it bounded, as `CLAUDE.md` § Keeping context lean says: `--jq`, the
 audit's `--stat`, and `git diff <base>...<head> -- <path>` for one file at a
@@ -121,9 +121,12 @@ covers the issue and the repo's rules, and that one covers the code.
 
 ## 6. Post the verdict (PR target only)
 
-A PR target posts the block as a PR comment, so `reviewed-work` and
-`review-unaddressed` can record it; a branch or worktree with no PR posts
-nothing and skips this step. The comment's first line is the marker the sync
+A PR target posts the block as a **new** PR comment, so `reviewed-work` and
+`review-unaddressed` can record it. Never edit or delete an earlier verdict
+comment: each run is a review round, the latest verdict replaces the earlier
+ones, and #433 counts them. A branch or worktree with no PR
+posts nothing: skip this step, and say in your answer that the verdict wasn't
+posted because there's no PR. The comment's first line is the marker the sync
 reads, with `<ready|not-ready>` replaced to match the heading: `ready` for
 `## Review …: ready`, `not-ready` for `not ready` (`docs/Development
 Conventions.md` § Review state labels defines the markers and labels):
@@ -134,6 +137,6 @@ gh pr comment <pr> --body-file "<scratchpad>/verdict-comment.md"
 scripts/review-state.sh <pr>
 ```
 
-Post it once per run, and nothing else: no replies, no thread comments, no
-labels by hand. The sync sets the labels, and its `labels:` line goes in your
-answer above the block.
+Post it once per run, and nothing else: no `gh pr review`, no review threads
+or replies, no labels by hand. The sync sets the labels, and its `labels:`
+line goes in your answer above the block.

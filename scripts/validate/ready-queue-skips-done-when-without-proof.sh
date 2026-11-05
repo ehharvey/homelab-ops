@@ -14,7 +14,8 @@
 #      issue list, gives the bad issue `skip` with the exact reason, names an
 #      open blocker in that reason, and runs the good one.
 #   3. .claude/skills/next/next.sh, against the same stub, lists the bad issue
-#      under "Dependency inconsistencies" and not the good one.
+#      under "Dependency inconsistencies" and not the good one, with its
+#      `git fetch` skipped (#423): by NEXT_NO_FETCH=1, and with no origin remote.
 # Both scripts run in a throwaway repo holding copies of themselves and the
 # shared check, so neither touches this checkout's branches or its remote.
 #
@@ -95,8 +96,9 @@ REPO="$WORK_DIR/repo"
 mkdir -p "$REPO/.claude/skills/file-task" "$REPO/.claude/skills/next" \
 	"$REPO/.claude/skills/run-chain" "$REPO/docs" "$REPO/scripts"
 cp .claude/skills/lib.jq .claude/skills/lib.sh "$REPO/.claude/skills/"
-# next.sh prints its inconsistencies through scripts/hygiene.sh (#388).
-cp scripts/hygiene.sh "$REPO/scripts/"
+# next.sh prints its inconsistencies through scripts/hygiene.sh (#388), and its
+# open PRs' review labels through scripts/review-gate.jq (#539).
+cp scripts/hygiene.sh scripts/review-gate.jq "$REPO/scripts/"
 cp .claude/skills/file-task/done-when.jq "$REPO/.claude/skills/file-task/"
 cp .claude/skills/next/next.sh "$REPO/.claude/skills/next/"
 cp .claude/skills/run-chain/queue.sh "$REPO/.claude/skills/run-chain/"
@@ -146,8 +148,18 @@ check "queue.sh names the open blocker of an issue it skips for its Done-when" \
 check "queue.sh still gives a proposed issue the proposed reason" \
 	grep -q 'proposed: awaiting' <<<"$(sed -n '/^#3 /,+1p' <<<"$QUEUE")"
 
-NEXT=$(cd "$REPO" && PATH="$STUB:$PATH" ./.claude/skills/next/next.sh 2>&1)
+# next.sh stays offline (#423): with no origin remote it skips its fetch, and
+# with NEXT_NO_FETCH=1 it skips it even when origin exists (here a path that
+# isn't a repo, so a fetch that did run would print "fetch failed").
+NOORIGIN=$(cd "$REPO" && env -u NEXT_NO_FETCH PATH="$STUB:$PATH" ./.claude/skills/next/next.sh 2>&1)
+check "next.sh skips its fetch when there is no origin remote" \
+	grep -qx '(fetch skipped: no origin remote)' <<<"$NOORIGIN"
+git -C "$REPO" remote add origin "$WORK_DIR/no-such-remote"
+NEXT=$(cd "$REPO" && NEXT_NO_FETCH=1 PATH="$STUB:$PATH" ./.claude/skills/next/next.sh 2>&1)
 check_eq "next.sh exits 0" 0 "$?"
+check "next.sh skips its fetch under NEXT_NO_FETCH=1 with an origin remote" \
+	grep -q '^(fetch skipped: NEXT_NO_FETCH is set' <<<"$NEXT"
+check_eq "next.sh didn't try the fetch" 0 "$(grep -c 'fetch failed' <<<"$NEXT")"
 INCONS=$(sed -n '/== Dependency inconsistencies ==/,/^$/p' <<<"$NEXT")
 check "next.sh flags #2 under inconsistencies" \
 	grep -q '^#2 is Ready but Done-when names no validate script or real-run check' <<<"$INCONS"

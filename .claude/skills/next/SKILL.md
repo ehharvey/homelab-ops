@@ -22,6 +22,11 @@ under ~300 lines. Don't re-derive any part of it with your own `gh issue list`
 or `gh pr list` calls. The script's header comment says where each section
 comes from.
 
+Its local-branches section runs `git fetch origin main` first. It skips that,
+and says so, when `NEXT_NO_FETCH` is non-empty or there's no `origin` remote
+(#423): a fixture run that must stay offline sets `NEXT_NO_FETCH=1`. The ahead
+counts are then against the local `origin/main`.
+
 ## Reading it
 
 - **Blockers are native blocked-by links**, not body prose (#234 moved the
