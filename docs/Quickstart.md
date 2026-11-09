@@ -48,7 +48,28 @@ install + cert trust end-to-end without real hardware.
 
 Run any subcommand with `--help` for the full flag list.
 
-## 4. Run the web app (dev)
+## 4. Run the web app on its appliance
+
+The default way to run the web app is the appliance: a dedicated machine,
+typically a spare laptop on the nodes' LAN, running a generic NixOS image
+with your settings from a seed stick.
+
+    make appliance-image
+    ./bin/bootstrap render-appliance-seed --config-dir ./my-webapp-config
+
+`make appliance-image` builds `bootstrap-output/appliance/homelab-ops-appliance.img`
+in a pinned `nixos/nix` container. `render-appliance-seed` turns your
+deployment config directory (start from
+[`examples/webapp/`](https://github.com/ehharvey/homelab-ops/tree/main/examples/webapp))
+into the seed's `user-data` and `meta-data`. Write the image to the laptop's
+disk, put the seed on a FAT stick labelled `CIDATA`, and boot. The web app
+comes up serving the API over WireGuard. [Deployment](Deployment) § The
+appliance has the whole runbook: the flags, upgrades and rollback, and the
+`--no-secrets` path.
+
+## 5. Run the web app (dev)
+
+For working on the web app itself:
 
     make dev
 

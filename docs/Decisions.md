@@ -147,7 +147,7 @@ seed file incus-osd won't yet read.
 
 ## 9. Where does the web app itself run?
 
-**Current rule: on its own appliance machine, outside the cluster: first a stock Debian cloud image set up by cloud-init to run the published image under Docker. An IncusOS turnkey host is parked, and an mkosi-built image is undecided. See §29.** The options and first answer below are kept as the record. (Originally flagged as open.)
+**Current rule: on its own appliance machine, outside the cluster: first a NixOS appliance, a generic image built from this repo's flake and set up from a NoCloud seed, running the published image under Docker. An IncusOS turnkey host is parked. See §29.** The options and first answer below are kept as the record. (Originally flagged as open.)
 
 - Inside the homelab it manages (a container/VM on one Incus host) — needs a bootstrap path for node #1 before the app exists to generate its installer.
 - Or a separate always-on box outside the cluster — avoids the chicken-and-egg problem, adds "one more thing to maintain" outside the managed fleet.
@@ -160,6 +160,7 @@ seed file incus-osd won't yet read.
 
 - **2026-10-03 (#247).** Answered by §29: the web app runs on an appliance machine (an internet VM or a LAN machine), from one published image. Moving into the fleet is §29's migration path (#245, #246).
 - **2026-10-26 (#395).** §29 re-planned the host forms: a cloud-init Debian box first, the IncusOS turnkey host parked, and an mkosi image later (#393). The current rule above was updated to match.
+- **2026-11-08 (#243).** The current rule read "first a stock Debian cloud image set up by cloud-init to run the published image under Docker. An IncusOS turnkey host is parked, and an mkosi-built image is undecided." §29 replaced the Debian box with a NixOS appliance and dropped the mkosi image (#393).
 
 ## 10. Single disk / single NIC default, configurable (note 9)
 
@@ -414,11 +415,12 @@ identical struct. The open question was the install mechanism:
 - **mkosi-built target image**: rejected as the *target* rootfs mechanism
   (most work, least reuse of Debian's official images) — but mkosi is
   still the right tool for building the *helper* boot environment itself.
-  The web app's own mkosi-built appliance image (§29, #393) is folded into
-  this work as another role for the same build, with its design open. The
-  Roadmap keeps #393 as a `(later)` item with no phase yet, under
-  "Deferred — after the Talos main line" (#512). Per §31, the same mkosi pipeline later builds the own
-  distro's node OS.
+  The web app's appliance isn't part of this work: it is NixOS, built from
+  this repo's flake (§29, #243). That settles an install mechanism for the
+  appliance only: a flashed image plus a NoCloud seed, or nixos-anywhere
+  onto a VM (#569). The parked NixOS + Incus node host still needs its own
+  install decision (Order, above). Per §31, the same mkosi pipeline later
+  builds the own distro's node OS.
 
 ### Helper OS: pre-install hardware registration/confirmation
 
@@ -489,6 +491,12 @@ roles, the Talos bootstrap run once from the appliance, etcd quorum) next
   NixOS with Incus are parked. The Talos subsection used `talosctl gen config`
   and deferred cluster lifecycle behind single-node install, mirroring the
   Operations Center deferral.
+- **2026-11-08 (#243, §29):** the systemd-repart bullet read "The web app's
+  own mkosi-built appliance image (§29, #393) is folded into this work as
+  another role for the same build, with its design open. The Roadmap keeps
+  #393 as a `(later)` item with no phase yet". The appliance became a NixOS
+  image built from this repo's flake, #393 closed, and its Roadmap item was
+  removed; mkosi's first target is the helper OS alone.
 
 ## 16. `internal/incuslocal` vs. `internal/nodeprovision`: accepted duplication (#92)
 
@@ -2246,19 +2254,20 @@ The operator reaches it in both cases.
 
 **The bootstrap and break-glass appliance is the LAN form, a dedicated laptop (§31).** It holds the signing key and operator credentials, runs DHCP and DNS from IPAM until the cluster takes them over, runs the Talos bootstrap once, and is the break-glass boot and DHCP source after a full power cut. Those roles need the nodes' LAN, so an internet-reachable VM can host the web app but can't fill them. The web app later moves into the cluster as Talos static pods (§31), which replaces `bootstrap deploy-web` (#386) as the route into the fleet.
 
-### Decision: one image; a cloud-init Debian box first
+### Decision: one image; a NixOS appliance first
 
 Every host form runs the same published OCI image (#240) with the same deployment config directory (#241), so moving between them is a migration, not a rebuild.
 
-- **First: a stock Debian cloud image, set up by cloud-init (#243).** It's the Docker box that §9 already chose as a deployment target, made turnkey. We build no OS image, only a `user-data` file.
-  - **Setup:** the bootstrap CLI renders the `user-data`. It installs Debian's own Docker packages, writes the production compose file and the config directory, and starts the web app. The box comes up serving, with no second step.
-  - **Where it runs:** on a cloud VM, every provider takes `user-data`. On a LAN machine, the same file goes on a NoCloud `CIDATA` stick, beside Debian's `generic` image written to the disk.
-  - **OS updates:** `unattended-upgrades` patches the host, Docker included, from Debian-Security. It reboots only when an update requires it, in an operator-set window. Once #197 lands, each reboot seals the web app until the operator unlocks it, which §27 accepts. The web image itself stays pinned, and the operator bumps it.
+- **First: a NixOS appliance, built from this repo's flake (#243).** It's the Docker box that §9 already chose as a deployment target, made turnkey. We build one generic OS image per release, the same for every operator, with no operator settings baked in; each operator renders a seed for it.
+  - **Setup:** `deploy/nixos/` builds a `raw-efi` image (`make appliance-image`). `bootstrap render-appliance-seed` renders a NoCloud seed: the config directory inline, `deploy/compose.yaml` with the web image pinned by digest (`--image`), and the host settings (`--reboot-time`, `--ssh-authorized-keys`). At first boot NixOS's cloud-init writes them, Docker from nixpkgs runs the compose file, and the box comes up serving, with no second step. The host settings take effect without rebuilding the image: the box's local flake reads them, and the first boot applies them with a `nixos-rebuild switch` against the system's own sources.
+  - **Where it runs:** on a LAN machine, the image is written to the disk and the seed goes on a FAT `CIDATA` stick, removed after the first boot because it holds the secret (`docs/Deployment.md` § The appliance). On an internet VM, nixos-anywhere installs the same configuration (#569).
+  - **OS updates:** `system.autoUpgrade` runs daily from this repo's `main`, with nixpkgs re-resolved to the head of the release branch `main`'s `flake.nix` names. So the box picks up a release's security patches the way `unattended-upgrades` would, without waiting on a repo PR; crossing to a new release takes a PR that changes the branch (#570). It reboots only when the kernel, initrd or kernel modules changed, in a one-hour window from the seed's reboot time, and every generation stays in the boot menu as the rollback. Once #197 lands, each reboot seals the web app until the operator unlocks it, which §27 accepts. The web image itself stays pinned, and the operator bumps it.
+  - **Why NixOS, not cloud-init on Debian:** cloud-init acts only at first boot, but Phase 5 keeps adding host-level pieces to the laptop: Kea, DNS from IPAM, the signing toolchain (§31), TPM sealing (#509). On NixOS a host change is a rebuild that can be rolled back from the boot menu, one flake gives the self-contained image that works offline that #393 wanted from mkosi, and security patching stays with nixpkgs instead of becoming the project's.
 - **Parked: an IncusOS turnkey host (#246)** (first planned as the second form; see History). An IncusOS seed can't create instances: the Incus preseed it carries (`InitLocalPreseed`, Incus v7.5.2 `shared/api/init.go`) declares networks, pools, volumes, profiles, projects, certificates and cluster groups, but no instances.
   - So this form always needs `bootstrap deploy-web` after boot, over the Incus API, from a client the host already trusts. On an internet VM, that means exposing the Incus API to finish the install.
   - Its seed (#394) and hardware runbook (#387) wait on #246. They hold the open hardware questions: TPM 2.0 and Secure Boot (§6), Wi-Fi, and cloud-provider boot.
   - **`bootstrap deploy-web` (#386) is parked too**, with the Incus runtime (§31; first kept as the route into the fleet, see History).
-- **Later and undecided: an mkosi-built appliance image (#393)** (first rejected; see History). It's the fancier form: self-contained, with the OS contents under our control. It's folded into §15's multi-OS work, the same tool family as §15's helper OS, rather than built as a one-off. Its design is open: read-only root, update model, where secrets come from, and outputs.
+- **No mkosi-built appliance image (#393, closed with #243; see History).** The NixOS appliance is the self-contained image it was to be, without making security patching the project's. mkosi's first target is §15's helper OS, and the own node distro (§31) stays mkosi.
 
 ### Decision: every deployment setting is an operator choice, with a safe default
 
@@ -2266,9 +2275,9 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 
 | Setting | Default | Alternatives |
 | --- | --- | --- |
-| Host form | Stock Debian cloud image set up by cloud-init (#243) | Any Docker host running #243's compose file by hand; IncusOS turnkey host (#246, parked); mkosi-built image (#393, undecided); plain binary + systemd (§9's other target, not yet planned) |
-| Host OS updates | `unattended-upgrades`, rebooting only when an update requires it, in a window (#243) | An operator-set window; the operator patches by hand |
-| How the config directory reaches the host | Inline in cloud-init `user-data` (#243), so the WireGuard key also sits in the provider's metadata | `--no-secrets`: the secret files are left out, the operator copies them in after boot, and the web app starts once they're present |
+| Host form | NixOS appliance: the generic image from `deploy/nixos/` plus a NoCloud seed from `bootstrap render-appliance-seed` (#243) | Any Docker host running `deploy/compose.yaml` by hand; the same NixOS configuration on an internet VM via nixos-anywhere (#569); IncusOS turnkey host (#246, parked); plain binary + systemd (§9's other target, not yet planned) |
+| Host OS updates | `system.autoUpgrade` daily from `main`, nixpkgs at its release branch's head, rebooting only when the kernel, initrd or modules changed, in a one-hour window from `--reboot-time` (default `04:00`, host local time) (#243) | Another `--reboot-time`; the operator upgrades by hand with `nixos-rebuild` |
+| How the config directory reaches the host | Inline in the seed's `user-data` (#243), the WireGuard key included, so the seed stick holds it until it's removed | `--no-secrets`: `secrets/` is left out, the operator copies it in after boot, and the web app starts once it's present |
 | API listener | Tunnel only, operator peers (§28, #195) | Opt-in plain-HTTP host listener on a chosen address; TLS from the appliance's step-ca (§32, #506) |
 | Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set (today's image route, kept as the default because it works now; costly on an internet VM, see below) | Client-side image build from a downloaded seed; a `SEED_DATA` stick beside a stock IncusOS image (#242) |
 | node0 provisioning | By the web app over the tunnel (#244) | Bootstrap CLI, offline, no tunnel (today's Flow A) |
@@ -2285,7 +2294,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 - **Install media.** On an internet VM, server-side builds mean a multi-GB transfer across the internet per node, plus VM disk for each copy. The seed is a few KB.
   - IncusOS reads a user-provided FAT or ISO volume labelled `SEED_DATA` beside an unmodified install image (upstream `doc/reference/seed.md`). The stick must be removed after install.
   - Both client-side options need a base image on the operator's machine, which #206 currently blocks `flasher-tool` from downloading.
-- **node0.** Both paths call the same `seed.Render`. A web-app-rendered seed already sets the node up as a one-member cluster (§26 Tier A) and adds the tunnel, so making the web app the default is mostly a change of order: the appliance first, then node0. The bootstrap CLI stays for offline bring-up, and for rendering the appliance's own `user-data`.
+- **node0.** Both paths call the same `seed.Render`. A web-app-rendered seed already sets the node up as a one-member cluster (§26 Tier A) and adds the tunnel, so making the web app the default is mostly a change of order: the appliance first, then node0. The bootstrap CLI stays for offline bring-up, and for rendering the appliance's own seed (`bootstrap render-appliance-seed`).
 - **The endpoint.** `WIREGUARD_ENDPOINT` is baked into every node's seed, so an IP address pins the web app to one host. IncusOS accepts a hostname (`networkd_validate.go` checks it with `net.SplitHostPort`) and renders it into systemd-networkd's `Endpoint=`. Unverified: whether a running node re-resolves the name after the address changes. #245 probes it.
 
 ### Decision: migration first; HA later, as a warm standby
@@ -2322,6 +2331,12 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 - **2026-11-02 (#466, §31).** The LAN laptop became the bootstrap and break-glass appliance, with DHCP, DNS and Secure Boot settings added to the operator-choice table, and the appliance phase moved ahead of the first Talos node. `bootstrap deploy-web` (#386) used to be kept as how the web app moves into the fleet; with the fleet on Talos that route is static pods, so #386 is parked with the Incus runtime.
 - **2026-11-04 (#505, §32).** The API listener's "TLS later" alternative became TLS from the appliance's step-ca (#506). Three rows were added: the web app's keys (generated and TPM-sealed, #509), the step-ca root's custody (#506), and the browser UI on a LAN host listener (#508). Why: the appliance gained a CA, an IdM and a browser UI (§32), and each new posture is an operator choice with a safe default.
 - **2026-11-04 (#199, §28).** Two rows were added: network addressing in git (`CONFIG_REPO_PRIVATE`, rejected by default) and where state addressing comes from (`NETWORK_ADDRESSING_PATH`). Why: §28's addressing decision was built, and a public repo is the safe assumption.
+- **2026-11-08 (#243, operator).** The first host form became a NixOS appliance, and the mkosi appliance image was dropped (#393 closes with #243). The rule had been:
+  - "First: a stock Debian cloud image, set up by cloud-init (#243)… We build no OS image, only a `user-data` file." The `user-data` installed Debian's Docker packages and wrote the compose file and config directory; on a cloud VM every provider took it, and on a LAN machine it went on a `CIDATA` stick beside Debian's `generic` image. `unattended-upgrades` patched the host from Debian-Security, rebooting only when an update required it, in an operator-set window.
+  - "Later and undecided: an mkosi-built appliance image (#393)", folded into §15's multi-OS work, its design open.
+  - The table rows read: host form "Stock Debian cloud image set up by cloud-init", OS updates "`unattended-upgrades`, rebooting only when an update requires it, in a window", and the config directory "Inline in cloud-init `user-data`, so the WireGuard key also sits in the provider's metadata". The node0 bullet ended "rendering the appliance's own `user-data`".
+
+  Why: cloud-init acts only at first boot, while Phase 5 keeps adding host-level pieces to the laptop; NixOS makes each one a rebuild with a boot-menu rollback, and its one flake covers #393's self-contained image while nixpkgs keeps the security patching. The internet VM moved to nixos-anywhere (#569), CI and release bumps to #570, and the web app's view of the host OS to #571.
 
 ## 30. Re-plan around host management: the agent manages only itself and its cluster (2026-10-26)
 
@@ -2416,7 +2431,7 @@ The main line moves from IncusOS hosts, with Kubernetes later on top, to **bare-
 ### No commercial dependencies; an own distro later
 
 - **Omni is ruled out** (BSL: free for a homelab, a paid licence for production). Talos itself is MPL-2.0. Install media are built with Talos's `imager` locally, not the hosted Image Factory. Machine config is generated with the `siderolabs/talos/pkg/machinery` Go module, not by shelling out to `talosctl`; its dependency weight is unverified until it's added (`go mod graph`).
-- **An own mkosi-built distro replaces Talos later, gated on a written list of what Talos can't do.** It has to provide: an immutable image (mkosi, a UKI, dm-verity); A/B updates (`systemd-sysupdate`); the disk layout and TPM-bound encryption (`systemd-repart`, `Encrypt=tpm2`); Secure Boot with the project's keys; containerd and kubelet with `kubeadm`; and a remote node-management API in place of Talos's, the largest piece. Security patching becomes the project's, permanently. One mkosi pipeline builds §15's helper OS and the #393 appliance image first, and the node OS last.
+- **An own mkosi-built distro replaces Talos later, gated on a written list of what Talos can't do.** It has to provide: an immutable image (mkosi, a UKI, dm-verity); A/B updates (`systemd-sysupdate`); the disk layout and TPM-bound encryption (`systemd-repart`, `Encrypt=tpm2`); Secure Boot with the project's keys; containerd and kubelet with `kubeadm`; and a remote node-management API in place of Talos's, the largest piece. Security patching becomes the project's, permanently. One mkosi pipeline builds §15's helper OS first, and the node OS last.
 
 ### Boot
 
@@ -2500,6 +2515,7 @@ A `Network` has two ranges, `dhcp_excluded_range` (the static range) and `dhcp.p
 - **2026-11-04 (#505, §32):** Kea's HA peer TLS was left to #400, the web app as a CA. The appliance's step-ca (§32, #506) issues those certs now, and #400 is narrowed to Incus node certs and parked with Incus.
 - **2026-11-04 (#487, operator):** `config.Validate`'s allowed-pairs table leaves out the own-distro row: that OS has no config name yet, so the issue that names it adds the row and decides about `incus`.
 - **2026-11-05 (#490, operator decisions 2026-11-03 to 11-05):** "In `full` mode IPAM owns the whole subnet and the pool is configured explicitly, which changes how `dhcp_excluded_range` works" became the per-mode rule above. `dhcp_excluded_range` keeps its meaning in `off`, `proxy` and `reservations` and becomes the never-used remainder in `full`, where nodes draw from `dhcp.pool`. The pool can be derived (the static range's complement, or the whole CIDR in `full` with neither written) rather than always explicit, and both ranges are carved around the network, broadcast, gateway and in-CIDR `dns` addresses, the `dns` exclusion being new in every mode. `dhcp.mode` is git-only and `dhcp.pool` joins §28's addressing fields. `proxy` has no boot-option fields yet; the seed rendering `full` nodes as DHCP clients, and carving the appliance's own address, wait for Phase 5. Why: a `full` network with no other DHCP server needs its pool to be where its nodes' reservations live, and deriving it keeps the common cases to one written field or none.
+- **2026-11-08 (#243, §29):** the own distro's bullet read "One mkosi pipeline builds §15's helper OS and the #393 appliance image first, and the node OS last." The appliance is NixOS now (§29), so the mkosi pipeline's first target is the helper OS alone.
 
 ## 32. The appliance's operator surface, keys, CA and IdM: a browser UI behind kanidm, TPM-sealed first-boot keys, step-ca and kanidm as sidecars (2026-11-04, #505)
 
