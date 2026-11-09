@@ -8,7 +8,7 @@ here.
 - [Quickstart](Quickstart) — get the bootstrap CLI running end to end
 - [Architecture](Architecture) — what this app is and how the pieces fit
 - [Config Schema](Config%20Schema) — the fleet config repo: layout, every field, what's checked
-- [Deployment](Deployment) — the web app's deployment config: the directory, every setting and its default, what's secret
+- [Deployment](Deployment) — the web app's deployment config: the directory, every setting and its default, what's secret, and the NixOS appliance's runbook
 - [Roadmap](Roadmap) — current phase/status
 - [Development Conventions](Development%20Conventions) — branching, PRs, Go layout, vendoring rules
 - [Decisions](Decisions) — resolved design decisions and their rationale

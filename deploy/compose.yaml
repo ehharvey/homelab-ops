@@ -1,0 +1,44 @@
+# The web app's production compose file (#243, docs/Deployment.md § The
+# appliance). The dev stack is ../docker-compose.yml; this one is what an
+# appliance runs.
+#
+# `bootstrap render-appliance-seed` puts this file in the appliance's seed,
+# for its /etc/homelab-ops/compose.yaml, with `image:` set to its --image
+# (default: the digest below), beside the deployment config directory at
+# /etc/homelab-ops/web/. Any other Docker host can run it the same way: put
+# the config directory in ./web next to it and `docker compose up -d`.
+#
+# step-ca (#506) and kanidm (#507) each add their own service here
+# (docs/Decisions.md §32).
+name: homelab-ops
+
+services:
+  web:
+    # Pinned by digest, never a tag: the web image isn't upgraded
+    # automatically. A seed is read only at the first boot, so a seed
+    # rendered with a new --image takes effect by reinstalling the appliance
+    # with it (or re-seeding it, over SSH). With SSH, you can instead edit
+    # `image:` on the appliance and run
+    # `docker compose pull && docker compose up -d` (docs/Deployment.md §
+    # Upgrades and rollback). render-appliance-seed drops the "This pin is"
+    # line when --image changes the pin.
+    # This pin is ghcr.io/ehharvey/homelab-ops/web:04897b3f1930737c69345f5d88ba9a0f4df719b0.
+    image: ghcr.io/ehharvey/homelab-ops/web@sha256:4ce46086460ac0efaab14d04465b9072680a72db9e8bc51ffe7e2488bbacac0c
+    restart: unless-stopped
+    ports:
+      # The WireGuard tunnel's UDP port, and nothing else (docs/Decisions.md
+      # §28): the API is served inside the tunnel. There is no
+      # API_HOST_LISTEN_ADDR, so no host listener. The appliance's web.env
+      # keeps WIREGUARD_PORT at its default, 51820.
+      - "51820:51820/udp"
+    environment:
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
+      # The store lives on the named volume below, so it survives a restart
+      # and an image upgrade. This overrides any STORE_PATH in web.env.
+      - STORE_PATH=/var/lib/homelab-ops/web.db
+    volumes:
+      - ./web:/etc/homelab-ops/web:ro
+      - store:/var/lib/homelab-ops
+
+volumes:
+  store:
