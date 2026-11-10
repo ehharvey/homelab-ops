@@ -8,18 +8,20 @@
 # DEPLOYMENT_CONFIG_DIR and one override. The copy is filled in the way an
 # operator would: a generated operator peer in operator-peers, the break-glass
 # cert's public half as client.crt, a generated WireGuard identity in
-# secrets/wireguard.key (0700/0600; #197 will load it, nothing does yet), and
+# secrets/wireguard.key (0700/0600; the tunnel's identity, #197), and
 # CONFIG_REPO_URL pointed at the dev fixture repo.
 #
-#   1. It starts: the tunnel comes up, the operator peer from operator-peers
-#      reaches the API over it, the sync from web.env's repo runs, and the
+#   1. It starts: the tunnel comes up with secrets/wireguard.key's identity,
+#      the operator peer from operator-peers reaches the API over it and
+#      inits the store (#197), the sync from web.env's repo runs, and the
 #      seed route renders with client.crt.
 #   2. An env var overrides web.env: WIREGUARD_ENDPOINT is web.env's
 #      webapp.example.net placeholder, and the environment's 127.0.0.1 wins.
 #   3. It fails fast: the web app exits non-zero, naming the problem, when a
 #      required setting is removed (WIREGUARD_ENDPOINT, required while
 #      operator peers are listed), when CONFIG_REPO_URL carries credentials,
-#      and when secrets/wireguard.key is readable beyond its owner.
+#      when secrets/wireguard.key is readable beyond its owner, and when it
+#      is missing.
 #
 # The tunnel side is driven by cmd/validate-tunnel-harness's http mode, as in
 # api-serves-operator-peers-over-tunnel-by-default.sh: only another WireGuard
@@ -52,6 +54,7 @@ HARNESS="$WORK_DIR/validate-tunnel-harness"
 BOOTSTRAP_BIN="$WORK_DIR/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 OPERATOR_KEY="$WORK_DIR/operator.key"
+STORE_KEY="$WORK_DIR/store.key"
 OVERRIDE="$WORK_DIR/compose-override.yml"
 VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 # The deployment config directory, mounted read-only where an appliance
@@ -175,7 +178,8 @@ printf '%s=%s  # validate harness\n' "$OPERATOR_ADDR" "$OPERATOR_PUB" >>"$DEPLOY
 check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --common-name "web-starts-from-deployment-config-directory"
 cp "$CERT_DIR/client.crt" "$DEPLOY_DIR/client.crt"
 mkdir -m 0700 "$DEPLOY_DIR/secrets"
-check "web app identity generated" "$HARNESS" -mode genkey -private-key-file "$DEPLOY_DIR/secrets/wireguard.key"
+WG_PUB=$("$HARNESS" -mode genkey -private-key-file "$DEPLOY_DIR/secrets/wireguard.key")
+check "web app identity generated" test -n "$WG_PUB"
 chmod 0600 "$DEPLOY_DIR/secrets/wireguard.key"
 set_web_env CONFIG_REPO_URL git://config-repo/fleet.git
 check "web.env keeps its placeholder endpoint" grep -qx 'WIREGUARD_ENDPOINT=webapp.example.net:51820' "$DEPLOY_DIR/web.env"
@@ -201,10 +205,16 @@ if _grep_web_log "host API listener"; then
 else
   record_pass "no host API listener: the committed API_HOST_LISTEN_ADDR is gone"
 fi
-wait_log "web.env's CONFIG_REPO_URL and CONFIG_SYNC_INTERVAL drive the startup sync" "synced commit" 20
 
 APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0-9+/=]+' | tail -1 | awk '{print $4}')
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+check_eq "the tunnel's identity is secrets/wireguard.key's" "$WG_PUB" "$APP_PUB"
+
+# The store is locked until init (#197), and the background sync waits for
+# it, so init comes before the sync is looked for.
+compose_store_init "$STORE_KEY" --private-key-file "$OPERATOR_KEY" --local-addr "$OPERATOR_ADDR" \
+  --server-public-key "$APP_PUB" --endpoint "$WG_ENDPOINT"
+wait_log "web.env's CONFIG_REPO_URL and CONFIG_SYNC_INTERVAL drive the startup sync" "synced commit" 20
 
 expect_route "operator (from operator-peers): GET /status over the tunnel" 200 GET /status '"synced":true'
 expect_route "operator: POST /instances/$INSTANCE/seed renders with client.crt" 200 POST "/instances/$INSTANCE/seed" 'network_yaml'
@@ -238,5 +248,10 @@ echo "-- a secret readable beyond its owner --"
 chmod 0644 "$DEPLOY_DIR/secrets/wireguard.key"
 expect_startup_failure "secrets/wireguard.key at 0644" "secrets/wireguard.key: mode 0644 is readable beyond its owner"
 chmod 0600 "$DEPLOY_DIR/secrets/wireguard.key"
+
+echo "-- the tunnel's identity missing --"
+mv "$DEPLOY_DIR/secrets/wireguard.key" "$WORK_DIR/wireguard.key.aside"
+expect_startup_failure "secrets/wireguard.key missing" "secrets/wireguard.key: required with WIREGUARD_ENDPOINT set"
+mv "$WORK_DIR/wireguard.key.aside" "$DEPLOY_DIR/secrets/wireguard.key"
 
 summary

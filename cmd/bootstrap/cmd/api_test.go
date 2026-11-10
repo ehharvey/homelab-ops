@@ -31,6 +31,7 @@ func resetAPIFlags(t *testing.T) {
 	apiFlags.serverAddr = wireguard.WebAppAddr.String()
 	apiFlags.listenPort = 0
 	apiFlags.connectTimeout = 30 * time.Second
+	apiFlags.url = ""
 	apiSeedOutput = ""
 	apiImageOutput = ""
 }

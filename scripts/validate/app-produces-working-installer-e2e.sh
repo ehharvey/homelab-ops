@@ -58,6 +58,11 @@ WORK_DIR="$(mktemp -d)"
 BOOTSTRAP_BIN="$ROOT_DIR/bin/bootstrap"
 CERT_DIR="$WORK_DIR/cert"
 export CERT_DIR
+# The web app's WireGuard identity, which it needs with WIREGUARD_ENDPOINT
+# set (#197), and the store key compose_store_init generates.
+WEB_DEPLOY_DIR="$WORK_DIR/web"
+export WEB_DEPLOY_DIR
+STORE_KEY="$WORK_DIR/store.key"
 OVERRIDE="$(mktemp /tmp/compose-sprint-3-override.XXXXXX.yml)"
 # lib-compose.sh's compose() picks this up; scripts that need no scoped
 # override simply leave it unset.
@@ -178,13 +183,16 @@ services:
   web:
     volumes:
       - ${CERT_DIR}:/cert:ro
+      - ${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
       - ${BASE_IMAGE_ABS}:/data/incusos-base.img:ro
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
       - BASE_IMAGE_PATH=/data/incusos-base.img
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
 EOF
 
+check "web app WireGuard identity written" compose_web_identity "$WEB_DEPLOY_DIR"
 check "docker compose up --build succeeds" compose up --build -d
 
 base_url="http://localhost:8080"
@@ -193,6 +201,8 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 check "web is reachable" curl -sf -o /dev/null "$base_url/healthz"
+# The store is locked after every start until init (#197).
+compose_store_init "$STORE_KEY"
 
 echo
 echo "== 3. Sync a home-lan fleet whose instances (node0/node1) omit static_ip =="

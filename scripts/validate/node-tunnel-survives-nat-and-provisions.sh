@@ -262,7 +262,10 @@ STATIC_IP="${LAN_GATEWAY_ADDR%.*}.202"
 
 echo
 echo "== 1. Build the binaries =="
-check "bootstrap CLI builds" go -C "$ROOT_DIR" build -o "$BOOTSTRAP_BIN" ./cmd/bootstrap
+# CGO_ENABLED=0 as for the harness below: besides running here, it is pushed
+# into the webapp's Alpine container to init the web app's store (#197).
+check "bootstrap CLI builds (CGO_ENABLED=0, it also runs inside Alpine)" \
+  bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$BOOTSTRAP_BIN' ./cmd/bootstrap"
 check "web app builds (CGO_ENABLED=0, matching the real Docker image)" \
   bash -c "cd '$ROOT_DIR' && CGO_ENABLED=0 go build -o '$WEB_BIN' ./cmd/web"
 # CGO_ENABLED=0 for the same reason as the web app above, and it is not
@@ -529,11 +532,19 @@ check_eq "webapp has no global IPv6 address on $WAN_NETWORK" "rc=0" \
     ip -6 -o addr show scope global 2>&1; echo "rc=$?")"
 
 # git is already in the container (installed on home-lan above), so this is
-# only the files: the bare repo go-git clones from, the web binary and the cert.
-check "webapp fleet repo + binary + cert pushed" bash -c "
+# only the files: the bare repo go-git clones from, the web binary and the
+# cert, the bootstrap CLI that inits its store, and its deployment config
+# directory holding the tunnel's identity, secrets/wireguard.key, which the
+# web app needs with WIREGUARD_ENDPOINT set (#197): 32 random bytes, base64.
+mkdir -p "$WORK_DIR/webdeploy/secrets"
+(umask 077 && head -c 32 /dev/urandom | base64 >"$WORK_DIR/webdeploy/secrets/wireguard.key")
+check "webapp fleet repo + binaries + cert + identity pushed" bash -c "
   incus file push -r --project '$PROJECT' '$WORK_DIR/fleet-repo.git' '$REMOTE:$WEBAPP_NAME/root/' &&
   incus file push --project '$PROJECT' '$WEB_BIN' '$REMOTE:$WEBAPP_NAME/web' --mode=0755 &&
-  incus file push --project '$PROJECT' '$WORK_DIR/cert/client.crt' '$REMOTE:$WEBAPP_NAME/root/client.crt'
+  incus file push --project '$PROJECT' '$BOOTSTRAP_BIN' '$REMOTE:$WEBAPP_NAME/bootstrap' --mode=0755 &&
+  incus file push --project '$PROJECT' '$WORK_DIR/cert/client.crt' '$REMOTE:$WEBAPP_NAME/root/client.crt' &&
+  incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- mkdir -p -m 0700 /root/webdeploy/secrets &&
+  incus file push --project '$PROJECT' '$WORK_DIR/webdeploy/secrets/wireguard.key' '$REMOTE:$WEBAPP_NAME/root/webdeploy/secrets/wireguard.key' --mode=0600
 "
 
 echo "Starting the real web app (WIREGUARD_ENDPOINT=$WEBAPP_WAN_IP:$WG_PORT) ..."
@@ -544,9 +555,24 @@ incus_exec_bg "$WORK_DIR/webapp.log" "$REMOTE:$WEBAPP_NAME" -- env \
   CONFIG_REPO_URL=/root/fleet-repo.git \
   CONFIG_REPO_PRIVATE=true \
   CONFIG_SYNC_INTERVAL=5s \
+  DEPLOYMENT_CONFIG_DIR=/root/webdeploy \
   WIREGUARD_ENDPOINT="$WEBAPP_WAN_IP:$WG_PORT" \
   WIREGUARD_PORT="$WG_PORT" \
   /web
+
+# The store is locked after every start until init (#197); the background
+# sync waits for it.
+store_init=fail
+for _ in $(seq 1 15); do
+  incus exec --project "$PROJECT" "$REMOTE:$WEBAPP_NAME" -- rm -f /root/store.key
+  if incus exec --project "$PROJECT" "$REMOTE:$WEBAPP_NAME" -- \
+    /bootstrap api --url http://127.0.0.1:8080 init --key-file /root/store.key >/dev/null 2>&1; then
+    store_init=ok
+    break
+  fi
+  sleep 2
+done
+check_eq "web app store initialized (bootstrap api init)" ok "$store_init"
 
 echo "Waiting up to 30s for the web app to sync and assign node0 a tunnel_ip ..."
 NODE_TUNNEL_IP=""

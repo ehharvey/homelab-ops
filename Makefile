@@ -155,6 +155,28 @@ vendor-incusos:
 docker-build:
 	docker build -t homelab-ops-web .
 
+# The web app's store is locked after every start (#197): until `bootstrap api
+# init` supplies a key, only /healthz and the key routes answer. So dev inits
+# it once the host listener answers, in the background while compose runs in
+# the foreground, with a fresh key in DEV_STORE_KEY (gitignored) each time:
+# the dev store is in memory, so every start begins empty. It waits on
+# lock-state, which needs no key, and inits once: a retried init would
+# delete a key whose answer was lost. The wait has no bound of its own, since
+# a cold `up --build` can take many minutes before the listener exists; it
+# lasts as long as compose does, and the loop dies with compose, so it can't
+# init a later `make dev`'s stack.
+DEV_STORE_KEY := bootstrap-output/dev-store.key
+DEV_API_URL := http://127.0.0.1:8080
 dev:
+	$(GO) build -o $(BOOTSTRAP_BIN) ./cmd/bootstrap
+	@mkdir -p $(dir $(DEV_STORE_KEY))
+	@( until $(BOOTSTRAP_BIN) api --url $(DEV_API_URL) lock-state >/dev/null 2>&1; do sleep 1; done; \
+		rm -f $(DEV_STORE_KEY); \
+		if $(BOOTSTRAP_BIN) api --url $(DEV_API_URL) init --key-file $(DEV_STORE_KEY) >/dev/null; then \
+			echo "make dev: web app store initialized; its key is in $(DEV_STORE_KEY)"; \
+		else \
+			echo "make dev: the web app's store init failed (above)" >&2; \
+		fi ) & init=$$!; \
+	trap 'kill $$init 2>/dev/null' EXIT INT TERM; \
 	docker compose up --build
 

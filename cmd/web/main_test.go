@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/config"
 	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
+	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
 type countingSyncer struct{ n int64 }
@@ -39,9 +41,10 @@ func TestPollSyncRunsAtStartup(t *testing.T) {
 	// A long interval means only the startup sync can fire within the test
 	// window, so observing one sync proves pollSync doesn't wait for the
 	// first tick to do its initial sync.
-	done := make(chan struct{})
+	done, unlocked := make(chan struct{}), make(chan struct{})
+	close(unlocked)
 	go func() {
-		pollSync(ctx, svc, time.Hour)
+		pollSync(ctx, svc, time.Hour, unlocked)
 		close(done)
 	}()
 
@@ -55,6 +58,70 @@ func TestPollSyncRunsAtStartup(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// TestPollSyncWaitsForUnlock pins that the poller never syncs a locked store
+// (#197), and syncs as soon as it is unlocked rather than a tick later.
+func TestPollSyncWaitsForUnlock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st, err := store.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck // test cleanup
+
+	cs := &countingSyncer{}
+	svc := server.NewService(cs, st, nil, nil, nil, nil)
+	done, unlocked := make(chan struct{}), make(chan struct{})
+	go func() {
+		pollSync(ctx, svc, time.Hour, unlocked)
+		close(done)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	if n := atomic.LoadInt64(&cs.n); n != 0 {
+		t.Fatalf("pollSync synced %d times while the store was locked, want 0", n)
+	}
+	close(unlocked)
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt64(&cs.n) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if atomic.LoadInt64(&cs.n) == 0 {
+		t.Fatal("pollSync did not sync once the store was unlocked")
+	}
+
+	cancel()
+	<-done
+}
+
+// A peer restore that fails on unlock is retried until it succeeds, since
+// nothing else registers the stored peers before a sync (#269).
+func TestRestoreTunnelPeersRetriesAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int64
+	restored := make(chan struct{})
+	restore := func(context.Context) error {
+		if calls.Add(1) < 3 {
+			return errors.New("upsert operator peer: transient")
+		}
+		close(restored)
+		return nil
+	}
+	if err := restoreTunnelPeers(ctx, restore, time.Millisecond); err == nil {
+		t.Fatal("restoreTunnelPeers = nil, want the first failure")
+	}
+	select {
+	case <-restored:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("the restore wasn't retried to success: %d calls", calls.Load())
+	}
+	if err := restoreTunnelPeers(ctx, func(context.Context) error { return nil }, time.Millisecond); err != nil {
+		t.Errorf("restoreTunnelPeers with a working restore = %v", err)
+	}
 }
 
 func TestFileCertSourceReadsConfiguredPath(t *testing.T) {
@@ -92,14 +159,15 @@ func TestNewCertSourceUnsetReturnsNil(t *testing.T) {
 	}
 }
 
-func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
-	st, err := store.Open(context.Background(), ":memory:")
+// TestNewTunnelSourceUsesSuppliedIdentity pins that the tunnel's identity is
+// the operator-supplied key (#197), not one generated or kept in the store:
+// the same key gives the same public key every node's seed already trusts.
+func TestNewTunnelSourceUsesSuppliedIdentity(t *testing.T) {
+	priv, pub, err := wireguard.GenerateKeypair()
 	if err != nil {
-		t.Fatalf("store.Open: %v", err)
+		t.Fatalf("GenerateKeypair: %v", err)
 	}
-	defer st.Close() //nolint:errcheck // test cleanup
-
-	ts, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", 0, nil)
+	ts, err := newTunnelSource(priv, "203.0.113.1:51820", 0, nil)
 	if err != nil {
 		t.Fatalf("newTunnelSource: %v", err)
 	}
@@ -111,18 +179,8 @@ func TestNewTunnelSourceStartsAndPersistsIdentity(t *testing.T) {
 	if ts.Endpoint() != "203.0.113.1:51820" {
 		t.Errorf("Endpoint() = %q, want %q", ts.Endpoint(), "203.0.113.1:51820")
 	}
-
-	// A second call must reuse the persisted identity rather than minting a
-	// new one, so a restarted process keeps the same public key every node's
-	// seed already trusts.
-	ts2, err := newTunnelSource(context.Background(), st, "203.0.113.1:51820", 0, nil)
-	if err != nil {
-		t.Fatalf("second newTunnelSource: %v", err)
-	}
-	defer ts2.Close() //nolint:errcheck // test cleanup
-
-	if ts.PublicKey() != ts2.PublicKey() {
-		t.Errorf("PublicKey() changed across newTunnelSource calls: %s != %s", ts.PublicKey(), ts2.PublicKey())
+	if ts.PublicKey() != pub {
+		t.Errorf("PublicKey() = %s, want the supplied key's %s", ts.PublicKey(), pub)
 	}
 }
 

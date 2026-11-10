@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 )
 
 // maxJSONBody bounds what a JSON route may answer with. The largest, GET
@@ -62,6 +64,26 @@ type APIError struct {
 	StatusCode int
 	Message    string
 }
+
+// ErrNotSent marks an error from before the request was written to the
+// web app (errors.Is): the connection never came up, or the request
+// couldn't be built. The web app can't have acted on it, which is what a
+// verb that sends a newly generated key needs to know (cmd/bootstrap's
+// keyVerbError). An error without it may have reached the web app.
+var ErrNotSent = errors.New("the request wasn't sent")
+
+// NotSent marks err as ErrNotSent, keeping its text; nil stays nil.
+func NotSent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return notSentError{err}
+}
+
+type notSentError struct{ error }
+
+func (e notSentError) Unwrap() error        { return e.error }
+func (e notSentError) Is(target error) bool { return target == ErrNotSent }
 
 func (e *APIError) Error() string {
 	msg := e.Message
@@ -160,7 +182,12 @@ func instancePath(name, action string) (string, error) {
 
 // doJSON sends one request and returns the 2xx body, read whole.
 func (c *Client) doJSON(ctx context.Context, method, path string) ([]byte, error) {
-	resp, err := c.do(ctx, method, path)
+	return c.sendJSON(ctx, method, path, nil)
+}
+
+// sendJSON is doJSON with a JSON request body, or none when reqBody is nil.
+func (c *Client) sendJSON(ctx context.Context, method, path string, reqBody []byte) ([]byte, error) {
+	resp, err := c.send(ctx, method, path, reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -178,14 +205,37 @@ func (c *Client) doJSON(ctx context.Context, method, path string) ([]byte, error
 // do sends one bodiless request. On a 2xx it returns the response with its
 // body unread; otherwise it closes the body and returns an *APIError.
 func (c *Client) do(ctx context.Context, method, path string) (*http.Response, error) {
+	return c.send(ctx, method, path, nil)
+}
+
+// send is do with a JSON request body, or none when body is nil.
+func (c *Client) send(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
 	// path is already escaped (instancePath), so it joins as text.
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.base.String(), "/")+path, nil)
+	// wrote records whether the transport ever began writing the request
+	// (WroteRequest runs once it's written, or failed partway); until then,
+	// a failure is ErrNotSent.
+	var wrote atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) { wrote.Store(true) },
+	})
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.base.String(), "/")+path, r)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: build request: %w", method, path, err)
+		return nil, NotSent(fmt.Errorf("%s %s: build request: %w", method, path, err))
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+		err = fmt.Errorf("%s %s: %w", method, path, err)
+		if !wrote.Load() {
+			err = NotSent(err)
+		}
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		defer resp.Body.Close() //nolint:errcheck // read-only response, nothing to flush

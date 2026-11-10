@@ -43,20 +43,23 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// single connection rather than fighting the pool over SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
 
-	schema, err := schemaFS.ReadFile("schema.sql")
-	if err != nil {
-		return nil, fmt.Errorf("read schema: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, string(schema)); err != nil {
-		db.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed Open
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	if err := addMissingColumns(ctx, db); err != nil {
+	if err := migrate(ctx, db); err != nil {
 		db.Close() //nolint:errcheck,gosec // best-effort cleanup on a failed Open
 		return nil, err
 	}
-
 	return &Store{db: db}, nil
+}
+
+// migrate applies schema.sql and adds the columns an older store lacks.
+func migrate(ctx context.Context, db *sql.DB) error {
+	schema, err := schemaFS.ReadFile("schema.sql")
+	if err != nil {
+		return fmt.Errorf("read schema: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, string(schema)); err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	return addMissingColumns(ctx, db)
 }
 
 // addedColumns are columns added to a table after a store file holding it
@@ -384,34 +387,6 @@ func scanApp(r row) (config.App, error) {
 	return a, nil
 }
 
-// WireGuardPrivateKey returns the web app's own persisted WireGuard
-// identity, or ok=false if none has been generated yet. Implements
-// internal/wireguard.IdentityStore.
-func (s *Store) WireGuardPrivateKey(ctx context.Context) (wireguard.PrivateKey, bool, error) {
-	var b64 string
-	err := s.db.QueryRowContext(ctx, getWireGuardIdentitySQL).Scan(&b64)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return wireguard.PrivateKey{}, false, nil
-		}
-		return wireguard.PrivateKey{}, false, fmt.Errorf("query wireguard identity: %w", err)
-	}
-	key, err := decodeKey(b64)
-	if err != nil {
-		return wireguard.PrivateKey{}, false, fmt.Errorf("decode wireguard identity: %w", err)
-	}
-	return key, true, nil
-}
-
-// SetWireGuardPrivateKey persists the web app's own WireGuard identity.
-// Implements internal/wireguard.IdentityStore.
-func (s *Store) SetWireGuardPrivateKey(ctx context.Context, key wireguard.PrivateKey) error {
-	if _, err := s.db.ExecContext(ctx, setWireGuardIdentitySQL, key.Base64()); err != nil {
-		return fmt.Errorf("store wireguard identity: %w", err)
-	}
-	return nil
-}
-
 // InstanceCredential returns name's persisted Credential, or ok=false if
 // none has been minted yet. Implements
 // internal/nodeprovision.CredentialStore.
@@ -448,9 +423,9 @@ func (s *Store) SetInstanceCredential(ctx context.Context, name string, cred nod
 	return nil
 }
 
-// decodeKey parses a base64-encoded 32-byte key, the encoding both
-// wireguard_identity.private_key and instance_credentials.
-// wireguard_private_key use (wireguard.PrivateKey.Base64).
+// decodeKey parses a base64-encoded 32-byte key, the encoding
+// instance_credentials.wireguard_private_key uses
+// (wireguard.PrivateKey.Base64).
 func decodeKey(b64 string) (wireguard.PrivateKey, error) {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
