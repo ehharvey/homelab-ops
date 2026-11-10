@@ -19,11 +19,15 @@ browsability; never edit the wiki directly.
    + one `kind: Instance` doc — see [`docs/Config Schema.md`](docs/Config%20Schema.md), or start from
    [`examples/nodes/single-node/fleet.yaml`](examples/nodes/single-node/fleet.yaml)):
 
+       make incusos-base
        ./bin/bootstrap gen-cert --output-dir ./bootstrap-output/cert
        ./bin/bootstrap render-seed --file fleet.yaml --cert ./bootstrap-output/cert/client.crt --output-dir ./bootstrap-output/seed
-       ./bin/bootstrap build-image --image ./incusos-base.img --output ./bootstrap-output/img/node0.img
+       ./bin/bootstrap build-image --image "$(./scripts/fetch-incusos-base.sh --path)" --output ./bootstrap-output/img/node0.img
 
-   `dd` the result onto a USB stick, or run `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` to
+   `make incusos-base` fetches the pinned IncusOS base image, verifies its
+   signature and checksum, and caches it as
+   `bootstrap-output/incusos/<version>/IncusOS_<version>.img`, the path
+   `scripts/fetch-incusos-base.sh --path` prints. `dd` the result onto a USB stick, or run `scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` to
    boot it in a real Incus VM and confirm install + cert trust end-to-end
    without real hardware.
 4. See [`docs/Quickstart.md`](docs/Quickstart.md) for the full walkthrough,
@@ -53,15 +57,17 @@ Reads a fleet definition YAML file (exactly one `kind: Network` and one
 client certificate, so run `gen-cert` before `render-seed`. Without this,
 Incus never trusts the bootstrap cert on first boot.
 
-    ./bin/bootstrap build-image --image ./incusos-base.img --output ./bootstrap-output/img/node0.img
+    make incusos-base
+    ./bin/bootstrap build-image --image "$(./scripts/fetch-incusos-base.sh --path)" --output ./bootstrap-output/img/node0.img
 
 Copies a base IncusOS raw image to `--output` and shells out to the
 upstream `flasher-tool` binary
 (`go install github.com/lxc/incus-os/incus-osd/cmd/flasher-tool`, must be
 on `$PATH`) to inject the seed from `--seed-dir` (default
 `./bootstrap-output/seed`, i.e. `render-seed`'s output) into the copy in
-place. The base image itself, obtained separately, is never modified.
-Result is a `.img` ready to `dd` onto a USB stick.
+place. The base image is the pinned one `make incusos-base` caches at
+`bootstrap-output/incusos/<version>/IncusOS_<version>.img`, and is never
+modified. Result is a `.img` ready to `dd` onto a USB stick.
 
 Run `./bin/bootstrap build-image --help` for all flags.
 

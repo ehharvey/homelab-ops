@@ -307,9 +307,9 @@ Appliance (from "Web app deployment", added 2026-10-03, #247, §29):
   default, the WireGuard endpoint as a DNS name. It absorbs #67's unified
   config (one place for config, failing fast on missing required values):
   DONE; see #241
-- [ ] Build install media client-side: a local image build from a downloaded
+- [x] Build install media client-side: a local image build from a downloaded
   seed, or a `SEED_DATA` stick beside a stock IncusOS image; per OS behind
-  Phase 4's `internal/hostos` — see #242
+  Phase 4's `internal/hostos`: DONE; see #242
 - [ ] Provision node0 from the web app by default; the bootstrap CLI as the
   alternative — see #244
 - [ ] Migrate the web app between hosts without reflashing nodes, including
