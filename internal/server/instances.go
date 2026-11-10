@@ -12,6 +12,7 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
+	"github.com/ehharvey/homelab-ops/internal/seedwire"
 )
 
 // errInstanceNotFound marks a resolveInstanceSeed failure caused by an
@@ -32,17 +33,6 @@ var errSeedInvalid = errors.New("seed data invalid")
 // not a bug, so it maps to 503 like the "cert source not configured" case
 // rather than a generic 500.
 var errCertUnavailable = errors.New("client cert unavailable")
-
-// instanceSeedResponse holds the four rendered seed documents, one YAML
-// string per field — the files hostos.WriteFiles puts on disk — so each
-// file stays independently addressable (e.g. via curl | jq) rather than
-// bundled into one multi-doc blob.
-type instanceSeedResponse struct {
-	InstallYAML      string `json:"install_yaml"`
-	NetworkYAML      string `json:"network_yaml"`
-	ApplicationsYAML string `json:"applications_yaml"`
-	IncusYAML        string `json:"incus_yaml"`
-}
 
 func handleInstanceSeed(store Store, certs CertSource, tunnels TunnelSource, creds nodeprovision.CredentialStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +57,9 @@ func handleInstanceSeed(store Store, certs CertSource, tunnels TunnelSource, cre
 			return
 		}
 
-		resp, err := seedResponse(rendered.files)
+		// One YAML string per seed file (internal/seedwire), the files
+		// hostos.WriteFiles puts on disk.
+		resp, err := seedwire.Encode(rendered.files)
 		if err != nil {
 			log.Printf("seed response for %q: %v", name, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -75,33 +67,6 @@ func handleInstanceSeed(store Store, certs CertSource, tunnels TunnelSource, cre
 		}
 		writeJSON(w, resp)
 	}
-}
-
-// seedResponse maps rendered files onto instanceSeedResponse's four fields.
-// Those fields are IncusOS's seed files, the only backend's output; a second
-// backend's files need their own shape, decided with that backend. Every
-// field must be filled exactly once and no file left over, so a renamed or
-// missing file is a server error rather than an empty field in a 200.
-func seedResponse(files []hostos.File) (instanceSeedResponse, error) {
-	var resp instanceSeedResponse
-	fields := map[string]*string{
-		"install.yaml":      &resp.InstallYAML,
-		"network.yaml":      &resp.NetworkYAML,
-		"applications.yaml": &resp.ApplicationsYAML,
-		"incus.yaml":        &resp.IncusYAML,
-	}
-	for _, f := range files {
-		field, ok := fields[f.Name]
-		if !ok {
-			return instanceSeedResponse{}, fmt.Errorf("rendered file %q has no field in the seed response", f.Name)
-		}
-		*field = string(f.Data)
-		delete(fields, f.Name)
-	}
-	for name := range fields {
-		return instanceSeedResponse{}, fmt.Errorf("rendered seed has no %s", name)
-	}
-	return resp, nil
 }
 
 // renderedSeed is resolveInstanceSeed's result: the instance's host OS and

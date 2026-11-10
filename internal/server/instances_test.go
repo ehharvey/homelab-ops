@@ -12,10 +12,19 @@ import (
 
 	"github.com/ehharvey/homelab-ops/internal/cert"
 	"github.com/ehharvey/homelab-ops/internal/config"
-	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/seed"
 )
+
+// instanceSeedResponse is the seed route's answer as a client reads it,
+// spelled out here rather than taken from internal/seedwire, so these tests
+// pin the wire field names independently of the table that writes them.
+type instanceSeedResponse struct {
+	InstallYAML      string `json:"install_yaml"`
+	NetworkYAML      string `json:"network_yaml"`
+	ApplicationsYAML string `json:"applications_yaml"`
+	IncusYAML        string `json:"incus_yaml"`
+}
 
 type fakeCertSource struct {
 	pem []byte
@@ -297,34 +306,5 @@ func TestInstanceSeedCertSourceUnconfigured503s(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /instances/devnode0/seed (nil cert source) = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-}
-
-// TestSeedResponseNeedsExactlyTheFourFiles pins that the seed route can't
-// answer 200 with an empty field: a missing or unexpected rendered file is an
-// error, not a blank YAML string.
-func TestSeedResponseNeedsExactlyTheFourFiles(t *testing.T) {
-	four := []hostos.File{
-		{Name: "install.yaml", Data: []byte("i")},
-		{Name: "network.yaml", Data: []byte("n")},
-		{Name: "applications.yaml", Data: []byte("a")},
-		{Name: "incus.yaml", Data: []byte("c")},
-	}
-	got, err := seedResponse(four)
-	if err != nil {
-		t.Fatalf("seedResponse(four files): %v", err)
-	}
-	want := instanceSeedResponse{InstallYAML: "i", NetworkYAML: "n", ApplicationsYAML: "a", IncusYAML: "c"}
-	if got != want {
-		t.Errorf("seedResponse = %+v, want %+v", got, want)
-	}
-
-	if _, err := seedResponse(four[:3]); err == nil {
-		t.Error("seedResponse(missing incus.yaml) succeeded, want an error")
-	}
-	renamed := append([]hostos.File(nil), four...)
-	renamed[2].Name = "applications.yml"
-	if _, err := seedResponse(renamed); err == nil {
-		t.Error("seedResponse(applications.yml) succeeded, want an error")
 	}
 }

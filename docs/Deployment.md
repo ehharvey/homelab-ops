@@ -97,7 +97,7 @@ rather than failing later where a setting is first used (#67).
 | `NETWORK_ADDRESSING_PATH` | unset (no state addressing) | `web.env` | A file of full `kind: Network` documents addressing the networks git names without a `cidr` (§28, #199), read on every sync. Unset, a name-only Network fails the sync. A path, inside the directory or not. Fails if set and not a regular file, or if it doesn't parse. Interim: the encrypted store, loaded by the CLI, replaces it (#514). |
 | `STORE_PATH` | `:memory:` | `web.env` | The sqlite store's file. The default keeps nothing across a restart; an appliance mounts a volume and sets a path on it. |
 | `CLIENT_CERT_PATH` | unset (seed and image routes off) | `client.crt` file | The break-glass cert's public half (§4). Fails if set and not a regular file. |
-| `BASE_IMAGE_PATH` | unset (server-side image builds off) | `web.env` | The operator-supplied base IncusOS raw image; setting it turns on the image route (§29's server-side default). A path outside the directory. Fails if set and not a regular file. |
+| `BASE_IMAGE_PATH` | unset (server-side image builds off) | `web.env` | The operator-supplied base IncusOS raw image; setting it turns on the image route (§29's server-side default). Unset, nodes still provision through a client-side option ([§ Where install media is built](#where-install-media-is-built)). A path outside the directory. Fails if set and not a regular file. |
 | `FLASHER_TOOL_PATH` | `flasher-tool` from `$PATH`; the image sets `/flasher-tool` | `web.env` | The `flasher-tool` binary the image route runs. Only dev outside the image needs it. |
 
 Two behaviour changes came with fail-fast (#241). Before, an invalid
@@ -144,7 +144,7 @@ var here.
 | Host OS updates | `unattended-upgrades`, rebooting only when required, in a window | #243: the reboot window is a `user-data` setting |
 | How the config directory reaches the host | Inline in cloud-init `user-data`, the WireGuard key included | #243: inline, or `--no-secrets`, which leaves out `secrets/` for the operator to copy in after boot |
 | API listener | Tunnel only, operator peers | `WIREGUARD_ENDPOINT`, `operator-peers`, `API_HOST_LISTEN_ADDR` above. TLS from step-ca is #506's, and adds its own settings |
-| Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set | `BASE_IMAGE_PATH` above. Client-side builds are #242's |
+| Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set | `BASE_IMAGE_PATH` above, or a client-side option: [§ Where install media is built](#where-install-media-is-built) |
 | node0 provisioning | By the web app over the tunnel | #244; not a deployment setting |
 | WireGuard endpoint | No default; a DNS name recommended | `WIREGUARD_ENDPOINT` above |
 | Snapshots | Local | Not a setting yet: local is all there is. Off-cluster S3 is #200's, which adds its settings here |
@@ -159,3 +159,39 @@ var here.
 Settings that later issues add (#197's identity, #218's git credentials, #397's
 operator cert list and TLS) each become a row in `deployconfig.Settings` and in
 [§ Settings](#settings), or a file under `secrets/`.
+
+## Where install media is built
+
+§29's install-media row has three options. Each provisions the same node
+from the same seed, which the web app renders either way; they differ in
+where the base image sits and what crosses the network. All three run from
+the operator CLI over the tunnel (`bootstrap api`); only the first needs
+`BASE_IMAGE_PATH`.
+
+| Option | Command | Needs | Fits |
+| --- | --- | --- | --- |
+| Server-side (the default) | `bootstrap api image <instance> --output node.img` streams the image the web app builds | `BASE_IMAGE_PATH` on the web app host; the image route answers 503 without it | A LAN appliance: the multi-GB image crosses only the LAN, and the host has disk for a copy per request |
+| Client-side build | `bootstrap api image <instance> --output node.img --base-image <base.img>` fetches only the seed (a few KB) and injects it into a local copy of the base image | The base image and `flasher-tool` on the operator's machine | An internet VM: no image crosses the internet, and the VM keeps no base image or per-node copies |
+| Separate seed media | `bootstrap api seed-media <instance> --output seed.iso` (a file, or a device such as a USB stick) writes the seed alone; the machine boots the stock, unmodified install image with it attached | The stock base image on the operator's machine; no `flasher-tool` | An internet VM too, and wherever one install medium should serve every node: only the small seed media is per node |
+
+Both client-side options take the pinned IncusOS base image, which
+`make incusos-base` fetches, verifies and caches at
+`bootstrap-output/incusos/<version>/IncusOS_<version>.img`
+(`scripts/fetch-incusos-base.sh --path` prints it). For seed media, `dd`
+that image onto one USB stick, or attach it to a VM, as the install medium
+for every node.
+
+IncusOS's seed media is an ISO 9660 volume labelled `SEED_DATA` with the
+seed files at its root. The installer looks for that label before the
+install image's own seed, and mounts the volume as `vfat` or `iso9660`, so
+the same file serves `dd` to a USB stick and a VM's CD-ROM. **Remove it once
+the install finishes**: it still carries the install config, so an installed
+system that boots with it attached stops, asking for the install media to
+be removed. `seed-media` says so when it writes one.
+
+The seed holds the node's WireGuard private key and bootstrap credential.
+`seed-media` builds the volume in memory; the client-side build writes the
+seed files, and the seed tar it hands `flasher-tool`, into a `0700` temporary
+directory, removed on exit. Both write a file `--output` as a `0600` file
+beside it, renamed over it once complete, so the result is `0600` even over
+an existing file. `seed-media` writes a device in place.

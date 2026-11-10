@@ -2,7 +2,9 @@
 // Prerequisite 1): one Backend per host operating system an Instance can run,
 // chosen by its os field (config.Instance.HostOS). A Backend validates an
 // Instance for its OS, renders the install-time config the machine boots with,
-// and renders the install media that config goes into.
+// and renders the install media that config goes into: either one image with
+// the config baked in, or separate seed media used beside the OS's stock
+// install image (docs/Decisions.md §29, "Where install media is built").
 //
 // IncusOS is the only backend. It wraps internal/seed and internal/flasher
 // rather than moving them, so its output is byte-for-byte what those packages
@@ -15,6 +17,7 @@ package hostos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +41,51 @@ type Backend interface {
 	// RenderImage bakes a directory of RenderConfig's files (as WriteFiles
 	// wrote them) into install media at in.OutputImage.
 	RenderImage(ctx context.Context, in ImageInput) error
+}
+
+// SeedMediaRenderer is the optional part of a Backend whose OS can read its
+// install config from separate seed media: a volume the machine reads while
+// it boots the OS's unmodified install image. A backend implements it only
+// when its OS has such media, so implementing it is the capability, which
+// CheckSeedMedia asks without rendering anything.
+type SeedMediaRenderer interface {
+	// RenderSeedMedia writes RenderConfig's files to w as the OS's seed
+	// media. It's built in memory, so the files' secrets never reach the
+	// disk on the way.
+	RenderSeedMedia(files []File, w io.Writer) error
+}
+
+// CheckSeedMedia returns NoSeedMedia's error when b's OS has no separate
+// seed media (b isn't a SeedMediaRenderer), and nil otherwise. It needs no
+// seed, so a caller can refuse before fetching one (fetching mints the
+// node's bootstrap credential).
+func CheckSeedMedia(b Backend) error {
+	if _, ok := b.(SeedMediaRenderer); !ok {
+		return NoSeedMedia(b.OS())
+	}
+	return nil
+}
+
+// RenderSeedMedia writes files to w as b's seed media
+// (SeedMediaRenderer.RenderSeedMedia), or returns NoSeedMedia's error,
+// writing nothing, when b's OS has none.
+func RenderSeedMedia(b Backend, files []File, w io.Writer) error {
+	sm, ok := b.(SeedMediaRenderer)
+	if !ok {
+		return NoSeedMedia(b.OS())
+	}
+	return sm.RenderSeedMedia(files, w)
+}
+
+// ErrNoSeedMedia is the error for an OS that can't read its install config
+// from separate media.
+var ErrNoSeedMedia = errors.New("no separate seed media")
+
+// NoSeedMedia is CheckSeedMedia's and RenderSeedMedia's error for hostOS
+// when its OS has no separate seed media. It names the OS and matches
+// ErrNoSeedMedia.
+func NoSeedMedia(hostOS string) error {
+	return fmt.Errorf("host OS %q: %w; build the install image instead", hostOS, ErrNoSeedMedia)
 }
 
 // File is one rendered config file, named as the install media expects it.
@@ -87,6 +135,10 @@ type ImageInput struct {
 	// ToolPath is the image tool binary; empty means the backend's default,
 	// resolved from $PATH.
 	ToolPath string
+	// TempDir is where the backend writes the files it hands the image tool
+	// (IncusOS: the seed tar), which hold the seed's secrets; empty means
+	// os.TempDir(). The tool's own temporary files, if any, aren't covered.
+	TempDir string
 	// Stdout and Stderr receive the image tool's output.
 	Stdout io.Writer
 	Stderr io.Writer
