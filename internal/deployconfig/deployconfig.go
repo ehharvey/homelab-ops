@@ -16,7 +16,7 @@
 //	client.crt       CLIENT_CERT_PATH: the break-glass cert's public half
 //	operator-peers   WIREGUARD_OPERATOR_PEERS, one <addr>=<pubkey> per line
 //	secrets/         0700; every secret file, each 0600
-//	  wireguard.key  reserved for #197's operator-supplied identity
+//	  wireguard.key  the web app's WireGuard identity (#197), wg genkey output
 //
 // An environment variable overrides the same setting from the directory, and
 // one set to the empty string still overrides it: empty then means the
@@ -69,8 +69,10 @@ const (
 	ClientCertFile    = "client.crt"
 	OperatorPeersFile = "operator-peers"
 	SecretsDir        = "secrets"
-	// WireGuardKeyFile is reserved for the operator-supplied WireGuard
-	// identity (#197), which loads it. #241 only names it and its mode.
+	// WireGuardKeyFile is the web app's own WireGuard identity, operator
+	// supplied (#197, docs/Decisions.md §28): Load reads it whenever the
+	// tunnel is on (WIREGUARD_ENDPOINT set). It isn't in the encrypted store,
+	// because the tunnel must come up while the store is locked.
 	WireGuardKeyFile = SecretsDir + "/wireguard.key"
 )
 
@@ -117,6 +119,11 @@ type Config struct {
 	WireGuardPort int
 	// OperatorPeers may call the API over the tunnel.
 	OperatorPeers []wireguard.OperatorPeer
+	// WireGuardPrivateKey is the tunnel's identity, read once from
+	// WireGuardKeyFile when WireGuardEndpoint is set; zero otherwise. It is
+	// the one value the web app's tunnel (and later its TLS key, #397) is
+	// derived from, so nothing reads the file again.
+	WireGuardPrivateKey wireguard.PrivateKey
 
 	// APIHostListenAddr opts in to the plain-HTTP host listener.
 	APIHostListenAddr string
@@ -408,6 +415,9 @@ func (l *loader) validate() {
 	} else if len(c.OperatorPeers) > 0 {
 		l.fail("WIREGUARD_ENDPOINT", "required when operator peers are listed: they reach the API over the tunnel, which only runs when WIREGUARD_ENDPOINT is set (host:port, a DNS name recommended)")
 	}
+	if c.WireGuardEndpoint != "" {
+		l.wireGuardKey()
+	}
 	if c.APIHostListenAddr != "" {
 		if err := checkHostPort(c.APIHostListenAddr, true); err != nil {
 			l.fail("API_HOST_LISTEN_ADDR", "%q: %v", c.APIHostListenAddr, err)
@@ -437,6 +447,23 @@ func (l *loader) validate() {
 			l.fail(f.name, "%s is not a regular file", f.path)
 		}
 	}
+}
+
+// wireGuardKey reads the tunnel's identity from WireGuardKeyFile. With the
+// tunnel on it is required: the web app never generates one (#197, the
+// break-glass cert's pattern, docs/Decisions.md §4), so a missing or
+// malformed file stops startup, naming it.
+func (l *loader) wireGuardKey() {
+	if l.cfg.Dir == "" {
+		l.fail(WireGuardKeyFile, "required with WIREGUARD_ENDPOINT set: the tunnel's identity is read from the deployment config directory's %s, and DEPLOYMENT_CONFIG_DIR is unset (generate it with `wg genkey`, mode 0600)", WireGuardKeyFile)
+		return
+	}
+	key, err := wireguard.ReadPrivateKeyFile(filepath.Join(l.cfg.Dir, WireGuardKeyFile))
+	if err != nil {
+		l.fail(WireGuardKeyFile, "required with WIREGUARD_ENDPOINT set, as `wg genkey` output (mode 0600): %v", err)
+		return
+	}
+	l.cfg.WireGuardPrivateKey = key
 }
 
 // checkHostPort accepts host:port with a numeric port; emptyHost allows

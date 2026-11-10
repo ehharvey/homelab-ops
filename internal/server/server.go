@@ -206,10 +206,13 @@ func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 
 // RestoreTunnelPeers registers the peers of every instance already in the
 // store, then the operator peers, on the live tunnel (#269). cmd/web calls it
-// once at startup, before it serves or polls, and it is the only thing that
-// registers the operators there. The peer table lives only in the in-process
-// tunnel and SyncOnce is the only other thing that fills it, so without this
-// a restarted web app answers no node's handshake until the next sync, which
+// each time the store is unlocked (WithLock's onUnlock, #197): the stored
+// instances are inside the encrypted store, so they can't be read before;
+// RegisterOperatorPeers has already registered the operators, at startup,
+// and this registers them again after the instances. The peer table lives
+// only in the in-process tunnel and SyncOnce is the only other thing that
+// fills it, so without this an unlocked web app answers no node's handshake
+// until the next sync, which
 // with CONFIG_SYNC_INTERVAL unset waits on an operator's POST /sync. Nodes
 // have no enrollment step that could re-register them (docs/Decisions.md
 // §11).
@@ -219,8 +222,10 @@ func (s *Service) Sync(ctx context.Context, now time.Time) (SyncResult, error) {
 // empty store registers only the operators. Instances are best-effort, as
 // in SyncOnce: one whose stored tunnel address won't parse, or whose
 // credential can't be read, is logged and skipped. A failure to read the
-// store at all, or to register an operator peer, is returned, and cmd/web
-// treats it as fatal: nothing else would retry before the next sync.
+// store at all, to persist the credentials it minted (one batch, when the
+// store is a CredentialBatcher), or to register an operator peer, is
+// returned; cmd/web logs it and retries in the background, since the store
+// is already unlocked by then.
 func (s *Service) RestoreTunnelPeers(ctx context.Context) error {
 	if s.tunnels == nil || s.store == nil {
 		return nil
@@ -231,9 +236,12 @@ func (s *Service) RestoreTunnelPeers(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read stored instances: %w", err)
 	}
-	nInst, nOps := reconcileTunnelPeers(ctx, s.tunnels, s.creds, instances)
+	nInst, nOps, err := reconcileTunnelPeersBatched(ctx, s.tunnels, s.creds, instances)
 	ops := len(s.tunnels.OperatorPeers())
 	log.Printf("wireguard: registered %d/%d stored instance peers and %d/%d operator peers", nInst, len(instances), nOps, ops)
+	if err != nil {
+		return err
+	}
 	if nOps < ops {
 		return fmt.Errorf("registered %d of %d operator peers", nOps, ops)
 	}
@@ -469,7 +477,9 @@ func SyncOnce(ctx context.Context, syncer Syncer, store Store, tunnels TunnelSou
 		}
 
 		if tunnels != nil {
-			reconcileTunnelPeers(ctx, tunnels, creds, cfg.Instances)
+			if _, _, err := reconcileTunnelPeersBatched(ctx, tunnels, creds, cfg.Instances); err != nil {
+				log.Printf("%v", err)
+			}
 		}
 	}
 
@@ -497,6 +507,53 @@ func logMovedTunnelIPs(instances, prior []config.Instance) {
 	}
 }
 
+// CredentialBatcher is a credential store that can take several
+// credentials as one persist (internal/vault.Vault, whose every persist
+// rewrites the whole encrypted store file, #197). BatchCredentials runs f
+// with a credential store whose writes it persists once, after f returns,
+// and returns that persist's error.
+type CredentialBatcher interface {
+	BatchCredentials(ctx context.Context, f func(nodeprovision.CredentialStore)) error
+}
+
+// reconcileTunnelPeersBatched is reconcileTunnelPeers, with the credentials
+// it mints persisted as one write when creds is a CredentialBatcher. Peers
+// are registered only after that write. If it fails, the credentials minted
+// in the batch are gone from the store, so their keys are never registered:
+// a retry mints new ones, and registering each attempt's would grow the
+// peer table without bound. Instances that already had a credential, and the
+// operators, are still registered, and the error is returned.
+func reconcileTunnelPeersBatched(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) (nInst, nOps int, err error) {
+	b, ok := creds.(CredentialBatcher)
+	if !ok || len(instances) == 0 {
+		nInst, nOps = reconcileTunnelPeers(ctx, tunnels, creds, instances)
+		return nInst, nOps, nil
+	}
+	var peers []instancePeer
+	minted := map[string]bool{}
+	if err := b.BatchCredentials(ctx, func(cs nodeprovision.CredentialStore) {
+		peers = mintInstancePeers(ctx, mintRecorder{cs, minted}, instances)
+	}); err != nil {
+		peers = slices.DeleteFunc(peers, func(p instancePeer) bool { return minted[p.name] })
+		nInst, nOps = registerPeers(tunnels, peers)
+		return nInst, nOps, fmt.Errorf("wireguard: persist the credentials minted for %d instance peers: %w", len(minted), err)
+	}
+	nInst, nOps = registerPeers(tunnels, peers)
+	return nInst, nOps, nil
+}
+
+// mintRecorder is a credential store that records the names it was asked to
+// set a credential for.
+type mintRecorder struct {
+	nodeprovision.CredentialStore
+	minted map[string]bool
+}
+
+func (r mintRecorder) SetInstanceCredential(ctx context.Context, name string, cred nodeprovision.Credential) error {
+	r.minted[name] = true
+	return r.CredentialStore.SetInstanceCredential(ctx, name, cred)
+}
+
 // reconcileTunnelPeers registers every instance in instances as a trusted
 // peer on tunnels, minting each one's nodeprovision.Credential on first
 // sight, and then re-registers the operator peers (#195), so the peer table
@@ -514,10 +571,24 @@ func logMovedTunnelIPs(instances, prior []config.Instance) {
 // SyncOnce's doc comment. It returns how many instance and operator peers
 // it registered.
 func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodeprovision.CredentialStore, instances []config.Instance) (nInst, nOps int) {
+	return registerPeers(tunnels, mintInstancePeers(ctx, creds, instances))
+}
+
+// instancePeer is an instance ready to register on the tunnel.
+type instancePeer struct {
+	name     string
+	cred     nodeprovision.Credential
+	tunnelIP netip.Addr
+}
+
+// mintInstancePeers returns the instances that can be registered, minting
+// each one's credential on first sight, and logs the rest.
+func mintInstancePeers(ctx context.Context, creds nodeprovision.CredentialStore, instances []config.Instance) []instancePeer {
 	if creds == nil && len(instances) > 0 {
 		log.Printf("wireguard: no credential store, so no instance peers registered")
-		instances = nil
+		return nil
 	}
+	peers := make([]instancePeer, 0, len(instances))
 	for _, inst := range instances {
 		if !inst.TunnelIP.IsValid() || inst.TunnelIP.IsUnspecified() {
 			log.Printf("wireguard: skip peer for %q: no tunnel address assigned", inst.Name)
@@ -528,9 +599,17 @@ func reconcileTunnelPeers(ctx context.Context, tunnels TunnelSource, creds nodep
 			log.Printf("wireguard: mint credential for %q: %v", inst.Name, err)
 			continue
 		}
-		pub := wireguard.PublicKeyOf(cred.WireGuardPrivateKey)
-		if err := tunnels.UpsertPeer(pub, inst.TunnelIP); err != nil {
-			log.Printf("wireguard: register peer for %q: %v", inst.Name, err)
+		peers = append(peers, instancePeer{name: inst.Name, cred: cred, tunnelIP: inst.TunnelIP})
+	}
+	return peers
+}
+
+// registerPeers registers peers, then the operator peers, and returns how
+// many of each it registered.
+func registerPeers(tunnels TunnelSource, peers []instancePeer) (nInst, nOps int) {
+	for _, p := range peers {
+		if err := tunnels.UpsertPeer(wireguard.PublicKeyOf(p.cred.WireGuardPrivateKey), p.tunnelIP); err != nil {
+			log.Printf("wireguard: register peer for %q: %v", p.name, err)
 			continue
 		}
 		nInst++

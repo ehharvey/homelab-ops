@@ -337,3 +337,78 @@ FLEET_EOF
 		git push origin main >/dev/null 2>&1
 	" >/dev/null 2>&1
 }
+
+# ---------------------------------------------------------------------------
+# The web app's store lock and WireGuard identity (#197, docs/Decisions.md
+# §28). After every start the web app's store is locked: until `bootstrap api
+# init` (no store yet, or an in-memory one) or `unlock` (a store file)
+# supplies its key, every API route but /healthz and the key routes is a 423.
+# So every compose script that drives the API runs compose_store_init once
+# the stack is up, and again after any restart onto a fresh in-memory store;
+# a script that restarts over a STORE_PATH file runs compose_store_unlock.
+
+# compose_bootstrap_bin — print the bootstrap CLI the store helpers run: the
+# script's own $BOOTSTRAP_BIN once it has built one, else one built once into
+# a temp dir (the build cache makes that quick). Fails if the build does.
+compose_bootstrap_bin() {
+	if [ -n "${BOOTSTRAP_BIN:-}" ] && [ -x "$BOOTSTRAP_BIN" ]; then
+		echo "$BOOTSTRAP_BIN"
+		return 0
+	fi
+	if [ -z "${_COMPOSE_BOOTSTRAP_BIN:-}" ] || [ ! -x "$_COMPOSE_BOOTSTRAP_BIN" ]; then
+		_COMPOSE_BOOTSTRAP_BIN="$(mktemp -d)/bootstrap"
+		(cd "$ROOT_DIR" && go build -o "$_COMPOSE_BOOTSTRAP_BIN" ./cmd/bootstrap) >&2 || return 1
+	fi
+	echo "$_COMPOSE_BOOTSTRAP_BIN"
+}
+
+# compose_store_init <key-file> [bootstrap api connection flags...] — run
+# `bootstrap api init` against the stack, generating the store key into
+# <key-file> (an old file there is removed first: a fresh init replaces its
+# key), and record it as a check. The connection flags default to the dev
+# stack's host listener, --url http://127.0.0.1:8080; a tunnel-only script
+# passes its tunnel flags instead. It retries for ~10s, so it may run right
+# after `compose up` or a restart, before the listener answers.
+#
+# The retries are store_init_with's (lib.sh).
+compose_store_init() {
+	local key="$1" bin desc="web app store initialized (bootstrap api init)"
+	shift
+	[ $# -gt 0 ] || set -- --url http://127.0.0.1:8080
+	if ! bin=$(compose_bootstrap_bin); then
+		record_fail "$desc" "could not build bootstrap"
+		return 1
+	fi
+	store_init_with "$desc" 10 1 "$key" "$bin" command "$@"
+}
+
+# compose_store_unlock <key-file> [bootstrap api connection flags...] — run
+# `bootstrap api unlock` with <key-file>'s key, as compose_store_init does
+# init, after a restart over a STORE_PATH file.
+compose_store_unlock() {
+	local key="$1" bin
+	shift
+	[ $# -gt 0 ] || set -- --url http://127.0.0.1:8080
+	if ! bin=$(compose_bootstrap_bin); then
+		record_fail "web app store unlocked (bootstrap api unlock)" "could not build bootstrap"
+		return 1
+	fi
+	_compose_store_verb "web app store unlocked (bootstrap api unlock)" "$bin" api "$@" unlock --key-file "$key"
+}
+
+# _compose_store_verb <desc> <cmd...> — run one store verb until it succeeds
+# (up to ~10s: the listener may not answer yet), then record it, with the
+# last failure's output as the FAIL reason.
+_compose_store_verb() {
+	local desc="$1" out="" _
+	shift
+	for _ in $(seq 1 10); do
+		if out=$("$@" 2>&1); then
+			record_pass "$desc"
+			return 0
+		fi
+		sleep 1
+	done
+	record_fail "$desc" "$(tail -n 2 <<<"$out")"
+	return 1
+}

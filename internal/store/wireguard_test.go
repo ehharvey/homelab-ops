@@ -11,67 +11,6 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
-func TestWireGuardPrivateKeyAbsentByDefault(t *testing.T) {
-	s, ctx := openTestStore(t)
-
-	_, ok, err := s.WireGuardPrivateKey(ctx)
-	if err != nil {
-		t.Fatalf("WireGuardPrivateKey: %v", err)
-	}
-	if ok {
-		t.Error("WireGuardPrivateKey on a fresh store = ok:true, want false")
-	}
-}
-
-func TestSetWireGuardPrivateKeyThenGet(t *testing.T) {
-	s, ctx := openTestStore(t)
-
-	priv, _, err := wireguard.GenerateKeypair()
-	if err != nil {
-		t.Fatalf("GenerateKeypair: %v", err)
-	}
-
-	if err := s.SetWireGuardPrivateKey(ctx, priv); err != nil {
-		t.Fatalf("SetWireGuardPrivateKey: %v", err)
-	}
-
-	got, ok, err := s.WireGuardPrivateKey(ctx)
-	if err != nil || !ok {
-		t.Fatalf("WireGuardPrivateKey = ok:%v err:%v, want a persisted key", ok, err)
-	}
-	if got != priv {
-		t.Errorf("WireGuardPrivateKey = %s, want %s", got.Base64(), priv.Base64())
-	}
-}
-
-func TestSetWireGuardPrivateKeyOverwrites(t *testing.T) {
-	s, ctx := openTestStore(t)
-
-	first, _, err := wireguard.GenerateKeypair()
-	if err != nil {
-		t.Fatalf("GenerateKeypair: %v", err)
-	}
-	second, _, err := wireguard.GenerateKeypair()
-	if err != nil {
-		t.Fatalf("GenerateKeypair: %v", err)
-	}
-
-	if err := s.SetWireGuardPrivateKey(ctx, first); err != nil {
-		t.Fatalf("first SetWireGuardPrivateKey: %v", err)
-	}
-	if err := s.SetWireGuardPrivateKey(ctx, second); err != nil {
-		t.Fatalf("second SetWireGuardPrivateKey: %v", err)
-	}
-
-	got, ok, err := s.WireGuardPrivateKey(ctx)
-	if err != nil || !ok {
-		t.Fatalf("WireGuardPrivateKey = ok:%v err:%v", ok, err)
-	}
-	if got != second {
-		t.Errorf("WireGuardPrivateKey = %s, want the second key %s", got.Base64(), second.Base64())
-	}
-}
-
 func TestInstanceCredentialAbsentByDefault(t *testing.T) {
 	s, ctx := openTestStore(t)
 

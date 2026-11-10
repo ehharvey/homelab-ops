@@ -61,14 +61,6 @@ SELECT name, mac, network, static_ip, disk, nic, tpm, secure_boot, applications,
 const listAppsSQL = `
 SELECT name, type, replicas, image_server, image_protocol, image_alias, image_fingerprint, params FROM apps ORDER BY name`
 
-// -- name: GetWireGuardIdentity :one
-const getWireGuardIdentitySQL = `SELECT private_key FROM wireguard_identity WHERE id = 1`
-
-// -- name: SetWireGuardIdentity :exec
-const setWireGuardIdentitySQL = `
-INSERT INTO wireguard_identity (id, private_key) VALUES (1, ?)
-ON CONFLICT (id) DO UPDATE SET private_key = excluded.private_key`
-
 // -- name: GetInstanceCredential :one
 //
 //nolint:gosec // G101: SQL column names (wireguard_private_key/bootstrap_key_pem), not an embedded credential

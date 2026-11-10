@@ -681,6 +681,74 @@ validate_parse_args() {
 	_validate_os_gate
 }
 
+# compose_web_identity <dir> — write the web app's WireGuard identity,
+# <dir>/secrets/wireguard.key (0700/0600, as deployconfig requires), for a
+# script that turns the tunnel on: with WIREGUARD_ENDPOINT set the web app
+# reads it from its deployment config directory, and won't start without it
+# (#197). A WireGuard private key is 32 random bytes, base64 (WireGuard clamps
+# it), so no wg tool is needed.
+compose_web_identity() {
+	local dir="$1"
+	mkdir -p "$dir/secrets" && chmod 0755 "$dir" && chmod 0700 "$dir/secrets" &&
+		(umask 077 && head -c 32 /dev/urandom | base64 >"$dir/secrets/wireguard.key")
+}
+
+# store_init_with <desc> <tries> <delay> <key-file> <bootstrap> <runner>
+# [bootstrap api connection flags...] — run `bootstrap api init`, generating
+# the store key into <key-file> (an old file there is removed first), and
+# record it as the check <desc>. <runner> is a command or function that runs
+# its arguments where the key and bootstrap live: `command` here, or a
+# function wrapping `incus exec`. Needs jq where the script runs.
+#
+# A retry never throws away a key the web app may hold. init creates
+# <key-file> exclusively, so a try that left one must be dealt with first:
+# when the CLI says the key wasn't taken (a refusal, or a request that never
+# reached the web app) it is removed, and the next try generates another.
+# Any other failure may have lost the answer to an init that took the key,
+# so it is kept, and the next try asks lock-state instead of initializing
+# again: unlocked means the init took; locked means it took and the web app
+# has restarted since, so it is unlocked with that key; no_store means it
+# didn't take, and the key goes.
+store_init_with() {
+	local desc="$1" tries="$2" delay="$3" key="$4" bin="$5" run="$6" out="" state _
+	shift 6
+	"$run" rm -f "$key"
+	for _ in $(seq 1 "$tries"); do
+		if "$run" test -e "$key"; then
+			state=$("$run" "$bin" api "$@" lock-state 2>/dev/null | jq -r '.state // empty' 2>/dev/null)
+			case "$state" in
+			unlocked)
+				record_pass "$desc"
+				return 0
+				;;
+			locked)
+				if out=$("$run" "$bin" api "$@" unlock --key-file "$key" 2>&1); then
+					record_pass "$desc"
+					return 0
+				fi
+				sleep "$delay"
+				continue
+				;;
+			no_store) "$run" rm -f "$key" ;;
+			*)
+				sleep "$delay"
+				continue
+				;;
+			esac
+		fi
+		if out=$("$run" "$bin" api "$@" init --key-file "$key" 2>&1); then
+			record_pass "$desc"
+			return 0
+		fi
+		if grep -q "wasn't taken" <<<"$out"; then
+			"$run" rm -f "$key"
+		fi
+		sleep "$delay"
+	done
+	record_fail "$desc" "$(tail -n 2 <<<"$out")"
+	return 1
+}
+
 # summary — print the tally and exit with the contract's code. Call last.
 summary() {
 	echo

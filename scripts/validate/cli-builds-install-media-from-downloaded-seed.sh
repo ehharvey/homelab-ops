@@ -51,10 +51,14 @@ CERT_DIR="$WORK_DIR/cert"
 OPERATOR_KEY="$WORK_DIR/operator.key"
 OVERRIDE="$WORK_DIR/compose-override.yml"
 VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
+# The deployment config directory holding the tunnel's identity, and the store
+# key compose_store_init generates (#197).
+WEB_DEPLOY_DIR="$WORK_DIR/web"
+STORE_KEY="$WORK_DIR/store.key"
 # The CLI's temporary files land here, so the run can check none outlive it.
 CLI_TMP="$WORK_DIR/tmp"
 mkdir -p "$CLI_TMP"
-export CERT_DIR
+export CERT_DIR WEB_DEPLOY_DIR
 
 # The fixture's only instance and its MAC (dev/git-fixture/fleet.yaml).
 INSTANCE=devnode0
@@ -111,18 +115,25 @@ services:
       - "127.0.0.1:8081:8081"
     volumes:
       - ${CERT_DIR}:/cert:ro
+      - ${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
     environment:
       - API_HOST_LISTEN_ADDR=
       - CLIENT_CERT_PATH=/cert/client.crt
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
       - WIREGUARD_OPERATOR_PEERS=10.100.0.240=${OPERATOR_PUB}
 EOF
+check "web app WireGuard identity written" compose_web_identity "$WEB_DEPLOY_DIR"
 check "docker compose up --build succeeds" compose up --build -d
 wait_web_ready "$HEALTH" 40
 wait_log "tunnel API listener is up" "tunnel API listener (1 operator peers)" 10
 
 APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0-9+/=]+' | tail -1 | awk '{print $4}')
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+
+# The store is locked after every start until init (#197).
+compose_store_init "$STORE_KEY" --private-key-file "$OPERATOR_KEY" --local-addr "$OPERATOR_ADDR" \
+  --server-public-key "$APP_PUB" --endpoint "$WG_ENDPOINT"
 
 expect_ok "api sync exits 0" sync
 

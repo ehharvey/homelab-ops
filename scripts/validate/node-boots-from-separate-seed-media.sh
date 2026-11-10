@@ -186,12 +186,17 @@ check "web app container has a lease on $NETWORK" wait_lease "$WEBAPP_NAME"
 check "web app container has git" webapp_exec apk add --no-cache git
 WEBAPP_IP=$(webapp_exec sh -c "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null)
 check "web app container has a $NETWORK address" test -n "$WEBAPP_IP"
-check "fleet repo, binaries, cert and operator key pushed" bash -c "
+# The tunnel's identity, which the web app needs with WIREGUARD_ENDPOINT set
+# (#197), in its deployment config directory.
+check "web app WireGuard identity written" compose_web_identity "$WORK_DIR/webdeploy"
+check "fleet repo, binaries, cert, operator key and identity pushed" bash -c "
   incus file push -r --project '$PROJECT' '$WORK_DIR/fleet.git' '$REMOTE:$WEBAPP_NAME/root/' &&
   incus file push --project '$PROJECT' '$WEB_BIN' '$REMOTE:$WEBAPP_NAME/web' --mode=0755 &&
   incus file push --project '$PROJECT' '$BOOTSTRAP_BIN' '$REMOTE:$WEBAPP_NAME/bootstrap' --mode=0755 &&
   incus file push --project '$PROJECT' '$WORK_DIR/cert/client.crt' '$REMOTE:$WEBAPP_NAME/root/client.crt' &&
-  incus file push --project '$PROJECT' '$WORK_DIR/operator.key' '$REMOTE:$WEBAPP_NAME/root/operator.key' --mode=0600
+  incus file push --project '$PROJECT' '$WORK_DIR/operator.key' '$REMOTE:$WEBAPP_NAME/root/operator.key' --mode=0600 &&
+  incus exec --project '$PROJECT' '$REMOTE:$WEBAPP_NAME' -- mkdir -p -m 0700 /root/webdeploy/secrets &&
+  incus file push --project '$PROJECT' '$WORK_DIR/webdeploy/secrets/wireguard.key' '$REMOTE:$WEBAPP_NAME/root/webdeploy/secrets/wireguard.key' --mode=0600
 "
 
 echo "Starting the web app (WIREGUARD_ENDPOINT=$WEBAPP_IP:$WG_PORT, no BASE_IMAGE_PATH) ..."
@@ -202,10 +207,16 @@ incus_exec_bg "$WORK_DIR/webapp.log" "$REMOTE:$WEBAPP_NAME" -- env \
   CONFIG_REPO_URL=/root/fleet.git \
   CONFIG_REPO_PRIVATE=true \
   CONFIG_SYNC_INTERVAL=5s \
+  DEPLOYMENT_CONFIG_DIR=/root/webdeploy \
   WIREGUARD_ENDPOINT="$WEBAPP_IP:$WG_PORT" \
   WIREGUARD_PORT="$WG_PORT" \
   WIREGUARD_OPERATOR_PEERS="$OPERATOR_ADDR=$OPERATOR_PUB" \
   /web
+
+# The store is locked after every start until init (#197); the background
+# sync waits for it.
+store_init_with "web app store initialized (bootstrap api init)" 15 2 /root/store.key /bootstrap webapp_exec \
+  --url http://127.0.0.1:8080
 
 APP_PUB=""
 NODE_TUNNEL_IP=""

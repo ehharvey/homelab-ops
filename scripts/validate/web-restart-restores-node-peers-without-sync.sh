@@ -6,18 +6,20 @@
 # The peer table lives only in the web app's in-process tunnel. Before #269
 # it was filled only by a sync, so after a restart with CONFIG_SYNC_INTERVAL
 # unset (as here) every flashed node's handshake went unanswered until an
-# operator's POST /sync. Now startup re-registers the peers of every instance
-# in the store.
+# operator's POST /sync. Now the peers of every instance in the store are
+# re-registered as soon as the store is unlocked (#197: after every start the
+# store is locked, and its instances are inside it), with no sync.
 #
 # Steps, against the real docker compose stack with a persistent store:
-#   1. sync once and render the fixture instance's seed (the dev compose
-#      file's opt-in host listener serves both), taking the node's WireGuard
-#      key and overlay address from it;
+#   1. init the store, sync once and render the fixture instance's seed (the
+#      dev compose file's opt-in host listener serves all three), taking the
+#      node's WireGuard key and overlay address from it;
 #   2. a peer holding that key gets an answer through the tunnel;
-#   3. restart the web container (same container, so the store and the
-#      tunnel identity survive) and, without syncing, the same peer gets an
-#      answer again; GET /status's synced_at, which every sync's store
-#      Replace rewrites, is unchanged since step 1.
+#   3. restart the web container (same container, so the store file
+#      survives; the tunnel identity is secrets/wireguard.key), unlock the
+#      store and, without syncing, the same peer gets an answer again;
+#      GET /status's synced_at, which every sync's store Replace rewrites, is
+#      unchanged since step 1.
 #
 # "An answer" is the tunnel API listener's 403 for a non-operator peer: it
 # can only arrive once the WireGuard handshake completed, which needs the
@@ -58,6 +60,11 @@ NODE_KEY="$WORK_DIR/node.key"
 OVERRIDE="$WORK_DIR/compose-override.yml"
 VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 export CERT_DIR
+# The web app's WireGuard identity, which it needs with WIREGUARD_ENDPOINT set
+# (#197), and the store key compose_store_init generates.
+WEB_DEPLOY_DIR="$WORK_DIR/web"
+export WEB_DEPLOY_DIR
+STORE_KEY="$WORK_DIR/store.key"
 
 # The fixture's only instance (dev/git-fixture/fleet.yaml).
 INSTANCE=devnode0
@@ -110,23 +117,27 @@ check "gen-cert exits 0" "$BOOTSTRAP_BIN" gen-cert --output-dir "$CERT_DIR" --co
 
 echo
 echo "== 2. Sync once, provision the node, reach the tunnel with its key =="
-# STORE_PATH defaults to :memory:, which a restart would wipe along with the
-# tunnel identity. A file in the container's own filesystem survives
-# `compose restart`, which keeps the container.
+# STORE_PATH defaults to :memory:, which a restart would wipe. A file in the
+# container's own filesystem survives `compose restart`, which keeps the
+# container.
 cat >"$OVERRIDE" <<'EOF'
 services:
   web:
     volumes:
       - ${CERT_DIR}:/cert:ro
+      - ${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
       - STORE_PATH=/tmp/store.db
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
       - CONFIG_SYNC_INTERVAL=
 EOF
+check "web app WireGuard identity written" compose_web_identity "$WEB_DEPLOY_DIR"
 check "docker compose up --build succeeds" compose up --build -d
 wait_web_ready "$HOST_API" 40
-check_log "startup with an empty store restores no instance peers" "wireguard: registered 0/0 stored instance peers"
+compose_store_init "$STORE_KEY"
+wait_log "init of an empty store restores no instance peers" "wireguard: registered 0/0 stored instance peers" 10
 APP_PUB=$(app_pub)
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
 
@@ -142,10 +153,13 @@ printf '%s' "$node_priv" >"$NODE_KEY"
 expect_node_answer "before the restart: node peer ($node_addr) gets an answer through the tunnel"
 
 echo
-echo "== 3. Restart the web app; the node gets an answer with no sync since =="
+echo "== 3. Restart the web app and unlock it; the node gets an answer with no sync since =="
 check "docker compose restart web succeeds" compose restart web
 wait_web_ready "$HOST_API" 40
-wait_log "startup restores the stored instance's peer" "wireguard: registered 1/1 stored instance peers" 10
+# The store file is still there, so the restarted web app is locked until
+# unlock, not init.
+compose_store_unlock "$STORE_KEY"
+wait_log "unlocking restores the stored instance's peer" "wireguard: registered 1/1 stored instance peers" 10
 check_eq "the tunnel identity survived the restart" "$APP_PUB" "$(app_pub)"
 
 expect_node_answer "after the restart, no sync: node peer ($node_addr) gets an answer through the tunnel"

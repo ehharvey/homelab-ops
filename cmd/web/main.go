@@ -25,7 +25,7 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/deployconfig"
 	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/server"
-	"github.com/ehharvey/homelab-ops/internal/store"
+	"github.com/ehharvey/homelab-ops/internal/vault"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -54,11 +54,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	st, err := store.Open(ctx, cfg.StorePath)
+	// The store starts locked, every time (#197, docs/Decisions.md §28):
+	// nothing reads it until an operator supplies its key over the API.
+	vlt, err := vault.New(cfg.StorePath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer st.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	defer vlt.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	noteLockState(vlt)
 
 	operators := cfg.OperatorPeers
 
@@ -71,7 +74,7 @@ func run() error {
 	var tunnelSrc server.TunnelSource
 	var tun *wireguard.Tunnel
 	if cfg.WireGuardEndpoint != "" {
-		ts, err := newTunnelSource(ctx, st, cfg.WireGuardEndpoint, cfg.WireGuardPort, operators)
+		ts, err := newTunnelSource(cfg.WireGuardPrivateKey, cfg.WireGuardEndpoint, cfg.WireGuardPort, operators)
 		if err != nil {
 			return fmt.Errorf("start wireguard tunnel: %w", err)
 		}
@@ -81,7 +84,7 @@ func run() error {
 
 	// One Service shared between the HTTP handlers and the background poller
 	// so their syncs serialize through a single lock.
-	svc := server.NewService(syncer, st, newCertSource(cfg.ClientCertPath), newImageBuilder(cfg), tunnelSrc, st)
+	svc := server.NewService(syncer, vlt, newCertSource(cfg.ClientCertPath), newImageBuilder(cfg), tunnelSrc, vlt)
 	// A deployed agent syncs from the same repo as this web app.
 	svc.SetAgentRepo(agentdeploy.Repo{URL: cfg.ConfigRepoURL, Ref: cfg.ConfigRepoRef})
 	addr := networkAddressing(cfg)
@@ -90,21 +93,33 @@ func run() error {
 	}
 	svc.SetAddressing(addr)
 
-	// Nodes flashed before this restart must get a handshake reply now, not
-	// after the next sync (#269), and this also registers the operators.
-	// Fatal, like starting the tunnel: with CONFIG_SYNC_INTERVAL unset nothing
-	// would retry it before an operator's POST /sync.
-	if err := svc.RestoreTunnelPeers(ctx); err != nil {
-		return fmt.Errorf("restore wireguard peers: %w", err)
+	// The operators first, while the store is locked, so they can reach the
+	// key routes over the tunnel. Fatal, like starting the tunnel: nothing
+	// could unlock the store otherwise.
+	if err := svc.RegisterOperatorPeers(ctx); err != nil {
+		return fmt.Errorf("register wireguard operator peers: %w", err)
 	}
 
-	listeners, err := listen(server.NewFromService(svc), tun, operators, cfg.HealthListenAddr, cfg.APIHostListenAddr)
+	// Every API listener serves the key routes, and the rest of the API only
+	// once the store is unlocked. Nodes flashed before this restart must get
+	// a handshake reply as soon as it is, not after the next sync (#269), so
+	// unlocking restores the stored instances' peers, and only then lets the
+	// poller start: a store is never locked again once unlocked, so that
+	// happens once.
+	unlocked := make(chan struct{})
+	var unlockOnce sync.Once
+	onUnlock := func(context.Context) error {
+		defer unlockOnce.Do(func() { close(unlocked) })
+		return restoreTunnelPeers(ctx, svc.RestoreTunnelPeers, restoreRetryFirst)
+	}
+	api := server.WithLock(vlt, server.NewFromService(svc), onUnlock)
+	listeners, err := listen(api, tun, operators, cfg.HealthListenAddr, cfg.APIHostListenAddr)
 	if err != nil {
 		return err
 	}
 
 	if syncer != nil && cfg.SyncInterval > 0 {
-		go pollSync(ctx, svc, cfg.SyncInterval)
+		go pollSync(ctx, svc, cfg.SyncInterval, unlocked)
 	}
 
 	errCh := make(chan error, len(listeners))
@@ -290,7 +305,69 @@ func checkAddressing(ctx context.Context, a server.Addressing) error {
 	return nil
 }
 
-func pollSync(ctx context.Context, svc *server.Service, interval time.Duration) {
+// noteLockState logs the store's lock state at startup, and what unlocks it.
+func noteLockState(v *vault.Vault) {
+	if v.State() == vault.Locked {
+		log.Print("store is locked: the API serves only /healthz, GET /store/state and the unlock and reset routes until `bootstrap api unlock` supplies its key")
+		return
+	}
+	why := "STORE_PATH has no store file yet"
+	if !v.Persistent() {
+		why = "STORE_PATH is unset, so the store is in memory and every start begins empty"
+	}
+	log.Printf("store is not initialized (%s): the API serves only /healthz, GET /store/state and the init route until `bootstrap api init`", why)
+}
+
+// restoreRetryFirst and restoreRetryMax bound restoreTunnelPeers' retries:
+// the first comes this long after the failure, and each later one waits
+// twice as long, up to the max.
+const (
+	restoreRetryFirst = time.Second
+	restoreRetryMax   = time.Minute
+)
+
+// restoreTunnelPeers runs restore (Service.RestoreTunnelPeers) under ctx,
+// the process's, from WithLock's onUnlock. If it fails, it is retried in the
+// background, after first and then backing off to restoreRetryMax, until it
+// succeeds or ctx is done: nothing else re-registers the stored instances'
+// peers before a sync, which with CONFIG_SYNC_INTERVAL unset waits on an
+// operator's POST /sync (#269). The first failure is returned, for WithLock
+// to log.
+func restoreTunnelPeers(ctx context.Context, restore func(context.Context) error, first time.Duration) error {
+	err := restore(ctx)
+	if err == nil {
+		return nil
+	}
+	go func() {
+		wait := first
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			err := restore(ctx)
+			if err == nil {
+				log.Print("wireguard: stored peers restored on retry")
+				return
+			}
+			wait = min(2*wait, restoreRetryMax)
+			log.Printf("wireguard: restore stored peers: %v; retrying in %s", err, wait)
+		}
+	}()
+	return fmt.Errorf("restore stored tunnel peers: %w; retrying in %s", err, first)
+}
+
+// pollSync syncs every interval once unlocked is closed, the first time as
+// soon as it is. cmd/web closes it from WithLock's onUnlock, after the
+// stored peers are restored.
+func pollSync(ctx context.Context, svc *server.Service, interval time.Duration, unlocked <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-unlocked:
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -376,23 +453,20 @@ func (b flasherBuilder) Build(ctx context.Context, hostOS, seedDir, outputPath s
 // newTunnelSource builds the web app's in-process WireGuard tunnel, bound
 // to endpoint (the operator-supplied host:port nodes dial to reach this
 // deployment — see run()'s WIREGUARD_ENDPOINT check, which only calls this
-// when it's set). It registers no peers: run()'s RestoreTunnelPeers call
-// adds the stored instances and then operators, in SyncOnce's order, so the
-// operators reach the tunnel API before the first sync. Always returns
+// when it's set). It registers no peers: run()'s RegisterOperatorPeers call
+// adds the operators, so they reach the tunnel API's key routes while the
+// store is locked, and unlocking it (RestoreTunnelPeers) adds the stored
+// instances and then the operators again, in SyncOnce's order. Always returns
 // either a usable source or a non-nil error — unlike newCertSource/
 // newImageBuilder's nil-means-unconfigured convention, "unconfigured" is
 // decided by the caller before this runs, since a *set* WIREGUARD_ENDPOINT
-// that then fails to start is fatal (see run()'s comment). The identity
-// persists in st (internal/wireguard.LoadOrGenerateIdentity), so it survives
-// restarts; #197 moves it to the deployment config directory's
-// secrets/wireguard.key (docs/Deployment.md).
+// that then fails to start is fatal (see run()'s comment). priv is the
+// operator-supplied identity deployconfig.Load read from the deployment
+// config directory's secrets/wireguard.key (#197, docs/Deployment.md), so
+// the tunnel comes up while the store is still locked.
 // port is the UDP listen port (WIREGUARD_PORT, default 51820, WireGuard's
 // IANA-assigned port; 0 lets the OS pick).
-func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, port int, operators []wireguard.OperatorPeer) (wireguardTunnelSource, error) {
-	priv, err := wireguard.LoadOrGenerateIdentity(ctx, st)
-	if err != nil {
-		return wireguardTunnelSource{}, fmt.Errorf("load wireguard identity: %w", err)
-	}
+func newTunnelSource(priv wireguard.PrivateKey, endpoint string, port int, operators []wireguard.OperatorPeer) (wireguardTunnelSource, error) {
 	tun, err := wireguard.Start(wireguard.Options{PrivateKey: priv, ListenPort: port, LocalAddr: wireguard.WebAppAddr})
 	if err != nil {
 		return wireguardTunnelSource{}, fmt.Errorf("start tunnel: %w", err)
