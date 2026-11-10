@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -278,3 +279,66 @@ func writeOutput(cmd *cobra.Command, path string, write func(w io.Writer) error)
 	}
 	return nil
 }
+
+// resolveOutput is --output with its symlinks resolved, or as given when it
+// can't be (it doesn't exist yet): a file renamed over it then replaces the
+// link's target, as writeOutput writes through the link.
+func resolveOutput(path string) string {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		return target
+	}
+	return path
+}
+
+// stagedOutput is a file --output built in a temporary file beside it, then
+// renamed over it (#242): a failed build leaves no half-written file, and an
+// older one as it was. The temporary file is created 0600, so the result
+// is 0600 whatever an existing --output's mode was: it carries the node's
+// seed.
+type stagedOutput struct {
+	target  string // --output, resolved (resolveOutput)
+	partial string // the temporary file beside it
+}
+
+// stageOutput creates target's temporary file. It's meant to run before
+// any request, so a directory that won't take a new file fails before
+// POST .../seed mints the node's bootstrap credential. Call remove when
+// done, whether or not commit ran.
+func stageOutput(target string) (*stagedOutput, error) {
+	f, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".partial-*")
+	if err != nil {
+		return nil, fmt.Errorf("open --output: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return nil, fmt.Errorf("close %s: %w", f.Name(), err)
+	}
+	return &stagedOutput{target: target, partial: f.Name()}, nil
+}
+
+// commit renames the finished temporary file over the target.
+func (s *stagedOutput) commit() error {
+	if err := os.Rename(s.partial, s.target); err != nil {
+		return fmt.Errorf("move the finished file to --output: %w", err)
+	}
+	return nil
+}
+
+// writeStaged hands s's temporary file to write, then commits it.
+func writeStaged(s *stagedOutput, write func(w io.Writer) error) error {
+	f, err := os.OpenFile(s.partial, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return fmt.Errorf("open --output: %w", err)
+	}
+	werr := write(f)
+	if cerr := f.Close(); werr == nil && cerr != nil {
+		werr = fmt.Errorf("close %s: %w", s.partial, cerr)
+	}
+	if werr != nil {
+		return werr
+	}
+	return s.commit()
+}
+
+// remove deletes the temporary file, which is gone already once committed.
+func (s *stagedOutput) remove() { _ = os.Remove(s.partial) }

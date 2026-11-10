@@ -45,6 +45,9 @@ type Options struct {
 	// exec.LookPath. Defaults to "flasher-tool" (i.e. resolved from
 	// $PATH) when empty.
 	BinPath string
+	// TempDir is where Run writes the seed tar it hands flasher-tool, which
+	// holds the seed's secrets; empty means os.TempDir().
+	TempDir string
 	// Stdout and Stderr receive the flasher-tool subprocess's output.
 	Stdout io.Writer
 	Stderr io.Writer
@@ -110,7 +113,7 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("build seed tar: %w", err)
 	}
 
-	tmpSeed, err := os.CreateTemp("", "flasher-seed-*.tar")
+	tmpSeed, err := os.CreateTemp(opts.TempDir, "flasher-seed-*.tar")
 	if err != nil {
 		return fmt.Errorf("create temp seed tar: %w", err)
 	}
