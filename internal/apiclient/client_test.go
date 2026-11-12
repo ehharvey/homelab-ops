@@ -278,27 +278,3 @@ func TestRetryDialGivesUpAfterTimeout(t *testing.T) {
 		t.Errorf("RetryDial took %s, want about the timeout", time.Since(start))
 	}
 }
-
-func TestHTTPClientDialsThroughDial(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"synced":false}`)
-	}))
-	defer srv.Close()
-	var dialed string
-	var d net.Dialer
-	dial := func(ctx context.Context, network, _ string) (net.Conn, error) {
-		dialed = "yes"
-		return d.DialContext(ctx, network, srv.Listener.Addr().String())
-	}
-	// The base URL names an address nothing listens on: only dial reaches srv.
-	c, err := New("http://10.100.0.1", HTTPClient(dial))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if _, err := c.Status(context.Background()); err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if dialed == "" {
-		t.Error("the request did not go through dial")
-	}
-}

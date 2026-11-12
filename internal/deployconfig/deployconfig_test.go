@@ -9,11 +9,34 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ehharvey/homelab-ops/internal/cert"
 )
 
 // key is a valid-looking WireGuard public key: 32 bytes of b, base64.
 func key(b byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32))
+}
+
+// certPEM is a fresh operator cert's public half, as `bootstrap gen-cert`
+// writes client.crt.
+func certPEM(t *testing.T) string {
+	t.Helper()
+	p, err := cert.Generate(cert.Options{CommonName: "operator", ValidityDays: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(p.CertPEM)
+}
+
+// writeFile writes body to a new file and returns its path.
+func writeFile(t *testing.T, name, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // clearEnv unsets every contract setting for the test's duration. t.Setenv
@@ -142,14 +165,14 @@ func TestLoadFileSettings(t *testing.T) {
 			clearEnv(t)
 			files := map[string]string{WebEnvFile: "WIREGUARD_ENDPOINT=webapp.example.net:51820\n"}
 			if tc.files {
-				files[ClientCertFile] = "cert"
+				files[ClientCertFile] = certPEM(t)
 				files[OperatorPeersFile] = peersFile
 			}
 			dir := configDir(t, files)
-			envCert := filepath.Join(t.TempDir(), "env.crt")
-			if err := os.WriteFile(envCert, []byte("cert"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			envCert := writeFile(t, "env.crt", certPEM(t))
+			// The tunnel's TLS listener needs an operator cert whatever
+			// client.crt is in this case.
+			t.Setenv("OPERATOR_CERTS_PATH", writeFile(t, "operators.pem", certPEM(t)))
 			if tc.certEnv != nil {
 				v := *tc.certEnv
 				if v == "ENVCERT" {
@@ -316,11 +339,13 @@ func TestLoadRefusesRetiredPortWithoutAListener(t *testing.T) {
 	}{
 		{"no API listener", "", "", true},
 		{"with the tunnel", "203.0.113.1:51820", "", false},
-		{"with a host listener", "", ":8080", false},
+		{"with a plain host listener", "", ":8080", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearEnv(t)
+			t.Setenv("CLIENT_CERT_PATH", writeFile(t, "client.crt", certPEM(t)))
+			t.Setenv("API_HOST_PLAIN_HTTP", "true")
 			t.Setenv("PORT", "8080")
 			t.Setenv("WIREGUARD_ENDPOINT", tc.endpoint)
 			t.Setenv("API_HOST_LISTEN_ADDR", tc.hostAddr)
@@ -459,6 +484,179 @@ func TestExampleWebappLoads(t *testing.T) {
 	if cfg.WireGuardEndpoint != "webapp.example.net:51820" || cfg.ConfigRepoURL == "" || cfg.SyncInterval != 5*time.Minute {
 		t.Errorf("examples/webapp loaded as %+v, want its web.env's settings", cfg)
 	}
+}
+
+// The example's README steps 2 and 3 go together: once operator-peers lists
+// a device, the tunnel API's TLS requires an operator cert (#397), so
+// startup names both settings until client.crt is added, and then requires
+// client.crt's cert.
+func TestExampleWebappWithAnOperatorNeedsItsCert(t *testing.T) {
+	clearEnv(t)
+	dir := t.TempDir()
+	for _, name := range []string{WebEnvFile, OperatorPeersFile} {
+		b, err := os.ReadFile(filepath.Join("../../examples/webapp", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == OperatorPeersFile {
+			b = append(b, "10.100.0.240="+key('a')+"\n"...)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DEPLOYMENT_CONFIG_DIR", dir)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "OPERATOR_CERTS_PATH") || !strings.Contains(err.Error(), "CLIENT_CERT_PATH") {
+		t.Errorf("an operator peer without client.crt: err = %v, want both settings named", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, ClientCertFile), []byte(certPEM(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := mustLoad(t)
+	if cfg.OperatorCertsFrom != "CLIENT_CERT_PATH" || len(cfg.OperatorCerts) != 1 || len(cfg.OperatorPeers) != 1 {
+		t.Errorf("with client.crt: %d operator certs from %q, %d peers; want client.crt's one and the peer", len(cfg.OperatorCerts), cfg.OperatorCertsFrom, len(cfg.OperatorPeers))
+	}
+}
+
+// The operator-cert list a TLS API listener requires (#397):
+// OPERATOR_CERTS_PATH, falling back to CLIENT_CERT_PATH (operator decision,
+// 2026-11-10), and with both unset while a TLS listener could admit someone
+// (the tunnel with an operator peer, or a TLS host listener), startup fails
+// naming both.
+func TestLoadOperatorCerts(t *testing.T) {
+	two := certPEM(t) + certPEM(t)
+	cases := []struct {
+		name     string
+		env      map[string]string
+		files    map[string]string
+		wantFrom string // "" with wantN 0: none loaded
+		wantN    int
+		wantErr  []string
+	}{
+		{name: "tunnel, CLIENT_CERT_PATH only: its cert", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1"}, files: map[string]string{ClientCertFile: certPEM(t)}, wantFrom: "CLIENT_CERT_PATH", wantN: 1},
+		{name: "tunnel, operator-certs.pem: its certs, not client.crt", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1"}, files: map[string]string{ClientCertFile: certPEM(t), OperatorCertsFile: two}, wantFrom: "OPERATOR_CERTS_PATH", wantN: 2},
+		{name: "OPERATOR_CERTS_PATH set empty falls back", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1", "OPERATOR_CERTS_PATH": ""}, files: map[string]string{ClientCertFile: certPEM(t), OperatorCertsFile: two}, wantFrom: "CLIENT_CERT_PATH", wantN: 1},
+		{name: "tunnel with an operator peer, both unset", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1", "WIREGUARD_OPERATOR_PEERS": "10.100.0.240=" + key('a')}, wantErr: []string{"OPERATOR_CERTS_PATH: no operator cert", "CLIENT_CERT_PATH", "the tunnel API listener"}},
+		// No operator peer: the peer gate already refuses everyone, so no
+		// cert is needed yet (the committed examples/webapp).
+		{name: "tunnel with no operator peers, both unset: nothing needed", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1"}},
+		{name: "tunnel with no operator peers and a TLS host listener, both unset", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1", "API_HOST_LISTEN_ADDR": ":8080"}, wantErr: []string{"OPERATOR_CERTS_PATH: no operator cert", "the host listener"}},
+		{name: "TLS host listener, both unset", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8080"}, wantErr: []string{"OPERATOR_CERTS_PATH: no operator cert", "CLIENT_CERT_PATH", "the host listener"}},
+		{name: "plain host listener, both unset: nothing needed", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8080", "API_HOST_PLAIN_HTTP": "true"}},
+		{name: "no API listener, client.crt not parsed", files: map[string]string{ClientCertFile: "not a cert, and nothing serves TLS"}},
+		{name: "a set OPERATOR_CERTS_PATH is parsed without TLS too", files: map[string]string{OperatorCertsFile: "nope"}, wantErr: []string{"OPERATOR_CERTS_PATH: ", "no PEM CERTIFICATE block"}},
+		{name: "a private key in the list", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1"}, files: map[string]string{OperatorCertsFile: "-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n"}, wantErr: []string{"OPERATOR_CERTS_PATH: ", "never a private key"}},
+		{name: "a client.crt that isn't one, with the tunnel", env: map[string]string{"WIREGUARD_ENDPOINT": "h:1"}, files: map[string]string{ClientCertFile: "cert"}, wantErr: []string{"CLIENT_CERT_PATH: "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			files := map[string]string{}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			configDir(t, files)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := Load()
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatal("Load = nil error, want a failure")
+				}
+				for _, w := range tc.wantErr {
+					if !strings.Contains(err.Error(), w) {
+						t.Errorf("error lacks %q:\n%v", w, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.OperatorCertsFrom != tc.wantFrom || len(cfg.OperatorCerts) != tc.wantN {
+				t.Errorf("operator certs: %d from %q, want %d from %q", len(cfg.OperatorCerts), cfg.OperatorCertsFrom, tc.wantN, tc.wantFrom)
+			}
+		})
+	}
+}
+
+// A host listener serving TLS with the tunnel off derives its TLS key from
+// secrets/wireguard.key, so the file is required, and read (operator
+// decision on #397, 2026-11-10). With the tunnel on, the tunnel's identity
+// is used instead, and with plain HTTP there is no TLS key at all.
+func TestLoadHostOnlyTLSRequiresTheWireGuardKey(t *testing.T) {
+	validKey := key('k')
+	cases := []struct {
+		name    string
+		env     map[string]string
+		noDir   bool
+		keyFile *string
+		wantKey bool
+		wantErr []string
+	}{
+		{name: "host TLS, key present: loaded", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8443"}, keyFile: &validKey, wantKey: true},
+		{name: "host TLS, key missing", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8443"}, wantErr: []string{"secrets/wireguard.key: missing", "WIREGUARD_ENDPOINT unset"}},
+		{name: "host TLS, key malformed", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8443"}, keyFile: ptr("not a key"), wantErr: []string{"secrets/wireguard.key: "}},
+		{name: "host TLS, no directory", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8443"}, noDir: true, wantErr: []string{"secrets/wireguard.key: required", "DEPLOYMENT_CONFIG_DIR"}},
+		{name: "tunnel and host TLS: the tunnel's identity, file not needed", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8443", "WIREGUARD_ENDPOINT": "h:1"}},
+		{name: "plain host listener: no TLS key, file not needed", env: map[string]string{"API_HOST_LISTEN_ADDR": ":8080", "API_HOST_PLAIN_HTTP": "true"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			crt := writeFile(t, "client.crt", certPEM(t))
+			if !tc.noDir {
+				files := map[string]string{}
+				if tc.keyFile != nil {
+					files[WireGuardKeyFile] = *tc.keyFile
+				}
+				configDir(t, files)
+			}
+			t.Setenv("CLIENT_CERT_PATH", crt)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := Load()
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatal("Load = nil error, want a failure")
+				}
+				for _, w := range tc.wantErr {
+					if !strings.Contains(err.Error(), w) {
+						t.Errorf("error lacks %q:\n%v", w, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if loaded := cfg.WireGuardKey != [32]byte{}; loaded != tc.wantKey {
+				t.Errorf("WireGuardKey loaded: %v, want %v", loaded, tc.wantKey)
+			}
+		})
+	}
+}
+
+func TestLoadPlainHTTPOptIn(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("API_HOST_LISTEN_ADDR", ":8080")
+	t.Setenv("API_HOST_PLAIN_HTTP", "true")
+	cfg := mustLoad(t)
+	if !cfg.APIHostPlainHTTP || cfg.TLSAPI() || cfg.HostTLS() {
+		t.Errorf("plain opt-in: APIHostPlainHTTP %v, TLSAPI %v, HostTLS %v; want true, false, false", cfg.APIHostPlainHTTP, cfg.TLSAPI(), cfg.HostTLS())
+	}
+	t.Setenv("API_HOST_PLAIN_HTTP", "yes")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), `API_HOST_PLAIN_HTTP: "yes"`) {
+		t.Errorf("API_HOST_PLAIN_HTTP=yes: err = %v, want it refused", err)
+	}
+	// Set without a host listener it does nothing: the committed dev
+	// compose file sets it, and scripts blank API_HOST_LISTEN_ADDR.
+	t.Setenv("API_HOST_LISTEN_ADDR", "")
+	t.Setenv("API_HOST_PLAIN_HTTP", "true")
+	mustLoad(t)
 }
 
 func ptr(s string) *string { return &s }

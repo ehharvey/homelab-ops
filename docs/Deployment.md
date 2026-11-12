@@ -27,6 +27,7 @@ as dev and most validate scripts do.
 /etc/homelab-ops/web/       DEPLOYMENT_CONFIG_DIR
 ├── web.env                 scalar settings, KEY=VALUE
 ├── client.crt              the break-glass cert's public half
+├── operator-certs.pem      operator certs the API requires (optional)
 ├── operator-peers          operator devices allowed on the tunnel API
 └── secrets/                0700: every secret file, each 0600
     └── wireguard.key       the web app's WireGuard identity (#197)
@@ -35,28 +36,32 @@ as dev and most validate scripts do.
 | Entry | Setting | Secret | Mode | Contents |
 | --- | --- | --- | --- | --- |
 | `web.env` | every scalar setting below | no | `0644` is fine | `KEY=VALUE` lines, the same names as the env vars. Optional. |
-| `client.crt` | `CLIENT_CERT_PATH` | no | `0644` is fine | The break-glass client cert's **public** half, from `bootstrap gen-cert` (§4). The web app never reads the private key, and it must not be in this directory. Optional: without it the seed and image routes report themselves unconfigured. |
+| `client.crt` | `CLIENT_CERT_PATH` | no | `0644` is fine | The break-glass client cert's **public** half, from `bootstrap gen-cert` (§4). The web app never reads the private key, and it must not be in this directory. Optional: without it the seed and image routes report themselves unconfigured. Also the operator cert the API requires when `operator-certs.pem` is absent (#397). |
+| `operator-certs.pem` | `OPERATOR_CERTS_PATH` | no | `0644` is fine | The operator certs a TLS API listener requires a client to present one of (#397): one or more PEM `CERTIFICATE` blocks, public halves only, one per operator device. Optional: absent, the list is `client.crt` alone. Any other PEM block (a private key) fails startup. |
 | `operator-peers` | `WIREGUARD_OPERATOR_PEERS` | no | `0644` is fine | One `<overlay-address>=<base64-public-key>` per line; `#` starts a comment. Only public keys. Optional. |
 | `secrets/` | | yes | `0700` | Everything secret, and nothing else. A new secret goes here with no list to update. |
-| `secrets/wireguard.key` | (reserved, #197) | yes | `0600` | The web app's operator-supplied WireGuard identity (§28). **Reserved:** today's identity is still generated into the store, and #197 loads this file and exports the store's `wireguard_identity` row to it. |
+| `secrets/wireguard.key` | (#197, #397) | yes | `0600` | The web app's operator-supplied WireGuard identity (§28), base64 as `wg genkey` prints it. Today the tunnel's identity is still generated into the store, and #197 loads this file for it and exports the store's `wireguard_identity` row to it. The API's TLS key is derived from the identity (#397), so with the tunnel off and a TLS host listener on, this file is read and **required**: startup fails naming it if it is missing or malformed. With the tunnel on, the TLS key comes from the tunnel's identity and this file isn't read until #197, so toggling `WIREGUARD_ENDPOINT` changes the TLS key fingerprint; startup warns when this file holds a different identity. |
 
 Rules `deployconfig.Load` enforces at startup:
 
 - **The environment overrides the directory**, setting by setting, and that
-  includes the three files: `CLIENT_CERT_PATH` and `WIREGUARD_OPERATOR_PEERS`
-  in the environment win over `client.crt` and `operator-peers`. An env var
+  includes the files: `CLIENT_CERT_PATH`, `OPERATOR_CERTS_PATH` and
+  `WIREGUARD_OPERATOR_PEERS` in the environment win over `client.crt`,
+  `operator-certs.pem` and `operator-peers`. An env var
   set to the **empty string** still overrides: the setting then takes its
   default, as if neither set it. So dev and the validate suite, which set env
   vars, are unaffected by a directory.
 - **`web.env` takes only the scalar settings.** An unknown key fails startup,
   so a typo can't be silently ignored. So do the file-backed settings
-  (`CLIENT_CERT_PATH`, `WIREGUARD_OPERATOR_PEERS`: each has its own file) and
+  (`CLIENT_CERT_PATH`, `OPERATOR_CERTS_PATH`, `WIREGUARD_OPERATOR_PEERS`:
+  each has its own file) and
   `DEPLOYMENT_CONFIG_DIR` itself. Other files in the directory are ignored.
 - **`secrets/` is held to its modes.** If it exists, it and everything under
   it must have no group or other permission bits (`0700` for directories,
   `0600` or stricter for files), or startup fails naming each one. Only
-  permission bits are checked, not ownership. It may be absent: nothing reads
-  it yet, and in TPM mode (#509) there is no identity file at all.
+  permission bits are checked, not ownership. It may be absent unless a TLS
+  host listener runs with the tunnel off, which reads `secrets/wireguard.key`
+  (#397); in TPM mode (#509) there is no identity file at all.
 - **`BASE_IMAGE_PATH` points outside the directory.** The base image is
   multi-GB, and #243 carries the directory inline in cloud-init `user-data`.
 
@@ -84,10 +89,11 @@ rather than failing later where a setting is first used (#67).
 | Setting | Default | Where | Meaning, and what fails startup |
 | --- | --- | --- | --- |
 | `DEPLOYMENT_CONFIG_DIR` | unset (environment only) | env only | The directory above. Fails if it doesn't exist or isn't a directory. |
-| `WIREGUARD_ENDPOINT` | unset (no tunnel) | `web.env` | The `host:port` nodes dial to reach the tunnel; it is baked into every node's seed. No default: the operator supplies it. **Recommended: a DNS name** (see below). Setting it starts the tunnel, where the API is served at `10.100.0.1:80`. **Required when operator peers are listed.** Fails unless it is `host:port` with a host and a numeric port. |
+| `WIREGUARD_ENDPOINT` | unset (no tunnel) | `web.env` | The `host:port` nodes dial to reach the tunnel; it is baked into every node's seed. No default: the operator supplies it. **Recommended: a DNS name** (see below). Setting it starts the tunnel, where the API is served over TLS at `10.100.0.1:80` (#397). **Required when operator peers are listed.** Fails unless it is `host:port` with a host and a numeric port. |
 | `WIREGUARD_PORT` | `51820` | `web.env` | The tunnel's UDP listen port inside the container (`0` lets the OS pick). Fails unless a number from 0 to 65535. |
 | `WIREGUARD_OPERATOR_PEERS` | empty | `operator-peers` file | The operator devices allowed on the tunnel API: `<overlay-address>=<base64-public-key>` entries, separated by commas or whitespace in the env var, one per line in the file. Each address must be in `10.100.0.240`–`10.100.0.254` (`wireguard.OperatorCIDR`), and no address or key may repeat. Fails on any bad entry. |
-| `API_HOST_LISTEN_ADDR` | unset (off) | `web.env` | **Opt-in.** Also serves the whole API as plain HTTP on this address, with no source filter; startup logs a warning. Fails unless `host:port` or `:port`. |
+| `API_HOST_LISTEN_ADDR` | unset (off) | `web.env` | **Opt-in.** Also serves the whole API on this address, with no source filter, over TLS, requiring a listed operator cert (`OPERATOR_CERTS_PATH`), its only gate (#397). Fails unless `host:port` or `:port`. |
+| `API_HOST_PLAIN_HTTP` | `false` (the host listener is TLS) | `web.env` | **Dev opt-in** (#397): serve the host listener as plain HTTP with no authentication at all, as the dev `docker-compose.yml` and the validate suite do; startup logs a warning naming the exposure. Does nothing without `API_HOST_LISTEN_ADDR`, and never affects the tunnel listener, which is always TLS. Fails unless `true` or `false`. |
 | `HEALTH_LISTEN_ADDR` | `:8081` | `web.env` | Serves `GET /healthz` only, whatever the API listener. Fails unless `host:port` or `:port`. |
 | `PORT` | unset | `web.env` | Retired by #195 and not read. Fails if set with no API listener (neither `WIREGUARD_ENDPOINT` nor `API_HOST_LISTEN_ADDR`), since such a deployment used to serve the API on it; otherwise only logged. |
 | `CONFIG_REPO_URL` | unset (sync off) | `web.env` | The fleet config repo, any go-git transport. **Fails if it carries a credential**, without echoing it: any userinfo on a non-SSH URL (`https://user:token@…`, `https://token@…`), or a password on an SSH one (`ssh://user:pass@…`, `user:pass@host:path`). An SSH user alone (`git@host:path`, `ssh://git@host/…`) is a login name, not a secret, so it's accepted; the key comes from ssh-agent. Credentials never go in the URL or `web.env`. Git credentials are #218's, under `secrets/`. |
@@ -96,7 +102,8 @@ rather than failing later where a setting is first used (#67).
 | `CONFIG_REPO_PRIVATE` | `false` (git addressing rejected) | `web.env` | Declares the config repo private, so a `kind: Network` in it may carry its addressing (§28, #199). Unset, the repo is assumed public: a sync fails on any Network with a `cidr` in git, naming it. Fails startup unless `true` or `false`. |
 | `NETWORK_ADDRESSING_PATH` | unset (no state addressing) | `web.env` | A file of full `kind: Network` documents addressing the networks git names without a `cidr` (§28, #199), read on every sync. Unset, a name-only Network fails the sync. A path, inside the directory or not. Fails if set and not a regular file, or if it doesn't parse. Interim: the encrypted store, loaded by the CLI, replaces it (#514). |
 | `STORE_PATH` | `:memory:` | `web.env` | The sqlite store's file. The default keeps nothing across a restart; an appliance mounts a volume and sets a path on it. |
-| `CLIENT_CERT_PATH` | unset (seed and image routes off) | `client.crt` file | The break-glass cert's public half (§4). Fails if set and not a regular file. |
+| `CLIENT_CERT_PATH` | unset (seed and image routes off) | `client.crt` file | The break-glass cert's public half (§4). With `OPERATOR_CERTS_PATH` unset it is also the one operator cert the API requires (#397). Fails if set and not a regular file. |
+| `OPERATOR_CERTS_PATH` | unset (falls back to `CLIENT_CERT_PATH`) | `operator-certs.pem` file | The operator certs a TLS API listener (the tunnel's, and the host's unless `API_HOST_PLAIN_HTTP`) requires a client to present one of, matched by the SHA-256 of the whole cert as Incus matches it; no CA (#397). PEM, one or more `CERTIFICATE` blocks. Fails if set and not a regular file, if it holds no cert or any other PEM block, and, **with both it and `CLIENT_CERT_PATH` unset while a TLS API listener could admit someone (the tunnel once `operator-peers` lists a device, or a TLS host listener), names both.** With the tunnel on and no operator peers it starts, warning that the API refuses everyone. |
 | `BASE_IMAGE_PATH` | unset (server-side image builds off) | `web.env` | The operator-supplied base IncusOS raw image; setting it turns on the image route (§29's server-side default). A path outside the directory. Fails if set and not a regular file. |
 | `FLASHER_TOOL_PATH` | `flasher-tool` from `$PATH`; the image sets `/flasher-tool` | `web.env` | The `flasher-tool` binary the image route runs. Only dev outside the image needs it. |
 
@@ -105,6 +112,26 @@ Two behaviour changes came with fail-fast (#241). Before, an invalid
 `CONFIG_SYNC_INTERVAL` was logged and turned the poller off. Both now stop
 startup. A missing `CLIENT_CERT_PATH` or `BASE_IMAGE_PATH` file used to show up
 only on the first request.
+
+### The API's TLS (#397)
+
+Both API listeners serve TLS: the tunnel's always, the host's unless
+`API_HOST_PLAIN_HTTP=true`. Every request needs a client cert listed in
+`OPERATOR_CERTS_PATH` (or `CLIENT_CERT_PATH`'s); without one it gets 403, on
+every route. On the tunnel the operator peer filter still applies after it.
+`/healthz` stays plain HTTP on `HEALTH_LISTEN_ADDR`.
+
+- **The server's key, until step-ca (#506).** A P-256 key derived from the web
+  app's WireGuard private key (HKDF-SHA256, versioned info string), in a
+  self-signed cert re-made at every start. Nothing extra is stored, and the key
+  stays the same across restarts and a host move as long as the identity does.
+  With the tunnel on it comes from the tunnel's identity; with the tunnel off it
+  comes from `secrets/wireguard.key`, which is then required.
+- **The fingerprint.** Startup logs `TLS server key fingerprint sha256//<base64>`,
+  the SHA-256 of the key's SubjectPublicKeyInfo. Clients pin that, not the cert:
+  `bootstrap api` confirms it on first use or takes `--server-fingerprint`
+  (`docs/Architecture.md` § Who can reach the API), and curl takes it as
+  `--pinnedpubkey sha256//<base64>` (with `-k`, which skips only the CA check).
 
 ### The WireGuard endpoint as a DNS name
 
@@ -143,7 +170,7 @@ var here.
 | Host form | Stock Debian cloud image set up by cloud-init | #243's `user-data` and compose file; not a web app setting |
 | Host OS updates | `unattended-upgrades`, rebooting only when required, in a window | #243: the reboot window is a `user-data` setting |
 | How the config directory reaches the host | Inline in cloud-init `user-data`, the WireGuard key included | #243: inline, or `--no-secrets`, which leaves out `secrets/` for the operator to copy in after boot |
-| API listener | Tunnel only, operator peers | `WIREGUARD_ENDPOINT`, `operator-peers`, `API_HOST_LISTEN_ADDR` above. TLS from step-ca is #506's, and adds its own settings |
+| API listener | Tunnel only, operator peers, over TLS with an operator cert | `WIREGUARD_ENDPOINT`, `operator-peers`, `OPERATOR_CERTS_PATH`, `API_HOST_LISTEN_ADDR` and its dev-only `API_HOST_PLAIN_HTTP` above. Until #506 the TLS key is derived from the WireGuard identity (see below); step-ca's cert is #506's, and adds its own settings |
 | Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set | `BASE_IMAGE_PATH` above. Client-side builds are #242's |
 | node0 provisioning | By the web app over the tunnel | #244; not a deployment setting |
 | WireGuard endpoint | No default; a DNS name recommended | `WIREGUARD_ENDPOINT` above |
@@ -156,6 +183,6 @@ var here.
 | Network addressing in git (§28) | Rejected: the repo is assumed public | `CONFIG_REPO_PRIVATE` above |
 | Where state addressing comes from (§28) | Unset: no state addressing | `NETWORK_ADDRESSING_PATH` above; later the encrypted store (#514) |
 
-Settings that later issues add (#197's identity, #218's git credentials, #397's
-operator cert list and TLS) each become a row in `deployconfig.Settings` and in
-[§ Settings](#settings), or a file under `secrets/`.
+Settings that later issues add (#197's identity, #218's git credentials) each
+become a row in `deployconfig.Settings` and in [§ Settings](#settings), or a
+file under `secrets/`.

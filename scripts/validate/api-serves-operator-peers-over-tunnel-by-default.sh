@@ -12,9 +12,15 @@
 #     refused (403), and the same key can't pose as the operator by sending
 #     from the operator's overlay address (WireGuard drops those packets).
 #
-# Opt-in posture (API_HOST_LISTEN_ADDR set, as the committed dev
-# docker-compose.yml does): every route answers on the chosen address, and
-# startup logs the exposure warning.
+# Opt-in posture (API_HOST_LISTEN_ADDR set, with API_HOST_PLAIN_HTTP=true, as
+# the committed dev docker-compose.yml does): every route answers as plain
+# HTTP on the chosen address, and startup logs the exposure warning. A host
+# listener without that second opt-in serves TLS and requires an operator
+# cert: api-requires-operator-cert-over-tunnel.sh proves it.
+#
+# The tunnel API is TLS (#397): every tunnel request presents the break-glass
+# cert (the web app's CLIENT_CERT_PATH) and pins the logged TLS key, so the
+# 403s below are the peer filter's, behind the cert check.
 #
 # The tunnel side is driven by cmd/validate-tunnel-harness's http mode: the
 # web app's tunnel lives in its own process's userspace network stack, so
@@ -77,6 +83,7 @@ trap cleanup EXIT
 tunnel_req() {
   "$HARNESS" -mode http -private-key-file "$1" -local-addr "$2" \
     -peer-public-key "$APP_PUB" -peer-tunnel-ip "$WEBAPP_ADDR" -peer-endpoint "$WG_ENDPOINT" \
+    -client-cert "$CERT_DIR/client.crt" -client-key "$CERT_DIR/client.key" -server-fingerprint "$TLS_PIN" \
     -method "$3" -path "$4" -timeout "${5:-30s}" 2>"$WORK_DIR/harness.err"
 }
 
@@ -161,6 +168,8 @@ fi
 # startup, which is where an operator reads it too.
 APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0-9+/=]+' | tail -1 | awk '{print $4}')
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+TLS_PIN=$(web_tls_fingerprint)
+check "web app logged its TLS server key fingerprint" test -n "$TLS_PIN"
 
 echo
 echo "-- no API route answers on the host network --"
@@ -225,7 +234,8 @@ compose_down
 echo
 echo "== 3. Opt-in posture: host listener on the chosen address =="
 # Only what the seed route needs: the dev compose file's own
-# API_HOST_LISTEN_ADDR=:8080, published on 127.0.0.1, is the opt-in.
+# API_HOST_LISTEN_ADDR=:8080, published on 127.0.0.1, with
+# API_HOST_PLAIN_HTTP=true, is the opt-in.
 cat >"$OVERRIDE" <<'EOF'
 services:
   web:

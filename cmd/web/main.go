@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -26,6 +29,7 @@ import (
 	"github.com/ehharvey/homelab-ops/internal/hostos"
 	"github.com/ehharvey/homelab-ops/internal/server"
 	"github.com/ehharvey/homelab-ops/internal/store"
+	"github.com/ehharvey/homelab-ops/internal/webtls"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -70,13 +74,34 @@ func run() error {
 	// has already refused operator peers without one.
 	var tunnelSrc server.TunnelSource
 	var tun *wireguard.Tunnel
+	// The identity the API's TLS key is derived from (#397): the tunnel's
+	// own, or with the tunnel off, secrets/wireguard.key, which
+	// deployconfig.Load has already required and read for a TLS host
+	// listener.
+	identity := cfg.WireGuardKey
 	if cfg.WireGuardEndpoint != "" {
 		ts, err := newTunnelSource(ctx, st, cfg.WireGuardEndpoint, cfg.WireGuardPort, operators)
 		if err != nil {
 			return fmt.Errorf("start wireguard tunnel: %w", err)
 		}
-		tunnelSrc, tun = ts, ts.tun
+		tunnelSrc, tun, identity = ts, ts.tun, ts.identity
 		defer tunnelSrc.Close() //nolint:errcheck // best-effort cleanup on shutdown
+		warnUnreadWireGuardKey(cfg.Dir, identity)
+	}
+
+	// Built from the identity and the operator certs only. With the tunnel
+	// off the identity is secrets/wireguard.key, so nothing here needs the
+	// store. With the tunnel on it is still the store's wireguard_identity
+	// row (newTunnelSource) until #197 moves it to secrets/wireguard.key;
+	// until then a locked store (#197) couldn't derive this key, so #197
+	// has to make that move before it can serve its unlock route over TLS.
+	var apiTLS *tls.Config
+	if cfg.TLSAPI() {
+		apiTLS, err = newAPITLS(identity, time.Now())
+		if err != nil {
+			return err
+		}
+		logOperatorCerts(len(cfg.OperatorCerts), cfg.OperatorCertsFrom)
 	}
 
 	// One Service shared between the HTTP handlers and the background poller
@@ -98,7 +123,15 @@ func run() error {
 		return fmt.Errorf("restore wireguard peers: %w", err)
 	}
 
-	listeners, err := listen(server.NewFromService(svc), tun, operators, cfg.HealthListenAddr, cfg.APIHostListenAddr)
+	listeners, err := listen(server.NewFromService(svc), listenOptions{
+		tun:           tun,
+		operators:     operators,
+		healthAddr:    cfg.HealthListenAddr,
+		hostAddr:      cfg.APIHostListenAddr,
+		hostTLS:       cfg.HostTLS(),
+		tls:           apiTLS,
+		operatorCerts: cfg.OperatorCerts,
+	})
 	if err != nil {
 		return err
 	}
@@ -174,22 +207,120 @@ type listener struct {
 	srv  *http.Server
 }
 
-// listen binds every listener the deployment config asks for (#195,
+// newAPITLS is the API listeners' TLS config (#397, docs/Decisions.md §32):
+// a P-256 key derived from the web app's WireGuard identity, in a
+// self-signed cert made now, asking clients for a cert that the listeners'
+// webtls.RequireOperator then checks. It logs the key's fingerprint, which is
+// the same at every start with the same identity, for operators to pin.
+func newAPITLS(identity wireguard.PrivateKey, now time.Time) (*tls.Config, error) {
+	key, err := webtls.DeriveKey(identity)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := webtls.SelfSigned(key, now)
+	if err != nil {
+		return nil, err
+	}
+	fp, err := webtls.PublicKeyFingerprint(&key.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("TLS server key fingerprint %s (derived from the WireGuard identity; pin it with bootstrap api --server-fingerprint, or curl --pinnedpubkey)", fp)
+	return webtls.ServerConfig(cert), nil
+}
+
+// logOperatorCerts logs how many operator certs the TLS API listeners admit,
+// and from which setting.
+func logOperatorCerts(n int, from string) {
+	if n == 0 {
+		// deployconfig.Load allows this only while nothing could get past
+		// the tunnel's peer gate anyway: no operator peers, no TLS host
+		// listener.
+		log.Print("WARNING: no operator cert is configured (OPERATOR_CERTS_PATH, or CLIENT_CERT_PATH), so the TLS API listeners refuse every client; add one along with an operator peer")
+		return
+	}
+	//nolint:gosec // G706: from is a setting's name, chosen by deployconfig, not input
+	log.Printf("the TLS API listeners require a client cert: one of %d operator certs from %s", n, from)
+}
+
+// warnUnreadWireGuardKey warns when the deployment config directory holds a
+// secrets/wireguard.key other than the identity the tunnel runs on, which
+// until #197 is the store's. The API's TLS key is derived from whichever
+// identity the tunnel uses, and from that file with the tunnel off (#397),
+// so unsetting WIREGUARD_ENDPOINT would change the pinned fingerprint.
+//
+// A file that can't be read or doesn't parse gets its own warning, naming
+// the error, since it would fail startup once the tunnel is off.
+func warnUnreadWireGuardKey(dir string, identity wireguard.PrivateKey) {
+	if dir == "" {
+		return
+	}
+	path := filepath.Join(dir, deployconfig.WireGuardKeyFile)
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	key, err := wireguard.ReadPrivateKeyFile(path)
+	if err != nil {
+		//nolint:gosec // G706: path is under the operator's DEPLOYMENT_CONFIG_DIR, not untrusted input
+		log.Printf("WARNING: %s isn't read while the tunnel is on, and can't be: %v. With WIREGUARD_ENDPOINT unset the API's TLS key is derived from that file, so startup would fail until it is fixed", path, err)
+		return
+	}
+	if key == identity {
+		return
+	}
+	//nolint:gosec // G706: path is under the operator's DEPLOYMENT_CONFIG_DIR, not untrusted input
+	log.Printf("WARNING: %s isn't read while the tunnel is on: until #197 the tunnel's identity, and so the API's TLS key, come from the store. With WIREGUARD_ENDPOINT unset the TLS key would come from that file instead, so its fingerprint would change and clients pinned to this one would be refused", path)
+}
+
+// listenOptions is which listeners listen binds, from the deployment config.
+type listenOptions struct {
+	// tun, when non-nil, gets the tunnel API listener.
+	tun       *wireguard.Tunnel
+	operators []wireguard.OperatorPeer
+	// healthAddr is HEALTH_LISTEN_ADDR.
+	healthAddr string
+	// hostAddr is API_HOST_LISTEN_ADDR; "" means no host listener.
+	hostAddr string
+	// hostTLS is deployconfig.Config.HostTLS: the host listener is on and
+	// serves TLS. With hostAddr set and hostTLS false it is plain HTTP
+	// (API_HOST_PLAIN_HTTP).
+	hostTLS bool
+	// tls is the API's TLS config (newAPITLS). Required whenever a
+	// listener serves TLS: the tunnel's, and the host's if hostTLS.
+	tls *tls.Config
+	// operatorCerts are the certs a TLS listener admits
+	// (webtls.RequireOperator, around everything it serves).
+	operatorCerts []*x509.Certificate
+}
+
+// listen binds every listener the deployment config asks for (#195, #397,
 // docs/Decisions.md §28 and §29), before anything is served, so a bad or
 // taken address fails startup instead of a background goroutine:
 //
-//   - health: GET /healthz only, on healthAddr (HEALTH_LISTEN_ADDR, default :8081),
-//     whatever the API listener setting, for container health checks.
+//   - health: GET /healthz only, plain HTTP, on healthAddr
+//     (HEALTH_LISTEN_ADDR, default :8081), whatever the API listener
+//     setting, for container health checks.
 //   - tunnel (the default API listener): the API at wireguard.WebAppAddr,
-//     port wireguard.APIPort, inside the tunnel, admitting operator peers
-//     only. It runs whenever the tunnel does (tun non-nil).
-//   - host (explicit opt-in): the API as plain HTTP on hostAddr
-//     (API_HOST_LISTEN_ADDR), with no source filter. Off unless set; there
-//     is no default address.
+//     port wireguard.APIPort, inside the tunnel, over TLS. A request needs a
+//     listed operator cert, and then an operator peer's source address
+//     (server.OperatorsOnly). It runs whenever the tunnel does (tun
+//     non-nil).
+//   - host (explicit opt-in): the API on hostAddr (API_HOST_LISTEN_ADDR),
+//     with no source filter. Over TLS it requires a listed operator cert,
+//     its only gate; without hostTLS it is plain HTTP with no
+//     authentication at all, for dev, and logs a warning. Off unless set;
+//     there is no default address.
 //
-// A TLS host listener is the expected third mode (§29). It would be one
-// more entry here; it is not built yet.
-func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.OperatorPeer, healthAddr, hostAddr string) ([]listener, error) {
+// The operator-cert check (webtls.RequireOperator) wraps everything a TLS
+// listener serves, so a route added later is covered without being listed.
+// It answers an unlisted or missing cert with 403, over HTTP, rather than
+// failing the handshake, so a client can tell that refusal from a dropped
+// connection.
+func listen(api http.Handler, o listenOptions) ([]listener, error) {
+	tun, operators, healthAddr, hostAddr, hostTLS := o.tun, o.operators, o.healthAddr, o.hostAddr, o.hostTLS
+	if (tun != nil || hostTLS) && o.tls == nil {
+		return nil, errors.New("an API listener serves TLS, but no TLS config was built")
+	}
 	var out []listener
 	fail := func(err error) ([]listener, error) {
 		for _, l := range out {
@@ -214,7 +345,7 @@ func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.Opera
 		if err != nil {
 			return fail(fmt.Errorf("tunnel API listener: %w", err))
 		}
-		add(fmt.Sprintf("tunnel API listener (%d operator peers)", len(operators)), ln, server.OperatorsOnly(operators, api))
+		add(fmt.Sprintf("tunnel API listener (%d operator peers)", len(operators)), tls.NewListener(ln, o.tls), webtls.RequireOperator(o.operatorCerts, server.OperatorsOnly(operators, api)))
 		if len(operators) == 0 {
 			log.Print("WARNING: WIREGUARD_OPERATOR_PEERS is empty, so the tunnel API listener refuses every request; add an operator peer to use the API over the tunnel")
 		}
@@ -225,9 +356,13 @@ func listen(api http.Handler, tun *wireguard.Tunnel, operators []wireguard.Opera
 		if err != nil {
 			return fail(fmt.Errorf("API_HOST_LISTEN_ADDR %s: %w", hostAddr, err))
 		}
-		add("host API listener (plain HTTP, no source filter)", ln, api)
-		//nolint:gosec // G706: hostAddr is an operator-supplied env var (not untrusted input) and %q quotes it
-		log.Printf("WARNING: API_HOST_LISTEN_ADDR=%q exposes the whole API as plain HTTP with no authentication: anyone who can reach that address can call POST /instances/{name}/seed or GET /instances/{name}/image and receive that node's WireGuard private key. Bind it only to an address you trust (#195)", hostAddr)
+		if hostTLS {
+			add("host API listener (TLS, operator certs only, no source filter)", tls.NewListener(ln, o.tls), webtls.RequireOperator(o.operatorCerts, api))
+		} else {
+			add("host API listener (plain HTTP, no source filter)", ln, api)
+			//nolint:gosec // G706: hostAddr is an operator-supplied env var (not untrusted input) and %q quotes it
+			log.Printf("WARNING: API_HOST_LISTEN_ADDR=%q exposes the whole API as plain HTTP with no authentication, because API_HOST_PLAIN_HTTP=true: anyone who can reach that address can call POST /instances/{name}/seed or GET /instances/{name}/image and receive that node's WireGuard private key. That is for dev and the validate suite; unset API_HOST_PLAIN_HTTP to require an operator cert over TLS instead (#195, #397)", hostAddr)
+		}
 	}
 
 	if tun == nil && hostAddr == "" {
@@ -385,7 +520,8 @@ func (b flasherBuilder) Build(ctx context.Context, hostOS, seedDir, outputPath s
 // that then fails to start is fatal (see run()'s comment). The identity
 // persists in st (internal/wireguard.LoadOrGenerateIdentity), so it survives
 // restarts; #197 moves it to the deployment config directory's
-// secrets/wireguard.key (docs/Deployment.md).
+// secrets/wireguard.key (docs/Deployment.md). The source keeps it, since the
+// API's TLS key is derived from it (#397).
 // port is the UDP listen port (WIREGUARD_PORT, default 51820, WireGuard's
 // IANA-assigned port; 0 lets the OS pick).
 func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, port int, operators []wireguard.OperatorPeer) (wireguardTunnelSource, error) {
@@ -401,7 +537,7 @@ func newTunnelSource(ctx context.Context, st *store.Store, endpoint string, port
 	// tunnel-only posture no API route can hand it to them. It is public.
 	//nolint:gosec // G706: endpoint is an operator-supplied env var (not untrusted input) and %q quotes it
 	log.Printf("wireguard public key %s, overlay address %s, endpoint %q", tun.PublicKey(), wireguard.WebAppAddr, endpoint)
-	return wireguardTunnelSource{tun: tun, endpoint: endpoint, operators: operators}, nil
+	return wireguardTunnelSource{tun: tun, endpoint: endpoint, operators: operators, identity: priv}, nil
 }
 
 // wireguardTunnelSource implements server.TunnelSource over a live
@@ -413,6 +549,9 @@ type wireguardTunnelSource struct {
 	tun       *wireguard.Tunnel
 	endpoint  string
 	operators []wireguard.OperatorPeer
+	// identity is the tunnel's private key, which the API's TLS key is
+	// derived from (#397). It never leaves this process.
+	identity wireguard.PrivateKey
 }
 
 func (t wireguardTunnelSource) PublicKey() wireguard.PublicKey { return t.tun.PublicKey() }

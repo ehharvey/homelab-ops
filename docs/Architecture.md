@@ -143,19 +143,22 @@ but the deployment must give the container enough writable disk for at least
 one full image copy (more if concurrent downloads are expected), or mount a
 suitably-sized volume/`tmpfs` at `/tmp`.
 
-### Who can reach the API (#195)
+### Who can reach the API (#195, #397)
 
-The routes above are unauthenticated, and the seed and image routes hand out a
-node's WireGuard private key. So by default the API is served only **inside
-the WireGuard tunnel**, to operator peers (`Decisions.md` §28, §29). Which
+The seed and image routes hand out a node's WireGuard private key. So by
+default the API is served only **inside the WireGuard tunnel**, to operator
+peers, and every API listener serves **TLS requiring an operator client cert**
+(`Decisions.md` §28, §29, §32). Which
 listeners run is deployment config (`docs/Deployment.md` has every setting,
 its default and where it goes in the deployment config directory):
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `WIREGUARD_ENDPOINT` | unset (no tunnel) | Starts the tunnel. With it set, the API is served at `10.100.0.1:80` inside the tunnel, on the in-process network stack, so only the WireGuard UDP port is exposed on the host. |
+| `WIREGUARD_ENDPOINT` | unset (no tunnel) | Starts the tunnel. With it set, the API is served over TLS at `10.100.0.1:80` inside the tunnel, on the in-process network stack, so only the WireGuard UDP port is exposed on the host. |
 | `WIREGUARD_OPERATOR_PEERS` | empty | The operator devices allowed to use the tunnel API: `<overlay-address>=<base64-public-key>` entries, separated by commas or whitespace; in the deployment config directory, the `operator-peers` file, one per line with `#` comments. Each address must be in `10.100.0.240`–`10.100.0.254` (`wireguard.OperatorCIDR`), a range instances are never assigned. Only the public key reaches the web app. Requires `WIREGUARD_ENDPOINT`. |
-| `API_HOST_LISTEN_ADDR` | unset (off) | **Opt-in.** Also serves the whole API as plain HTTP on this host address, e.g. `127.0.0.1:8080` or one LAN interface, with no source filter. There is no default address. Startup logs a warning naming the exposure. |
+| `OPERATOR_CERTS_PATH` | unset: `CLIENT_CERT_PATH`'s cert | The operator certs (PEM, one per device; the directory's `operator-certs.pem`) a client must present one of on a TLS API listener, pinned by the cert's SHA-256 as Incus pins it, with no CA. Only their public halves reach the web app. With neither this nor `CLIENT_CERT_PATH` set while a TLS listener could admit someone (the tunnel once an operator peer is listed, or a TLS host listener), startup fails naming both; with the tunnel on and no operator peers, it starts and warns that the API refuses everyone. |
+| `API_HOST_LISTEN_ADDR` | unset (off) | **Opt-in.** Also serves the whole API on this host address, e.g. `127.0.0.1:8080` or one LAN interface, with no source filter, over TLS requiring an operator cert, its only gate. There is no default address. |
+| `API_HOST_PLAIN_HTTP` | `false` | **Dev opt-in.** Makes the host listener plain HTTP with no authentication at all; startup logs a warning naming the exposure. The tunnel listener is TLS regardless. |
 | `HEALTH_LISTEN_ADDR` | `:8081` | Serves `GET /healthz` and nothing else, for container health checks, whatever the API setting. |
 
 - **The source filter.** The tunnel listener admits a request only when its
@@ -164,21 +167,48 @@ its default and where it goes in the deployment config directory):
   sending peer's allowed IPs, so the address identifies the key. Nodes, and
   anyone holding a node's leaked key, are refused. The filter doesn't apply to
   the host listener, where a source address proves nothing.
+- **The operator cert, under the filter.** Either API listener's TLS
+  handshake asks for a client cert, and middleware around its whole handler
+  (`webtls.RequireOperator`) answers 403 to any request whose cert isn't
+  listed in `OPERATOR_CERTS_PATH`, by default the break-glass cert
+  (`CLIENT_CERT_PATH`), the same one every node's Incus trusts (§4), so one
+  operator identity covers both. No cert at all gets the same 403. The web
+  app holds only its public half (custody is pass-through, §30). On the
+  tunnel the source filter still runs after it.
+- **The server's TLS key** (`internal/webtls`), until step-ca (#506): a P-256
+  key derived from the web app's WireGuard private key (HKDF-SHA256), in a
+  self-signed cert re-made at each start, so it is the same across restarts
+  without storing anything. With the tunnel off it is derived from
+  `secrets/wireguard.key`, which is then required. With the tunnel on it is
+  derived from the tunnel's identity, still the store's until #197, and that
+  file isn't read, so toggling `WIREGUARD_ENDPOINT` changes the key; startup
+  warns when the file holds a different identity. Startup logs
+  `TLS server key fingerprint sha256//<base64>`, the SHA-256 of the public
+  key, which clients pin (curl: `-k --pinnedpubkey sha256//<base64>`).
 - **Operator setup.** Generate a keypair (`wg genkey | tee op.key | wg pubkey`),
   pick an address in the operator range, and list it in
   `WIREGUARD_OPERATOR_PEERS`. The web app logs its own public key at startup
   (`wireguard public key …`). Use that key as the operator's peer, with
   `AllowedIPs = 10.100.0.1/32` and the web app's `WIREGUARD_ENDPOINT` as its
-  endpoint. Then call `http://10.100.0.1/…` through the tunnel, or use the
-  operator CLI below, which needs no OS WireGuard interface. Every sync
+  endpoint. Then call `https://10.100.0.1/…` through the tunnel with the
+  operator cert and the pinned key, or use the operator CLI below, which
+  needs no OS WireGuard interface. Every sync
   re-registers the operator peers alongside the instances.
 - **The operator CLI (#196).** `bootstrap api <verb>` brings up its own
   userspace WireGuard peer in-process (`wireguard.StartClient`, the netstack
   the web app uses), so it needs no OS interface and no root, and calls the
-  API through it. It authenticates by being the listed operator peer; it is
-  plain HTTP for now (TLS and server-cert pinning: #397). The HTTP client is
-  `internal/apiclient`, separate from the tunnel dialer. Its inputs are flags,
-  not a config file, so a script passes them inline:
+  API through it. Being the listed operator peer is the network gate; over
+  TLS it presents the operator cert and pins the web app's TLS key (#397). On
+  first connect it shows the key's fingerprint, asks y/n to confirm it against
+  the web app's log, and records it in `--pins-file`, keyed by the web app's
+  WireGuard public key; a later change is refused, and `--repin` asks again and
+  replaces the recorded pin. A known pin is checked in the request's own
+  handshake, so only a first use or `--repin` probes the key separately. With
+  no terminal on both stdin and stderr it never asks: a script passes
+  `--server-fingerprint`, which is checked instead and never recorded. The
+  HTTP client is `internal/apiclient` (`PinnedHTTPClient`, `Pinning`),
+  separate from the tunnel dialer. Its inputs
+  are flags, not a config file, so a script passes them inline:
 
   | Flag | Default | Meaning |
   | --- | --- | --- |
@@ -189,6 +219,10 @@ its default and where it goes in the deployment config directory):
   | `--server-addr` | `10.100.0.1` | The web app's tunnel address; the API is on port 80 there. |
   | `--listen-port` | `0` (OS picks) | Local UDP port for this peer. |
   | `--connect-timeout` | `30s` | How long to wait for the tunnel to answer, at each address `--endpoint` resolves to. Bounds connecting only, not a download. A key the web app doesn't list never gets an answer, so it fails here. |
+  | `--client-cert`, `--client-key` | none | The operator cert (PEM) and its private key, e.g. `bootstrap gen-cert`'s `client.crt` and `client.key`. Without them, or with a cert it doesn't list, the web app answers 403, and the CLI says which and what to do. |
+  | `--server-fingerprint` | none | The web app's TLS key fingerprint, `sha256//<base64>`, from its startup log. Checked instead of a recorded pin; nothing is asked or recorded. For scripts; doesn't go with `--pins-file` or `--repin`. |
+  | `--pins-file` | `homelab-ops/api-pins` in the user config directory | Where confirmed fingerprints are recorded, one `<server-public-key> <fingerprint>` per line. A malformed line for another web app is skipped; one for this web app is an error, which `--repin` replaces. A write holds a lock on `<file>.lock` and follows a symlinked file. |
+  | `--repin` | off | Ignore the recorded pin, show the web app's current fingerprint and ask to confirm it; on yes it replaces the recorded one. For a key changed on purpose; needs a terminal, and doesn't go with `--server-fingerprint`. |
 
   Verbs, one per route: `status`, `networks`, `instances`, `sync` and
   `deploy-agent <instance>` print the server's JSON on stdout.
@@ -200,11 +234,13 @@ its default and where it goes in the deployment config directory):
   `scripts/validate/operator-cli-drives-api-over-tunnel.sh` drives every verb
   against the compose stack.
 - **Nothing configured.** The API is served on no listener, and startup warns.
-- **Dev.** `docker-compose.yml` opts in with `API_HOST_LISTEN_ADDR=:8080`,
-  published on the host's `127.0.0.1` only, so `curl localhost:8080` works.
+- **Dev.** `docker-compose.yml` opts in with `API_HOST_LISTEN_ADDR=:8080` and
+  `API_HOST_PLAIN_HTTP=true`, published on the host's `127.0.0.1` only, so
+  `curl localhost:8080` works.
   `scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh` proves
-  both postures against that stack. A TLS host listener is the expected third
-  mode; it isn't built.
+  both postures against that stack, and
+  `scripts/validate/api-requires-operator-cert-over-tunnel.sh` the operator
+  cert and the pin on the tunnel and on a TLS host listener.
 
 Networking between IncusOS nodes and the web app itself (avoiding exposing nodes to the public internet) is resolved as of #91 — see § Web app's WireGuard tunnel module above and `Decisions.md` § Networking for the three options originally weighed and why WireGuard won.
 

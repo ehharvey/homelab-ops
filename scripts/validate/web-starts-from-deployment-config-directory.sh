@@ -13,13 +13,17 @@
 #
 #   1. It starts: the tunnel comes up, the operator peer from operator-peers
 #      reaches the API over it, the sync from web.env's repo runs, and the
-#      seed route renders with client.crt.
+#      seed route renders with client.crt. The tunnel API is TLS (#397), and
+#      with no operator-certs.pem in the directory it requires client.crt's
+#      cert, which the harness presents, pinning the logged TLS key.
 #   2. An env var overrides web.env: WIREGUARD_ENDPOINT is web.env's
 #      webapp.example.net placeholder, and the environment's 127.0.0.1 wins.
 #   3. It fails fast: the web app exits non-zero, naming the problem, when a
 #      required setting is removed (WIREGUARD_ENDPOINT, required while
 #      operator peers are listed), when CONFIG_REPO_URL carries credentials,
-#      and when secrets/wireguard.key is readable beyond its owner.
+#      when client.crt is removed (no operator cert for the TLS API to
+#      require: it names OPERATOR_CERTS_PATH and CLIENT_CERT_PATH, #397), and
+#      when secrets/wireguard.key is readable beyond its owner.
 #
 # The tunnel side is driven by cmd/validate-tunnel-harness's http mode, as in
 # api-serves-operator-peers-over-tunnel-by-default.sh: only another WireGuard
@@ -112,6 +116,7 @@ set_web_env() {
 tunnel_req() {
   "$HARNESS" -mode http -private-key-file "$OPERATOR_KEY" -local-addr "$OPERATOR_ADDR" \
     -peer-public-key "$APP_PUB" -peer-tunnel-ip "$WEBAPP_ADDR" -peer-endpoint "$WG_ENDPOINT" \
+    -client-cert "$CERT_DIR/client.crt" -client-key "$CERT_DIR/client.key" -server-fingerprint "$TLS_PIN" \
     -method "$1" -path "$2" -timeout 30s 2>"$WORK_DIR/harness.err"
 }
 
@@ -205,6 +210,8 @@ wait_log "web.env's CONFIG_REPO_URL and CONFIG_SYNC_INTERVAL drive the startup s
 
 APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0-9+/=]+' | tail -1 | awk '{print $4}')
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+TLS_PIN=$(web_tls_fingerprint)
+check "web app logged its TLS server key fingerprint" test -n "$TLS_PIN"
 
 expect_route "operator (from operator-peers): GET /status over the tunnel" 200 GET /status '"synced":true'
 expect_route "operator: POST /instances/$INSTANCE/seed renders with client.crt" 200 POST "/instances/$INSTANCE/seed" 'network_yaml'
@@ -233,6 +240,14 @@ else
   record_pass "the refusal doesn't echo the token"
 fi
 set_web_env CONFIG_REPO_URL git://config-repo/fleet.git
+
+echo "-- no operator cert for the TLS API --"
+# Neither operator-certs.pem nor client.crt: the tunnel API serves TLS and
+# would admit no one.
+rm "$DEPLOY_DIR/client.crt"
+expect_startup_failure "client.crt removed" "OPERATOR_CERTS_PATH: no operator cert for the API to require"
+check_log "client.crt removed: the refusal names CLIENT_CERT_PATH too" "or CLIENT_CERT_PATH (its client.crt)"
+cp "$CERT_DIR/client.crt" "$DEPLOY_DIR/client.crt"
 
 echo "-- a secret readable beyond its owner --"
 chmod 0644 "$DEPLOY_DIR/secrets/wireguard.key"

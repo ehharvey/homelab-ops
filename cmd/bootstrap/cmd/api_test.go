@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -17,6 +19,8 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/apiclient"
+	"github.com/ehharvey/homelab-ops/internal/cert"
+	"github.com/ehharvey/homelab-ops/internal/webtls"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -31,6 +35,11 @@ func resetAPIFlags(t *testing.T) {
 	apiFlags.serverAddr = wireguard.WebAppAddr.String()
 	apiFlags.listenPort = 0
 	apiFlags.connectTimeout = 30 * time.Second
+	apiFlags.clientCert = ""
+	apiFlags.clientKey = ""
+	apiFlags.serverFingerprint = ""
+	apiFlags.pinsFile = ""
+	apiFlags.repin = false
 	apiSeedOutput = ""
 	apiImageOutput = ""
 }
@@ -304,8 +313,8 @@ func TestAPITunnelOptionsChecksFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("good flags: %v", err)
 	}
-	if baseURL != "http://10.100.0.1:80" {
-		t.Errorf("baseURL = %q, want http://10.100.0.1:80", baseURL)
+	if baseURL != "https://10.100.0.1:80" {
+		t.Errorf("baseURL = %q, want https://10.100.0.1:80", baseURL)
 	}
 	if opts.PrivateKey != priv || opts.PeerPublicKey != srvPub ||
 		opts.LocalAddr != netip.MustParseAddr("10.100.0.240") ||
@@ -341,15 +350,79 @@ func TestAPITunnelOptionsChecksFlags(t *testing.T) {
 	}
 }
 
-// TestAPIStatusOverARealTunnel runs `bootstrap api status` with only flags,
-// through the CLI's own WireGuard peer, against a tunnel standing in for the
-// web app's: what scripts/validate/operator-cli-drives-api-over-tunnel.sh
-// does against the real one.
+// TestAPITLSOptionsChecksFlags: the cert and key go together and must load,
+// and a --server-fingerprint must be one.
+func TestAPITLSOptionsChecksFlags(t *testing.T) {
+	resetAPIFlags(t)
+	t.Cleanup(func() { resetAPIFlags(t) })
+	certFile, keyFile, _ := writeOperatorCert(t)
+
+	apiFlags.clientCert, apiFlags.clientKey, apiFlags.pinsFile = certFile, keyFile, "/pins"
+	o, err := apiTLSOptions()
+	if err != nil || o.clientCert == nil || o.pinsFile != "/pins" {
+		t.Errorf("good flags: %+v, %v", o, err)
+	}
+	for name, spoil := range map[string]func(){
+		"cert without key":  func() { apiFlags.clientKey = "" },
+		"key without cert":  func() { apiFlags.clientCert = "" },
+		"unreadable cert":   func() { apiFlags.clientCert = filepath.Join(t.TempDir(), "nope") },
+		"bad fingerprint":   func() { apiFlags.serverFingerprint = "sha256//short" },
+		"key for no cert":   func() { apiFlags.clientKey = certFile },
+		"not a fingerprint": func() { apiFlags.serverFingerprint = "AA:BB" },
+		"--repin with --server-fingerprint": func() {
+			apiFlags.repin, apiFlags.serverFingerprint = true, "sha256//1cTo/jJRHejfZmjBQ03eeJaF3ko2t/JFbZ6Nbg+TMqw="
+		},
+		// Silently ignoring the file would leave a script believing it
+		// checked or recorded the pin there (#397 review).
+		"--pins-file with --server-fingerprint": func() {
+			apiFlags.serverFingerprint = "sha256//1cTo/jJRHejfZmjBQ03eeJaF3ko2t/JFbZ6Nbg+TMqw="
+		},
+	} {
+		apiFlags.clientCert, apiFlags.clientKey, apiFlags.serverFingerprint, apiFlags.repin, apiFlags.pinsFile = certFile, keyFile, "", false, "/pins"
+		spoil()
+		if _, err := apiTLSOptions(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// writeOperatorCert writes a gen-cert-style pair and returns its files and
+// the parsed cert.
+func writeOperatorCert(t *testing.T) (certFile, keyFile string, leaf *x509.Certificate) {
+	t.Helper()
+	pair, err := cert.Generate(cert.Options{CommonName: "operator", ValidityDays: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certFile, keyFile, err = cert.Write(dir, pair, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certs, err := webtls.ParseCertsPEM(pair.CertPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile, certs[0]
+}
+
+// testWebApp is a tunnel standing in for the web app's (startTestWebAppTunnel).
+type testWebApp struct {
+	pub     wireguard.PublicKey
+	port    int
+	cliPriv wireguard.PrivateKey
+	cliAddr netip.Addr
+	// pin is its TLS key's fingerprint; certFile and keyFile are the
+	// operator cert it requires.
+	pin, certFile, keyFile string
+}
+
 // startTestWebAppTunnel starts a tunnel standing in for the web app's, on
 // loopback, that lists one operator peer and serves GET /status on the API
-// port, answering with the caller's tunnel address. It returns the web app's
-// public key and UDP port, and the operator peer's key and address.
-func startTestWebAppTunnel(t *testing.T) (wireguard.PublicKey, int, wireguard.PrivateKey, netip.Addr) {
+// port over TLS, with a key derived from its identity and requiring one
+// operator cert, as the web app does (#397). It answers with the caller's
+// tunnel address.
+func startTestWebAppTunnel(t *testing.T) testWebApp {
 	t.Helper()
 	srvPriv, srvPub, _ := wireguard.GenerateKeypair()
 	srv, err := wireguard.Start(wireguard.Options{PrivateKey: srvPriv, LocalAddr: wireguard.WebAppAddr})
@@ -370,23 +443,38 @@ func startTestWebAppTunnel(t *testing.T) (wireguard.PublicKey, int, wireguard.Pr
 	if err != nil {
 		t.Fatal(err)
 	}
-	hs := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	certFile, keyFile, leaf := writeOperatorCert(t)
+	key, err := webtls.DeriveKey(srvPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCert, err := webtls.SelfSigned(key, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := webtls.PublicKeyFingerprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln = tls.NewListener(ln, webtls.ServerConfig(serverCert))
+	hs := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: webtls.RequireOperator([]*x509.Certificate{leaf}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/status" {
 			http.NotFound(w, r)
 			return
 		}
 		_, _ = io.WriteString(w, `{"synced":true,"from":"`+r.RemoteAddr+`"}`)
-	})}
+	}))}
 	go func() { _ = hs.Serve(ln) }()
 	t.Cleanup(func() { hs.Close() }) //nolint:errcheck,gosec // test cleanup
-	return srvPub, srvPort, cliPriv, cliAddr
+	return testWebApp{pub: srvPub, port: srvPort, cliPriv: cliPriv, cliAddr: cliAddr, pin: pin, certFile: certFile, keyFile: keyFile}
 }
 
 // TestStartFirstAnsweringTriesEachEndpoint: of an endpoint name's addresses,
 // one that never answers is skipped for the next, and when none answers the
 // error names each address.
 func TestStartFirstAnsweringTriesEachEndpoint(t *testing.T) {
-	srvPub, srvPort, cliPriv, cliAddr := startTestWebAppTunnel(t)
+	app := startTestWebAppTunnel(t)
+	srvPub, srvPort, cliPriv, cliAddr := app.pub, app.port, app.cliPriv, app.cliAddr
 	// A UDP port with nothing behind it: the handshake never completes.
 	deadConn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -417,22 +505,172 @@ func TestStartFirstAnsweringTriesEachEndpoint(t *testing.T) {
 	}
 }
 
+// TestAPIStatusOverARealTunnel runs `bootstrap api status` with only flags,
+// through the CLI's own WireGuard peer, against a tunnel standing in for the
+// web app's: what scripts/validate/operator-cli-drives-api-over-tunnel.sh
+// does against the real one. The operator cert and the pin are flags, as a
+// script passes them.
 func TestAPIStatusOverARealTunnel(t *testing.T) {
 	resetAPIFlags(t)
 	t.Cleanup(func() { resetAPIFlags(t) })
-	srvPub, srvPort, cliPriv, cliAddr := startTestWebAppTunnel(t)
+	app := startTestWebAppTunnel(t)
 
-	out, _, err := runAPI("api", "status",
-		"--private-key-file", writeKeyFile(t, cliPriv),
-		"--local-addr", cliAddr.String(),
-		"--server-public-key", srvPub.Base64(),
-		"--endpoint", "127.0.0.1:"+strconv.Itoa(srvPort),
-		"--connect-timeout", "20s",
-	)
+	out, _, err := runAPI(app.statusArgs(t, "--server-fingerprint", app.pin)...)
 	if err != nil {
 		t.Fatalf("api status: %v", err)
 	}
 	if !strings.Contains(out, `"synced":true`) || !strings.Contains(out, `"from":"10.100.0.240:`) {
 		t.Errorf("printed %q, want the status, seen from the operator address", out)
+	}
+
+	resetAPIFlags(t)
+	other := startTestWebAppTunnel(t)
+	_, _, err = runAPI(app.statusArgs(t, "--server-fingerprint", other.pin)...)
+	var mismatch *apiclient.PinMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Errorf("a wrong --server-fingerprint: err = %v, want the pin refused", err)
+	}
+
+	// No operator cert: the web app's 403 comes with what to pass.
+	resetAPIFlags(t)
+	var noCert []string
+	args := app.statusArgs(t, "--server-fingerprint", app.pin)
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--client-cert" || args[i] == "--client-key" {
+			i++
+			continue
+		}
+		noCert = append(noCert, args[i])
+	}
+	_, _, err = runAPI(noCert...)
+	var apiErr *apiclient.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden || !strings.Contains(err.Error(), "pass the operator cert with --client-cert and --client-key") {
+		t.Errorf("no client cert: err = %v, want the 403 explained", err)
+	}
+
+	// A cert the web app doesn't list: the same 403, explained as that.
+	resetAPIFlags(t)
+	strangerCert, strangerKey, _ := writeOperatorCert(t)
+	_, _, err = runAPI(append(noCert, "--client-cert", strangerCert, "--client-key", strangerKey)...)
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden || !strings.Contains(err.Error(), "the web app doesn't list --client-cert") {
+		t.Errorf("an unlisted cert: err = %v, want the 403 explained", err)
+	}
+}
+
+// The remediation is the CLI's, added only to the cert check's 403: the
+// library error states the refusal, and another 403 (the operator-peer
+// filter's) or error passes through unchanged (#397 review).
+func TestExplainCertRefusal(t *testing.T) {
+	refusal := &apiclient.APIError{Method: "GET", Path: "/status", StatusCode: http.StatusForbidden, Message: webtls.NotOperatorMessage}
+	if err := explainCertRefusal(refusal, true); !strings.Contains(err.Error(), "OPERATOR_CERTS_PATH") || strings.Contains(err.Error(), "no client cert was presented") {
+		t.Errorf("presented: %v", err)
+	}
+	if err := explainCertRefusal(refusal, false); !strings.Contains(err.Error(), "--client-cert and --client-key") {
+		t.Errorf("not presented: %v", err)
+	}
+	if strings.Contains(refusal.Error(), "OPERATOR_CERTS_PATH") || strings.Contains(refusal.Error(), "--client-cert") {
+		t.Errorf("the library error %q names a setting or flag", refusal)
+	}
+	for _, other := range []error{
+		&apiclient.APIError{Method: "GET", Path: "/status", StatusCode: http.StatusForbidden, Message: "forbidden: not an operator peer"},
+		errors.New("connection reset by peer"),
+		nil,
+	} {
+		if got := explainCertRefusal(other, true); got != other { //nolint:errorlint // identity: passed through unwrapped
+			t.Errorf("%v: got %v, want it unchanged", other, got)
+		}
+	}
+}
+
+// A regular file (stderr redirected to a log, say) is no terminal, so
+// apiCanPrompt doesn't ask where no one would see it.
+func TestIsTerminalRefusesARegularFile(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "err.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck // test
+	if isTerminal(f) {
+		t.Error("a regular file counted as a terminal")
+	}
+}
+
+// reuseFirst hands the probe's connection to the first dial of its address
+// only, and dials afresh after it and for any other address.
+func TestReuseFirst(t *testing.T) {
+	probe, _ := net.Pipe()
+	var dialed []string
+	dial := reuseFirst(probe, "api:80", func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = append(dialed, addr)
+		c, _ := net.Pipe()
+		return c, nil
+	})
+	ctx := context.Background()
+	if c, _ := dial(ctx, "tcp", "other:80"); c == probe {
+		t.Error("another address got the probe's connection")
+	}
+	if c, _ := dial(ctx, "tcp", "api:80"); c != probe {
+		t.Error("the first dial of the probed address didn't reuse its connection")
+	}
+	if c, _ := dial(ctx, "tcp", "api:80"); c == probe {
+		t.Error("the probe's connection was handed out twice")
+	}
+	if strings.Join(dialed, " ") != "other:80 api:80" {
+		t.Errorf("dialed %v, want other:80 then api:80", dialed)
+	}
+}
+
+// statusArgs is `api status` against app, as its operator peer with its
+// operator cert, plus extra flags.
+func (app testWebApp) statusArgs(t *testing.T, extra ...string) []string {
+	t.Helper()
+	return append([]string{"api", "status",
+		"--private-key-file", writeKeyFile(t, app.cliPriv),
+		"--local-addr", app.cliAddr.String(),
+		"--server-public-key", app.pub.Base64(),
+		"--endpoint", "127.0.0.1:" + strconv.Itoa(app.port),
+		"--connect-timeout", "20s",
+		"--client-cert", app.certFile,
+		"--client-key", app.keyFile,
+	}, extra...)
+}
+
+// On a terminal, the first connection shows the web app's fingerprint and
+// asks; yes records it in --pins-file, and the next run trusts it unasked.
+// Without a terminal and with no pin, the run is refused instead.
+func TestAPIPinsTheServerOnFirstUse(t *testing.T) {
+	resetAPIFlags(t)
+	t.Cleanup(func() { resetAPIFlags(t) })
+	app := startTestWebAppTunnel(t)
+	pins := filepath.Join(t.TempDir(), "api-pins")
+
+	origIn, origOut, origCan := apiPromptIn, apiPromptOut, apiCanPrompt
+	t.Cleanup(func() { apiPromptIn, apiPromptOut, apiCanPrompt = origIn, origOut, origCan })
+	var prompt bytes.Buffer
+	apiPromptOut = &prompt
+
+	apiCanPrompt = func() bool { return false }
+	if _, _, err := runAPI(app.statusArgs(t, "--pins-file", pins)...); err == nil || !strings.Contains(err.Error(), "--server-fingerprint "+app.pin) {
+		t.Errorf("no terminal, no pin: err = %v, want a refusal naming the fingerprint", err)
+	}
+
+	resetAPIFlags(t)
+	apiCanPrompt = func() bool { return true }
+	apiPromptIn = strings.NewReader("y\n")
+	if _, _, err := runAPI(app.statusArgs(t, "--pins-file", pins)...); err != nil {
+		t.Fatalf("first use, confirmed: %v", err)
+	}
+	if !strings.Contains(prompt.String(), app.pin) {
+		t.Errorf("the prompt %q doesn't show the fingerprint", prompt.String())
+	}
+	if got, ok, err := apiclient.LookupPin(pins, app.pub.Base64()); err != nil || !ok || got != app.pin {
+		t.Errorf("recorded pin = %q, %v, %v; want %q", got, ok, err, app.pin)
+	}
+
+	resetAPIFlags(t)
+	prompt.Reset()
+	apiPromptIn = strings.NewReader("")
+	if _, _, err := runAPI(app.statusArgs(t, "--pins-file", pins)...); err != nil || prompt.Len() != 0 {
+		t.Errorf("second use: err %v, prompt %q; want the recorded pin, unasked", err, prompt.String())
 	}
 }

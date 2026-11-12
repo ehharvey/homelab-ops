@@ -2124,13 +2124,14 @@ By default, the HTTP API moves off the host port and onto the web app's existing
 - **What this buys.** Mutual, key-based authentication and encryption in transit for the operator, with no auth code beyond an address check.
 - **What it doesn't.**
   - No multi-user support, and no per-person audit beyond "which key".
-  - Browsers treat plain HTTP over the tunnel as insecure, so anything that needs a secure context waits for TLS.
+  - Browsers don't trust the web app's self-signed TLS cert (below), so anything that needs a browser's secure context waits for step-ca's cert (§32, #506, #508).
 
-  Full auth comes back when the web app must be reachable off the tunnel by anyone but the operator, or by more than one person. The opt-in host listener below is the one exception: the operator accepts its exposure by choosing a trusted address, so it doesn't bring auth back.
-- **The host listener: an explicit opt-in.** An operator setting also serves the API as plain HTTP on an address the operator chooses, such as localhost or one LAN interface. It is off unless set, and has no default bind address. When it's on, startup logs a warning naming the exposure: over it, the seed and image routes hand out node WireGuard private keys to anyone who can reach that address. The source filter above applies only to the tunnel listener. TLS on the host is the expected third mode, not built yet.
-- **Dev and validate.** `docker compose` and the `scripts/validate/` web-app family call `:8080` directly today. They will either:
-  - join as a peer (`cmd/validate-tunnel-harness` already dials through the tunnel in-process), or
-  - opt in to the host listener, bound to localhost.
+  Full auth comes back when the web app must be reachable off the tunnel by anyone but the operator, or by more than one person. The host listener's plain-HTTP dev opt-in below is the one exception: the operator accepts its exposure by choosing it and a trusted address, so it doesn't bring auth back.
+- **The host listener: an explicit opt-in.** An operator setting (`API_HOST_LISTEN_ADDR`) also serves the API on an address the operator chooses, such as localhost or one LAN interface. It is off unless set, and has no default bind address. The source filter above applies only to the tunnel listener, so the host listener serves TLS and requires a listed operator cert, its only gate (#397, below). Plain HTTP there is a second, separate opt-in (`API_HOST_PLAIN_HTTP`) for dev and the validate suite. With it, startup logs a warning naming the exposure: over it, the seed and image routes hand out node WireGuard private keys to anyone who can reach that address.
+- **TLS and the operator cert on both API listeners (#397).** The tunnel listener always serves TLS, and the host listener does unless plain HTTP is opted in. The handshake asks for a client cert without requiring one, and middleware around the listener's whole handler answers 403 unless the cert presented matches a listed operator cert by SHA-256, the way Incus trusts the break-glass cert (§4); there is no CA. The check is over HTTP, not in the handshake, because a TLS 1.3 handshake refusal reaches the client only after its own handshake has finished, where it can't be told from a dropped connection; a 403 is unambiguous to the CLI, scripts and curl alike. The list (`OPERATOR_CERTS_PATH`, a PEM file, one cert per operator device, mirroring the list of operator peers) falls back to the break-glass cert at `CLIENT_CERT_PATH`, so one operator identity covers client→Incus and client→web app. With neither set while a TLS listener could admit someone (the tunnel once an operator peer is listed, or a TLS host listener), startup fails naming both; the tunnel with no operator peers already refuses everyone at its peer gate, so it starts with no cert and warns. The cert check wraps the whole handler, so a route added later is covered; on the tunnel the source filter still runs after it, so WireGuard stays the network gate and the cert is the identity check on top. `/healthz` stays plain HTTP on its own listener. The server's TLS key, until step-ca, is §32's derived one. With the tunnel off and a TLS host listener on, that key is derived from `secrets/wireguard.key`, which is then required: startup fails naming the file if it is missing or malformed, so the pinned fingerprint stays stable across restarts (operator decision, 2026-11-10).
+- **Dev and validate.** `docker compose` and the `scripts/validate/` web-app family call `:8080` directly. They either:
+  - join as a peer (`cmd/validate-tunnel-harness` dials through the tunnel in-process), presenting the operator cert and pinning the server's key, or
+  - opt in to the host listener, bound to localhost, with plain HTTP opted in as well (the dev `docker-compose.yml` sets both).
 
   At least one validate script exercises the tunnel-only default. `/healthz` stays on a local port for container health checks.
 
@@ -2138,7 +2139,7 @@ By default, the HTTP API moves off the host port and onto the web app's existing
 
 The web app's API is small (sync, status, list networks and instances, seed, image) and nearly read-only, because desired state is edited in git, not in the app. There is one operator. A CLI subcommand group fits that: in the existing `bootstrap` binary, or a sibling `cmd/` binary. It:
 
-- authenticates by being a WireGuard peer — the address check above. No mTLS, sessions or OIDC for the CLI;
+- passes the network gate by being a WireGuard peer (the address check above), and authenticates by presenting the operator cert over TLS (mTLS, #397). It pins the web app's TLS key: on first connect it shows the fingerprint and asks the operator to confirm it (y/n) against the one in the web app's log, records it on yes, and refuses a later mismatch. A non-interactive run passes the expected fingerprint explicitly and is refused on mismatch, never prompted. No sessions or OIDC for the CLI;
 - streams multi-GB image downloads straight to a file or device;
 - decrypts downloads locally, where the key is (below);
 - is scriptable from `scripts/validate/`.
@@ -2214,7 +2215,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 ### Considered and deferred
 
 - **Proper auth and a JS client** (sized 2026-09-28). The auth half is now decided by §32 (#505): TLS from step-ca, OIDC login via `coreos/go-oidc`, session and CSRF middleware, and kanidm instead of Dex. The JS client stays deferred, because the UI is server-rendered. The sizing below is kept as the estimate.
-  - Auth alone is roughly three to four issues: TLS; OIDC login (Authorization Code + PKCE via `coreos/go-oidc`, with the server holding the login so the browser only ever gets a session cookie); session and CSRF middleware; an identity provider (Dex) in compose for validation; and device-code or mTLS access for the CLI.
+  - Auth alone is roughly three to four issues: TLS; OIDC login (Authorization Code + PKCE via `coreos/go-oidc`, with the server holding the login so the browser only ever gets a session cookie); session and CSRF middleware; an identity provider (Dex) in compose for validation; and device-code access for the CLI. (mTLS for the CLI, once part of this estimate, is built: #397.)
   - The JS client is the larger cost. The repo has no Node toolchain, build stage or CI job yet, and every screen adds to it.
   - Faster routes, if auth is wanted sooner: an auth proxy in front (oauth2-proxy, Caddy `forward_auth`) with almost no Go changes, or tailnet identity headers once Tailscale lands (Phase 10).
 - **Asymmetric encryption (GPG or age X25519).** This would let the web app write backups it can't read, and snapshot signing belongs with it.
@@ -2234,6 +2235,7 @@ The config repo is public, and addresses in it describe the operator's LAN. Git 
 - **2026-11-04 (#505, §32).** "A CLI first, no web UI yet" became "a CLI, and a browser UI behind kanidm". The operator-held, memory-only key and the operator-supplied WireGuard identity stay the default, now with an opt-in where the web app generates both on first boot and seals them to the TPM. The deferred auth's provider question is answered: kanidm, beside the web app. Why: the appliance is the bootstrap and break-glass anchor (§31), and the operator wanted it usable from a browser and able to restart unattended.
 - **2026-11-04 (#199).** The network-addressing decision was built, with three interim choices. State addressing comes from its own setting, `NETWORK_ADDRESSING_PATH`, rather than "a deployment-config file like `CLIENT_CERT_PATH`" folded into other config; loading it through the CLI into the encrypted store, with pins, is split to #514. State-addressed networks have no pins until then. The "optional guard… could require `CONFIG_REPO_PRIVATE=true`" became mandatory and rejecting by default. "All of the addressing fields" was read as "a `cidr`", the one that was ever required. Why: the operator's answers on #199 and §29's safe-default rule for the first two; for the third, the operator's sign-off on PR #516, since `gateway`, `dhcp_excluded_range` and `dns` were always optional and a strict reading would reject fleets that validate today.
 - **2026-11-05 (#490).** `dhcp.pool` joined the addressing fields, and `dhcp.mode` stays in git: the resolve step now copies an entry's addressing fields onto git's `Network` rather than replacing it, and "IPAM is otherwise unchanged" became the per-mode ranges of §31.
+- **2026-11-12 (#397).** Both API listeners became TLS, requiring a listed operator cert, and the CLI pins the web app's key. Superseded: the host listener "serves the API as plain HTTP… TLS on the host is the expected third mode, not built yet" (plain HTTP is now a separate dev opt-in); the CLI "authenticates by being a WireGuard peer… No mTLS, sessions or OIDC for the CLI" (the peer is now the network gate, and the cert the identity); "Browsers treat plain HTTP over the tunnel as insecure"; and "device-code or mTLS access for the CLI" in the deferred auth estimate. Why: one operator identity for Incus and the web app (operator decision, 2026-10-26), and the host listener's cert requirement closes #63 (operator decision, 2026-11-04). Host-only TLS requiring `secrets/wireguard.key` is the operator's answer of 2026-11-10. The cert check was first built into the TLS handshake, then moved to middleware answering 403 in PR #599's review, since the client couldn't tell a handshake refusal from a dropped connection.
 
 ## 29. The web app runs on an appliance machine; every deployment setting is an operator choice (2026-10-03)
 
@@ -2269,7 +2271,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 | Host form | Stock Debian cloud image set up by cloud-init (#243) | Any Docker host running #243's compose file by hand; IncusOS turnkey host (#246, parked); mkosi-built image (#393, undecided); plain binary + systemd (§9's other target, not yet planned) |
 | Host OS updates | `unattended-upgrades`, rebooting only when an update requires it, in a window (#243) | An operator-set window; the operator patches by hand |
 | How the config directory reaches the host | Inline in cloud-init `user-data` (#243), so the WireGuard key also sits in the provider's metadata | `--no-secrets`: the secret files are left out, the operator copies them in after boot, and the web app starts once they're present |
-| API listener | Tunnel only, operator peers (§28, #195) | Opt-in plain-HTTP host listener on a chosen address; TLS from the appliance's step-ca (§32, #506) |
+| API listener | Tunnel only, operator peers, over TLS requiring an operator client cert (§28, #195, #397) | Opt-in host listener on a chosen address, TLS with the same operator cert; plain HTTP there only as a further dev opt-in (`API_HOST_PLAIN_HTTP`); TLS cert from the appliance's step-ca instead of the WireGuard-derived one (§32, #506) |
 | Where install media is built | Server-side, when `BASE_IMAGE_PATH` is set (today's image route, kept as the default because it works now; costly on an internet VM, see below) | Client-side image build from a downloaded seed; a `SEED_DATA` stick beside a stock IncusOS image (#242) |
 | node0 provisioning | By the web app over the tunnel (#244) | Bootstrap CLI, offline, no tunnel (today's Flow A) |
 | WireGuard endpoint | No default; the operator supplies it. Recommended: a DNS name | An IP address |
@@ -2305,7 +2307,6 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 
 ### Considered and deferred
 
-- **TLS as a third API listener mode.** It comes with, or before, any web UI (§28's deferred auth).
 - **The bootstrap CLI rendering tunnel config for node0.** Once #197 makes the web app's identity operator-supplied, the CLI knows its public key offline. The node's own keypair would still have to be imported into the web app's store. Not needed while the web app provisions node0 by default.
 
 ### History
@@ -2322,6 +2323,7 @@ No single fixed posture fits a public VM, a LAN laptop and a later move into the
 - **2026-11-02 (#466, §31).** The LAN laptop became the bootstrap and break-glass appliance, with DHCP, DNS and Secure Boot settings added to the operator-choice table, and the appliance phase moved ahead of the first Talos node. `bootstrap deploy-web` (#386) used to be kept as how the web app moves into the fleet; with the fleet on Talos that route is static pods, so #386 is parked with the Incus runtime.
 - **2026-11-04 (#505, §32).** The API listener's "TLS later" alternative became TLS from the appliance's step-ca (#506). Three rows were added: the web app's keys (generated and TPM-sealed, #509), the step-ca root's custody (#506), and the browser UI on a LAN host listener (#508). Why: the appliance gained a CA, an IdM and a browser UI (§32), and each new posture is an operator choice with a safe default.
 - **2026-11-04 (#199, §28).** Two rows were added: network addressing in git (`CONFIG_REPO_PRIVATE`, rejected by default) and where state addressing comes from (`NETWORK_ADDRESSING_PATH`). Why: §28's addressing decision was built, and a public repo is the safe assumption.
+- **2026-11-12 (#397, §28).** The API listener row became TLS with an operator cert on both listeners; it was "Tunnel only, operator peers", with "Opt-in plain-HTTP host listener on a chosen address; TLS from the appliance's step-ca" as the alternatives. "TLS as a third API listener mode" left Considered and deferred: it is built. Plain HTTP on the host listener survives as a separate opt-in for dev and the validate suite, and a TLS host listener with the tunnel off requires `secrets/wireguard.key`, its TLS key's source (operator decision, 2026-11-10). Why: every setting keeps a safe default (above), and with no peer check the cert is the host listener's only gate (operator decision, 2026-11-04).
 
 ## 30. Re-plan around host management: the agent manages only itself and its cluster (2026-10-26)
 
@@ -2378,8 +2380,9 @@ Superseded by §31 (see History): Talos is the main line, and Debian and NixOS w
 ### Auth and certs
 
 - One operator client cert for Incus and the web app (#397).
+- **Its custody: pass-through (#397).** The operator holds the private key and presents it; the web app holds only the public halves it pins (`OPERATOR_CERTS_PATH`, else `CLIENT_CERT_PATH`), and no operator private key or standing credential of its own for the operator. §4's custody rule is unchanged.
 - The appliance runs a CA: step-ca, as a sidecar the web app manages (§32, #506). CA-signed Incus node certs and PKI-mode trust stay #400's, parked with Incus.
-- **Not settled here: credential custody.** A bastion that proxies Incus exec or SSH, an SSH CA and a shared operator cert each need either pass-through of the operator's credential or a standing credential or CA key in the web app. That meets §4 (the app never holds the break-glass key) and §28 (one operator-held key). #397, #399 and #400 decide it; this section doesn't.
+- **Not settled here: credential custody.** A bastion that proxies Incus exec or SSH, an SSH CA and a shared operator cert each need either pass-through of the operator's credential or a standing credential or CA key in the web app. That meets §4 (the app never holds the break-glass key) and §28 (one operator-held key). #397 decided the shared operator cert's (pass-through, above); #399 and #400 decide the rest; this section doesn't.
 
 ### Roadmap layout
 
@@ -2390,6 +2393,7 @@ Superseded by §31's layout (see History). Phase 3 is unchanged and is finished 
 - **2026-11-02 (#466, §31):** the pivot to bare-metal Kubernetes on Talos. This section's rules now describe the Incus runtime, which is kept building but parked after Phase 3. Superseded: the host OS order (IncusOS → Debian → NixOS → Talos, Phase 6) and the Roadmap layout (3: the agent; 4: web app appliance and hardening; 5: same-OS Incus clusters; 6: multi-OS hosts; 7: Tailscale; 8: App management). Node access and auth stand; the SSH CA for Debian and NixOS hosts is parked with them.
 - **2026-11-04 (#487, operator):** the same-OS check no longer waits for #181's membership model. It applies fleet-wide, to `os` and `runtime` alike, until a repo can hold several clusters. It used to say the check would arrive with a per-cluster `runtime` once config had a cluster entity. §31's Config bullet is corrected in place to match: `runtime` is on `Instance`, and the allowed-pairs table is checked in `config.Validate`, not at parse.
 - **2026-11-04 (#505, §32).** "The web app as a CA is a later decision (#400)" became the appliance's step-ca, a sidecar the web app manages (§32, #506). #400 keeps only CA-signed Incus node certs and PKI-mode trust, parked with Incus.
+- **2026-11-12 (#397).** The shared operator cert's custody was settled: pass-through. It used to read "#397, #399 and #400 decide it", with nothing decided.
 
 ## 31. Pivot to bare-metal Kubernetes on Talos; the project becomes runtime-agnostic (2026-11-02)
 
@@ -2539,6 +2543,7 @@ Both run as containers in the appliance's compose stack, beside the web app (§2
 
 - **step-ca (#506).**
   - It issues TLS certs for the web app (answering #397's open question about where the web app's TLS key comes from), for kanidm, and for Kea's HA peers (§31).
+  - **Until it exists, the web app's TLS key is derived (#397).** The web app derives a P-256 key from its WireGuard private key (HKDF-SHA256, with a versioned info string) and re-makes a self-signed cert around it at each start. It adds no secret on disk, and survives restarts and a host move (#245) along with the identity: today the tunnel's identity, from the store; after #197, `secrets/wireguard.key`; with the tunnel off, always `secrets/wireguard.key`, which a TLS host listener then requires. It is not kept in the store, because #197 locks the store after every restart and a locked web app must still serve unlock over TLS. The cert is re-made, so clients pin the SHA-256 of its public key (SPKI), which the web app logs at every start and #510's first-boot output shows. #506 swaps in step-ca's cert, and decides whether the derived one stays as a fallback.
   - Default custody: the root is created and kept offline, like PK and KEK (§31), and only an intermediate is online. The intermediate's password lives in the web app's encrypted store, so a sealed web app can't hand it out.
   - Operator choices, when the root is generated on the appliance (#506):
     - **Onto a YubiKey.** The root key is generated in a YubiKey PIV slot, so it never exists outside the key. The appliance signs the intermediate with it, writes the root cert to the slot, and the operator then removes the YubiKey and stores it offline.
@@ -2577,6 +2582,10 @@ An appliance that generated its own keys has to tell the operator its WireGuard 
 ### Open: Phase 8
 
 When the web app moves into the cluster (§31), it is undecided whether kanidm and step-ca follow it, and how break-glass login works with the cluster down. The appliance laptop keeps the break-glass role either way.
+
+### History
+
+- **2026-11-12 (#397).** The web app's TLS key before step-ca was added under step-ca: derived from its WireGuard identity, self-signed, pinned by public-key fingerprint. This section had said only that step-ca issues it. On #397 the key was first to be generated and kept in the store (operator decision, 2026-11-04), then derived instead (2026-11-05). Why: the locked-store restart above.
 
 ## Sources consulted
 

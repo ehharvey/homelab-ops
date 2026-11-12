@@ -337,3 +337,23 @@ FLEET_EOF
 		git push origin main >/dev/null 2>&1
 	" >/dev/null 2>&1
 }
+
+# --- The web app API's TLS (#397) ------------------------------------------
+# The tunnel API listener always serves TLS, and the host listener does
+# unless API_HOST_PLAIN_HTTP=true (the dev stack's opt-in). The web app's TLS
+# key is derived from its WireGuard identity, and its fingerprint is logged
+# at every start.
+
+# web_tls_fingerprint — the web app's TLS server key fingerprint
+# (sha256//<base64>) from its newest startup log; empty if none is logged.
+# `bootstrap api --server-fingerprint`, the tunnel harness's
+# -server-fingerprint and curl's --pinnedpubkey all take it as is.
+web_tls_fingerprint() {
+	compose logs web 2>/dev/null | grep -oE 'TLS server key fingerprint sha256//[A-Za-z0-9+/=]+' | tail -1 | awk '{print $5}'
+}
+
+# web_tls_fingerprint_count — how many times the web app has logged its TLS
+# key fingerprint: once per start of the container.
+web_tls_fingerprint_count() {
+	compose logs web 2>/dev/null | grep -cF 'TLS server key fingerprint sha256//'
+}

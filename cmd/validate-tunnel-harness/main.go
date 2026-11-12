@@ -16,9 +16,11 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -29,6 +31,7 @@ import (
 	incusapi "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api"
 	incusseed "github.com/ehharvey/homelab-ops/internal/third_party/incusos/api/seed"
 
+	"github.com/ehharvey/homelab-ops/internal/apiclient"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -66,7 +69,11 @@ func run() error {
 	addPeerPublicKey := flag.String("add-peer-public-key", "", "base64 public key of a second WireGuard peer to append (patch-seed mode)")
 	addPeerAllowedIP := flag.String("add-peer-allowed-ip", "", "CIDR allowed for the peer added by -add-peer-public-key, e.g. 10.100.0.254/32 to match -local-addr's default (patch-seed mode)")
 	method := flag.String("method", http.MethodGet, "HTTP method (http mode)")
-	path := flag.String("path", "/healthz", "request path on the web app's tunnel API, http://<peer-tunnel-ip>:80<path> (http mode)")
+	path := flag.String("path", "/healthz", "request path on the web app's tunnel API, https://<peer-tunnel-ip>:80<path> (http mode)")
+	// The tunnel API is TLS and requires a listed operator cert (#397).
+	clientCert := flag.String("client-cert", "", "operator cert (PEM) presented to the web app's TLS API, with -client-key (http mode); without one the web app answers 403")
+	clientKey := flag.String("client-key", "", "private key (PEM) for -client-cert (http mode)")
+	serverFingerprint := flag.String("server-fingerprint", "", "the web app's TLS key fingerprint, sha256//<base64>, as its startup log prints it (http mode; required)")
 	flag.Parse()
 
 	switch *mode {
@@ -77,7 +84,8 @@ func run() error {
 	case "patch-seed":
 		return runPatchSeed(*networkYAMLPath, *addRouteTo, *addRouteVia, *addPeerPublicKey, *addPeerAllowedIP)
 	case "http":
-		return runHTTP(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *method, *path, *timeout)
+		return runHTTP(*privateKeyFile, *localAddr, *peerPublicKey, *peerTunnelIP, *peerEndpoint, *listenPort, *method, *path, *timeout,
+			httpTLS{clientCert: *clientCert, clientKey: *clientKey, serverFingerprint: *serverFingerprint})
 	default:
 		return fmt.Errorf("unknown -mode %q (want genkey, probe, patch-seed, or http)", *mode)
 	}
@@ -260,15 +268,39 @@ func runProbe(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoi
 	return fmt.Errorf("node never became reachable over the tunnel within %s: %w", timeout, lastErr)
 }
 
+// httpTLS is http mode's TLS: the web app's tunnel API is TLS, pinned by
+// its key's fingerprint, and requires a listed operator cert (#397).
+type httpTLS struct {
+	clientCert, clientKey, serverFingerprint string
+}
+
 // runHTTP joins the web app's tunnel as a peer (an operator device, or a node
 // whose key the caller holds) and sends one request to the web app's tunnel
-// API (#195). It prints the response status code on the first line of
-// stdout and the body after it. The first attempts also wait out the
+// API (#195) over TLS (#397), presenting the operator cert if given and
+// pinning the server's key. It prints the response status code on the first
+// line of stdout and the body after it. The first attempts also wait out the
 // WireGuard handshake, so a request that never connects is retried until
 // timeout and then fails, which is how a caller observes a peer whose
-// packets the web app drops.
-func runHTTP(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint string, listenPort int, method, path string, timeout time.Duration) error {
-	tun, err := buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint, listenPort)
+// packets the web app drops. The web app's refusal of a missing or unlisted
+// client cert is an HTTP 403, printed like any answer. A server key that
+// isn't the pinned one is this client's refusal, not a dropped packet, so it
+// fails at once, saying "TLS refused"; any other transport error, such as a
+// reset while the web app restarts, is retried.
+func runHTTP(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint string, listenPort int, method, path string, timeout time.Duration, t httpTLS) error {
+	// The TLS flags are checked before the tunnel starts: the client dials
+	// through tun, which exists by the time it first dials.
+	pair, err := apiclient.LoadClientCert(t.clientCert, t.clientKey)
+	if err != nil {
+		return fmt.Errorf("-client-cert/-client-key: %w", err)
+	}
+	var tun *wireguard.Tunnel
+	client, err := apiclient.PinnedHTTPClient(func(ctx context.Context, network, address string) (net.Conn, error) {
+		return tun.DialContext(ctx, network, address)
+	}, apiclient.TLSOptions{ClientCert: pair, ServerPin: t.serverFingerprint, PinSource: "-server-fingerprint"})
+	if err != nil {
+		return fmt.Errorf("-server-fingerprint: %w", err)
+	}
+	tun, err = buildTunnel(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoint, listenPort)
 	if err != nil {
 		return err
 	}
@@ -276,8 +308,7 @@ func runHTTP(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoin
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	client := &http.Client{Transport: &http.Transport{DialContext: tun.DialContext}}
-	url := fmt.Sprintf("http://%s:%d%s", peerTunnelIP, wireguard.APIPort, path)
+	url := fmt.Sprintf("https://%s:%d%s", peerTunnelIP, wireguard.APIPort, path)
 
 	var lastErr error
 	for ctx.Err() == nil {
@@ -287,6 +318,10 @@ func runHTTP(privateKeyFile, localAddr, peerPublicKey, peerTunnelIP, peerEndpoin
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			var mismatch *apiclient.PinMismatchError
+			if errors.As(err, &mismatch) {
+				return fmt.Errorf("%s %s: TLS refused: %w", method, url, err)
+			}
 			lastErr = err
 			time.Sleep(time.Second)
 			continue
