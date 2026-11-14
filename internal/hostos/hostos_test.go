@@ -3,6 +3,8 @@ package hostos
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,4 +167,116 @@ func TestIncusOSRenderImageInjectsGoldenSeed(t *testing.T) {
 	if !bytes.Equal(gotTar, wantTar) {
 		t.Errorf("seed tar handed to flasher-tool differs from flasher.BuildSeedTar(%s)", goldenDir)
 	}
+}
+
+// TestIncusOSRenderSeedMediaIsSeedDataISO checks the IncusOS seed media is an
+// ISO 9660 volume labelled SEED_DATA holding the four seed files at its root
+// (internal/iso9660's own tests read the format back in full). It runs over
+// every golden seed, which TestIncusOSSeedGolden pins to RenderConfig's output,
+// so a file RenderConfig gains whose name plain ISO 9660 can't hold (a "-",
+// say) fails here rather than in seed-media.
+func TestIncusOSRenderSeedMediaIsSeedDataISO(t *testing.T) {
+	for _, tc := range []string{"dhcp", "static", "wireguard"} {
+		t.Run(tc, func(t *testing.T) { checkSeedDataISO(t, readDir(t, filepath.Join("testdata", "incusos", tc))) })
+	}
+}
+
+func checkSeedDataISO(t *testing.T, golden map[string][]byte) {
+	t.Helper()
+	var files []File
+	for name, data := range golden {
+		files = append(files, File{Name: name, Data: data})
+	}
+	if len(files) != 4 {
+		t.Fatalf("golden seed has %d files, want 4", len(files))
+	}
+
+	var buf bytes.Buffer
+	if err := RenderSeedMedia(IncusOS, files, &buf); err != nil {
+		t.Fatalf("RenderSeedMedia: %v", err)
+	}
+	img := buf.Bytes()
+	const sector = 2048
+	if len(img) < 17*sector || string(img[16*sector+1:16*sector+6]) != "CD001" {
+		t.Fatalf("seed media has no ISO 9660 volume descriptor at sector 16")
+	}
+	if got := strings.TrimRight(string(img[16*sector+40:16*sector+72]), " "); got != IncusOSSeedVolumeID {
+		t.Errorf("volume ID = %q, want %q", got, IncusOSSeedVolumeID)
+	}
+	for name, data := range golden {
+		if id := strings.ToUpper(name) + ";1"; !bytes.Contains(img, []byte(id)) {
+			t.Errorf("no root directory record %s", id)
+		}
+		found := false
+		for off := 0; off+len(data) <= len(img); off += sector {
+			if bytes.Equal(img[off:off+len(data)], data) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s's contents aren't on the image at a sector boundary", name)
+		}
+	}
+}
+
+// TestRenderSeedMediaNamesUnsupportedOS covers both ways seed media is
+// refused: an os with no backend, and a backend whose OS has no separate
+// seed media (one that isn't a SeedMediaRenderer, as Talos's would be).
+func TestRenderSeedMediaNamesUnsupportedOS(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := For(config.OSTalos); err == nil || !strings.Contains(err.Error(), `"talos"`) {
+		t.Errorf("For(talos) error = %v, want one naming talos", err)
+	}
+
+	err := RenderSeedMedia(noSeedMediaBackend{os: config.OSDebian}, sampleFiles, &buf)
+	if !errors.Is(err, ErrNoSeedMedia) || !strings.Contains(err.Error(), `"debian"`) {
+		t.Errorf("RenderSeedMedia(no seed media) = %v, want ErrNoSeedMedia naming debian", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("a refused RenderSeedMedia wrote %d bytes", buf.Len())
+	}
+}
+
+// TestCheckSeedMedia: CheckSeedMedia answers from the backend's type alone.
+// It refuses a backend with no seed media, naming its OS, and passes
+// IncusOS, and it never renders: a renderer that would fail, or that
+// counts its calls, is passed without being called.
+func TestCheckSeedMedia(t *testing.T) {
+	if err := CheckSeedMedia(IncusOS); err != nil {
+		t.Errorf("CheckSeedMedia(IncusOS) = %v, want nil", err)
+	}
+	err := CheckSeedMedia(noSeedMediaBackend{os: config.OSDebian})
+	if !errors.Is(err, ErrNoSeedMedia) || !strings.Contains(err.Error(), `"debian"`) {
+		t.Errorf("CheckSeedMedia(no seed media) = %v, want ErrNoSeedMedia naming debian", err)
+	}
+	r := &countingRenderer{noSeedMediaBackend: noSeedMediaBackend{os: config.OSDebian}}
+	if err := CheckSeedMedia(r); err != nil {
+		t.Errorf("CheckSeedMedia(a SeedMediaRenderer) = %v, want nil", err)
+	}
+	if r.calls != 0 {
+		t.Errorf("CheckSeedMedia rendered %d times, want 0", r.calls)
+	}
+}
+
+var sampleFiles = []File{{Name: "install.yaml", Data: []byte("i")}}
+
+// noSeedMediaBackend is a Backend whose OS has no separate seed media.
+type noSeedMediaBackend struct {
+	Backend
+	os string
+}
+
+func (b noSeedMediaBackend) OS() string { return b.os }
+
+// countingRenderer is a SeedMediaRenderer whose render always fails, as one
+// that checked its files first would given none.
+type countingRenderer struct {
+	noSeedMediaBackend
+	calls int
+}
+
+func (r *countingRenderer) RenderSeedMedia([]File, io.Writer) error {
+	r.calls++
+	return errors.New("no install.yaml")
 }
