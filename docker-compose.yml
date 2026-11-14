@@ -6,14 +6,19 @@ services:
       - "127.0.0.1:8080:8080"
       - "51820:51820/udp"
     environment:
-      # Dev opts in to the plain-HTTP host listener (#195, docs/Decisions.md
-      # §28), so curl and the compose validate scripts can call the API. The
-      # shipped default is tunnel-only, with no host listener at all.
+      # Dev opts in to the host listener (#195, docs/Decisions.md §28), and
+      # to plain HTTP on it (#397), so curl and the compose validate scripts
+      # can call the API without an operator cert. The shipped default is
+      # tunnel-only, with no host listener at all, and a host listener
+      # otherwise serves TLS and requires an operator cert.
       # Inside the container it binds every interface so the published port
       # reaches it; the publish above keeps it on the host's 127.0.0.1.
       # scripts/validate/api-serves-operator-peers-over-tunnel-by-default.sh
-      # blanks it to exercise the default.
+      # blanks API_HOST_LISTEN_ADDR to exercise the default, and
+      # api-requires-operator-cert-over-tunnel.sh blanks API_HOST_PLAIN_HTTP
+      # to exercise a TLS host listener.
       - API_HOST_LISTEN_ADDR=:8080
+      - API_HOST_PLAIN_HTTP=true
       - CONFIG_REPO_URL=git://config-repo/fleet.git
       - CONFIG_REPO_REF=main
       # dev/git-fixture and the validate scripts' fleets carry their network

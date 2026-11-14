@@ -13,10 +13,14 @@
 // The directory (docs/Deployment.md has the full layout):
 //
 //	web.env          scalar settings, KEY=VALUE, the env var names
-//	client.crt       CLIENT_CERT_PATH: the break-glass cert's public half
-//	operator-peers   WIREGUARD_OPERATOR_PEERS, one <addr>=<pubkey> per line
-//	secrets/         0700; every secret file, each 0600
-//	  wireguard.key  reserved for #197's operator-supplied identity
+//	client.crt          CLIENT_CERT_PATH: the break-glass cert's public half
+//	operator-certs.pem  OPERATOR_CERTS_PATH: the operator certs the API
+//	                    requires (#397); unset, client.crt alone
+//	operator-peers      WIREGUARD_OPERATOR_PEERS, one <addr>=<pubkey> per line
+//	secrets/            0700; every secret file, each 0600
+//	  wireguard.key     the operator-supplied WireGuard identity: read for
+//	                    the API's TLS key when the tunnel is off (#397);
+//	                    #197 will load it for the tunnel
 //
 // An environment variable overrides the same setting from the directory, and
 // one set to the empty string still overrides it: empty then means the
@@ -24,6 +28,7 @@
 package deployconfig
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -37,6 +42,7 @@ import (
 
 	"github.com/spf13/viper"
 
+	"github.com/ehharvey/homelab-ops/internal/webtls"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -67,10 +73,12 @@ type Setting struct {
 const (
 	WebEnvFile        = "web.env"
 	ClientCertFile    = "client.crt"
+	OperatorCertsFile = "operator-certs.pem"
 	OperatorPeersFile = "operator-peers"
 	SecretsDir        = "secrets"
-	// WireGuardKeyFile is reserved for the operator-supplied WireGuard
-	// identity (#197), which loads it. #241 only names it and its mode.
+	// WireGuardKeyFile is the operator-supplied WireGuard identity. Load
+	// reads it only when an API listener serves TLS with the tunnel off, for
+	// the TLS key (#397); #197 will load it for the tunnel too.
 	WireGuardKeyFile = SecretsDir + "/wireguard.key"
 )
 
@@ -84,6 +92,7 @@ var Settings = []Setting{
 	{Name: "WIREGUARD_PORT", Source: WebEnv},
 	{Name: "WIREGUARD_OPERATOR_PEERS", Source: File, File: OperatorPeersFile},
 	{Name: "API_HOST_LISTEN_ADDR", Source: WebEnv},
+	{Name: "API_HOST_PLAIN_HTTP", Source: WebEnv},
 	{Name: "HEALTH_LISTEN_ADDR", Source: WebEnv},
 	{Name: "PORT", Source: WebEnv},
 	{Name: "CONFIG_REPO_URL", Source: WebEnv},
@@ -93,6 +102,7 @@ var Settings = []Setting{
 	{Name: "NETWORK_ADDRESSING_PATH", Source: WebEnv},
 	{Name: "STORE_PATH", Source: WebEnv},
 	{Name: "CLIENT_CERT_PATH", Source: File, File: ClientCertFile},
+	{Name: "OPERATOR_CERTS_PATH", Source: File, File: OperatorCertsFile},
 	{Name: "BASE_IMAGE_PATH", Source: WebEnv},
 	{Name: "FLASHER_TOOL_PATH", Source: WebEnv},
 }
@@ -118,9 +128,14 @@ type Config struct {
 	// OperatorPeers may call the API over the tunnel.
 	OperatorPeers []wireguard.OperatorPeer
 
-	// APIHostListenAddr opts in to the plain-HTTP host listener.
+	// APIHostListenAddr opts in to the host listener, which serves TLS and
+	// requires an operator cert (#397) unless APIHostPlainHTTP.
 	APIHostListenAddr string
-	HealthListenAddr  string
+	// APIHostPlainHTTP makes the host listener plain HTTP with no
+	// authentication: dev and the validate suite's opt-in. It does nothing
+	// without APIHostListenAddr.
+	APIHostPlainHTTP bool
+	HealthListenAddr string
 	// RetiredPort is a set PORT, which #195 retired. Load accepts it only
 	// with an API listener configured; cmd/web logs that it isn't read.
 	RetiredPort string
@@ -138,10 +153,57 @@ type Config struct {
 	// addresses the state-addressed networks (§28, #199); "" means none.
 	NetworkAddressingPath string
 
-	StorePath       string
-	ClientCertPath  string
+	StorePath      string
+	ClientCertPath string
+	// OperatorCertsPath is OPERATOR_CERTS_PATH as set; "" falls back to
+	// ClientCertPath.
+	OperatorCertsPath string
+	// OperatorCerts are the certs a TLS API listener requires a client to
+	// present one of (#397), parsed from the file OperatorCertsFrom names.
+	// Loaded only when TLSAPI, or when OPERATOR_CERTS_PATH is set. Empty
+	// with TLSAPI only while no TLS listener could admit anyone (the tunnel
+	// with no operator peers), and then the TLS listeners refuse everyone.
+	OperatorCerts []*x509.Certificate
+	// OperatorCertsFrom names the setting OperatorCerts came from:
+	// OPERATOR_CERTS_PATH, or CLIENT_CERT_PATH as its fallback; "" when
+	// none.
+	OperatorCertsFrom string
+	// WireGuardKey is the identity in secrets/wireguard.key, loaded only
+	// when HostOnlyTLS: the API's TLS key is derived from it (#397). With
+	// the tunnel on, the TLS key comes from the tunnel's own identity
+	// instead. Zero when not loaded.
+	WireGuardKey wireguard.PrivateKey
+
 	BaseImagePath   string
 	FlasherToolPath string
+}
+
+// admitsOperators reports whether a TLS API listener could admit anyone, so
+// it needs operator certs to admit them by (#397): the tunnel's once an
+// operator peer is listed, or a TLS host listener. With the tunnel on and no
+// operator peers, its peer gate already refuses every request, so no cert is
+// required: that is the committed examples/webapp, before its operator adds
+// a peer and the cert together. cmd/web warns of both.
+func (c Config) admitsOperators() bool {
+	return c.WireGuardEndpoint != "" && len(c.OperatorPeers) > 0 || c.HostTLS()
+}
+
+// TLSAPI reports whether any API listener serves TLS (#397): the tunnel
+// listener always does, and the host listener unless APIHostPlainHTTP.
+func (c Config) TLSAPI() bool {
+	return c.WireGuardEndpoint != "" || c.HostTLS()
+}
+
+// HostTLS reports whether the host listener is on and serves TLS.
+func (c Config) HostTLS() bool {
+	return c.APIHostListenAddr != "" && !c.APIHostPlainHTTP
+}
+
+// HostOnlyTLS reports whether the host listener serves TLS with no tunnel,
+// so the TLS key can't come from the tunnel's identity and is derived from
+// secrets/wireguard.key instead (operator decision on #397, 2026-11-10).
+func (c Config) HostOnlyTLS() bool {
+	return c.HostTLS() && c.WireGuardEndpoint == ""
 }
 
 // Load reads the deployment config from the environment and, when
@@ -165,6 +227,7 @@ func Load() (Config, error) {
 	c.WireGuardPort = l.port("WIREGUARD_PORT", DefaultWireGuardPort)
 	c.OperatorPeers = l.operatorPeers()
 	c.APIHostListenAddr = l.get("API_HOST_LISTEN_ADDR")
+	c.APIHostPlainHTTP = l.boolean("API_HOST_PLAIN_HTTP")
 	c.HealthListenAddr = l.get("HEALTH_LISTEN_ADDR")
 	if c.HealthListenAddr == "" {
 		c.HealthListenAddr = DefaultHealthListenAddr
@@ -180,6 +243,7 @@ func Load() (Config, error) {
 		c.StorePath = DefaultStorePath
 	}
 	c.ClientCertPath = l.fileSetting("CLIENT_CERT_PATH", ClientCertFile)
+	c.OperatorCertsPath = l.fileSetting("OPERATOR_CERTS_PATH", OperatorCertsFile)
 	c.BaseImagePath = l.get("BASE_IMAGE_PATH")
 	c.FlasherToolPath = l.get("FLASHER_TOOL_PATH")
 
@@ -423,8 +487,10 @@ func (l *loader) validate() {
 		// The URL itself isn't echoed: it holds the credential.
 		l.fail("CONFIG_REPO_URL", "carries a credential in its userinfo (any user@ or user:token@ on a non-SSH URL, where a token can stand in for the user, or a user:password@ on an SSH one); credentials never go in the URL or web.env, and git credentials are #218's, under secrets/")
 	}
+	bad := map[string]bool{}
 	for _, f := range []struct{ name, path string }{
 		{"CLIENT_CERT_PATH", c.ClientCertPath},
+		{"OPERATOR_CERTS_PATH", c.OperatorCertsPath},
 		{"BASE_IMAGE_PATH", c.BaseImagePath},
 		{"NETWORK_ADDRESSING_PATH", c.NetworkAddressingPath},
 	} {
@@ -433,10 +499,92 @@ func (l *loader) validate() {
 		}
 		if info, err := os.Stat(f.path); err != nil {
 			l.fail(f.name, "%v", err)
+			bad[f.name] = true
 		} else if !info.Mode().IsRegular() {
 			l.fail(f.name, "%s is not a regular file", f.path)
+			bad[f.name] = true
 		}
 	}
+	l.operatorCerts(bad)
+	if c.HostOnlyTLS() {
+		l.hostTLSIdentity()
+	}
+}
+
+// operatorCerts loads the certs a TLS API listener requires of clients
+// (#397): OPERATOR_CERTS_PATH's, or else CLIENT_CERT_PATH's, the break-glass
+// cert (operator decision, 2026-11-10). Without a TLS API listener only an
+// explicit OPERATOR_CERTS_PATH is read, so a bad one still fails fast. With
+// neither set, startup fails naming both only while a TLS listener could
+// admit someone (admitsOperators). bad holds the file settings that already
+// failed.
+func (l *loader) operatorCerts(bad map[string]bool) {
+	c := &l.cfg
+	name, path := "OPERATOR_CERTS_PATH", c.OperatorCertsPath
+	if path == "" {
+		name, path = "CLIENT_CERT_PATH", c.ClientCertPath
+		if !c.TLSAPI() {
+			return
+		}
+	}
+	if path == "" {
+		if !c.admitsOperators() {
+			return
+		}
+		l.fail("OPERATOR_CERTS_PATH", "no operator cert for the API to require: %s serves TLS, and admits only clients presenting a listed operator cert. Set OPERATOR_CERTS_PATH (the directory's %s), or CLIENT_CERT_PATH (its %s), which it falls back to; or, for dev only, API_HOST_PLAIN_HTTP=true with the tunnel off", tlsListeners(*c), OperatorCertsFile, ClientCertFile)
+		return
+	}
+	if bad[name] {
+		return
+	}
+	b, err := os.ReadFile(path) //nolint:gosec // G304: the path is operator-supplied deployment config
+	if err != nil {
+		l.fail(name, "%v", err)
+		return
+	}
+	certs, err := webtls.ParseCertsPEM(b)
+	if err != nil {
+		l.fail(name, "%s: %v", path, err)
+		return
+	}
+	c.OperatorCerts, c.OperatorCertsFrom = certs, name
+}
+
+// tlsListeners names the API listeners that serve TLS, for an error.
+func tlsListeners(c Config) string {
+	switch {
+	case c.WireGuardEndpoint != "" && c.HostTLS():
+		return "the tunnel API listener (WIREGUARD_ENDPOINT) and the host listener (API_HOST_LISTEN_ADDR)"
+	case c.WireGuardEndpoint != "":
+		return "the tunnel API listener (WIREGUARD_ENDPOINT)"
+	default:
+		return "the host listener (API_HOST_LISTEN_ADDR)"
+	}
+}
+
+// hostTLSIdentity loads secrets/wireguard.key for a host listener serving
+// TLS with the tunnel off. The API's TLS key is derived from the web app's
+// WireGuard identity, and with no tunnel the operator-supplied file is the
+// only one, so it is required (operator decision on #397, 2026-11-10): a
+// key made up at each start would change the pinned fingerprint.
+func (l *loader) hostTLSIdentity() {
+	c := &l.cfg
+	const why = "required while API_HOST_LISTEN_ADDR serves TLS with the tunnel off (WIREGUARD_ENDPOINT unset): the API's TLS key is derived from the web app's WireGuard identity (#397)"
+	if c.Dir == "" {
+		l.fail(WireGuardKeyFile, "%s; set DEPLOYMENT_CONFIG_DIR to a directory holding one (a base64 private key, as wg genkey prints it), or, for dev only, API_HOST_PLAIN_HTTP=true", why)
+		return
+	}
+	path := filepath.Join(c.Dir, WireGuardKeyFile)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		l.fail(WireGuardKeyFile, "missing, and %s; put a base64 private key there, as wg genkey prints it (mode 0600)", why)
+		return
+	}
+	key, err := wireguard.ReadPrivateKeyFile(path)
+	if err != nil {
+		l.fail(WireGuardKeyFile, "%v", err)
+		return
+	}
+	c.WireGuardKey = key
 }
 
 // checkHostPort accepts host:port with a numeric port; emptyHost allows

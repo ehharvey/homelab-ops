@@ -22,7 +22,10 @@
 # "An answer" is the tunnel API listener's 403 for a non-operator peer: it
 # can only arrive once the WireGuard handshake completed, which needs the
 # node's key in the peer table. The 403 itself is
-# api-serves-operator-peers-over-tunnel-by-default.sh's subject.
+# api-serves-operator-peers-over-tunnel-by-default.sh's subject. The tunnel
+# API is TLS and requires an operator cert before the peer filter answers
+# (#397), so the harness presents the break-glass cert (CLIENT_CERT_PATH)
+# and pins the logged TLS key.
 #
 # The tunnel side is driven by cmd/validate-tunnel-harness's http mode: the
 # web app's tunnel lives in its own process's userspace network stack, so
@@ -87,6 +90,7 @@ expect_node_answer() {
   local desc="$1" resp code
   if ! resp=$("$HARNESS" -mode http -private-key-file "$NODE_KEY" -local-addr "$node_addr" \
     -peer-public-key "$APP_PUB" -peer-tunnel-ip "$WEBAPP_ADDR" -peer-endpoint "$WG_ENDPOINT" \
+    -client-cert "$CERT_DIR/client.crt" -client-key "$CERT_DIR/client.key" -server-fingerprint "$TLS_PIN" \
     -method GET -path /status -timeout 30s 2>"$WORK_DIR/harness.err"); then
     record_fail "$desc" "no answer through the tunnel: $(tail -1 "$WORK_DIR/harness.err")"
     return
@@ -129,6 +133,8 @@ wait_web_ready "$HOST_API" 40
 check_log "startup with an empty store restores no instance peers" "wireguard: registered 0/0 stored instance peers"
 APP_PUB=$(app_pub)
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+TLS_PIN=$(web_tls_fingerprint)
+check "web app logged its TLS server key fingerprint" test -n "$TLS_PIN"
 
 check_eq "POST /sync" 200 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST_API/sync")"
 SYNCED_AT=$(synced_at)
