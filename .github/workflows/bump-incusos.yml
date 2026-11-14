@@ -135,7 +135,7 @@ jobs:
 
       # The PAT, not GITHUB_TOKEN: a GITHUB_TOKEN push triggers no workflows,
       # so the required checks would never start and auto-merge would hang.
-      - uses: peter-evans/create-pull-request@v8.1.1
+      - uses: peter-evans/create-pull-request@v8.1.3
         id: cpr
         if: steps.check.outputs.up_to_date == 'false'
         with:
@@ -202,7 +202,7 @@ jobs:
             echo "$latest" > scripts/incusos-base.version
           fi
 
-      - uses: peter-evans/create-pull-request@v8.1.1
+      - uses: peter-evans/create-pull-request@v8.1.3
         if: steps.pin.outputs.latest != steps.pin.outputs.current
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
