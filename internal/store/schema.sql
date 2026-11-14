@@ -48,14 +48,6 @@ CREATE TABLE IF NOT EXISTS apps (
     params            TEXT NOT NULL -- JSON object of string->string
 );
 
--- wireguard_identity holds the web app's own long-lived WireGuard private
--- key (internal/wireguard.LoadOrGenerateIdentity): generated once on first
--- run, persisted thereafter. Single row, like sync_state.
-CREATE TABLE IF NOT EXISTS wireguard_identity (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    private_key TEXT NOT NULL -- base64
-);
-
 -- instance_credentials holds each instance's minted-once WireGuard keypair
 -- and one-time Incus bootstrap client cert (internal/nodeprovision.
 -- EnsureCredential/Credential). Deliberately separate from `instances`:

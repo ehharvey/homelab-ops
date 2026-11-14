@@ -33,6 +33,10 @@ var apiFlags struct {
 	serverAddr      string
 	listenPort      int
 	connectTimeout  time.Duration
+	// url, when set, calls the API at that plain-HTTP address instead of
+	// joining the tunnel: the web app's opt-in API_HOST_LISTEN_ADDR
+	// listener, as the dev stack and the compose validate scripts use it.
+	url string
 }
 
 var apiCmd = &cobra.Command{
@@ -47,6 +51,14 @@ WIREGUARD_OPERATOR_PEERS at --local-addr: being that peer is what
 authenticates the call. The web app logs its own public key at startup
 ("wireguard public key ..."); pass it as --server-public-key, and the web
 app's WIREGUARD_ENDPOINT as --endpoint.
+
+With --url instead, it calls the API at that plain-HTTP address, the web
+app's opt-in API_HOST_LISTEN_ADDR listener (for example the dev stack's
+http://127.0.0.1:8080), and the tunnel flags aren't needed.
+
+The web app's store is locked after every start (#197): until init (a new
+store) or unlock (an existing one) supplies its key, every other verb is
+refused with 423 Locked. lock-state reports which.
 
 JSON routes print the server's answer on stdout. An error from the API
 exits non-zero with the server's message.`,
@@ -66,6 +78,7 @@ func init() {
 	pf.StringVar(&apiFlags.serverAddr, "server-addr", wireguard.WebAppAddr.String(), "the web app's address inside the tunnel; the API is served there on port "+strconv.Itoa(int(wireguard.APIPort)))
 	pf.IntVar(&apiFlags.listenPort, "listen-port", 0, "local UDP port for this peer's WireGuard socket (0: the OS picks one)")
 	pf.DurationVar(&apiFlags.connectTimeout, "connect-timeout", 30*time.Second, "how long to wait for the tunnel to answer, at each address --endpoint resolves to, before giving up; bounds connecting only, not a download")
+	pf.StringVar(&apiFlags.url, "url", "", "call the API at this plain-HTTP base URL (the web app's API_HOST_LISTEN_ADDR listener, e.g. http://127.0.0.1:8080) instead of over the tunnel; the tunnel flags are then not used")
 
 	rootCmd.AddCommand(apiCmd)
 }
@@ -135,7 +148,16 @@ var apiConnect = connectAPITunnel
 
 // connectAPITunnel starts this CLI's WireGuard peer and returns a client that
 // dials the API through it.
+// With --url it joins no tunnel and dials that address directly.
 func connectAPITunnel(ctx context.Context) (*apiclient.Client, func(), error) {
+	if apiFlags.url != "" {
+		dialer := &net.Dialer{Timeout: apiFlags.connectTimeout}
+		client, err := apiclient.New(apiFlags.url, apiclient.HTTPClient(dialer.DialContext))
+		if err != nil {
+			return nil, nil, fmt.Errorf("--url: %w", err)
+		}
+		return client, func() {}, nil
+	}
 	opts, endpoints, baseURL, err := apiTunnelOptions(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -185,13 +207,14 @@ func startFirstAnswering(ctx context.Context, opts wireguard.ClientOptions, endp
 }
 
 // withAPI runs call with a connected client, under a context an interrupt
-// cancels, so an aborted download still cleans up its partial file.
+// cancels, so an aborted download still cleans up its partial file. A
+// failure to connect is apiclient.ErrNotSent: call never ran.
 func withAPI(cmd *cobra.Command, call func(ctx context.Context, c *apiclient.Client) error) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	client, closeFn, err := apiConnect(ctx)
 	if err != nil {
-		return err
+		return apiclient.NotSent(err)
 	}
 	defer closeFn()
 	return call(ctx, client)

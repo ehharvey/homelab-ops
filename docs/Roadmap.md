@@ -353,10 +353,10 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
   opt-in (`docs/Decisions.md` §28, §29). Closes the leak where the seed and image
   routes hand any caller a node's WireGuard private key (#63): DONE; see #195
 - [x] Operator CLI for the API, over the tunnel: DONE; see #196
-- [ ] Operator-held symmetric key: held only in memory, web app locked on
-  restart, store encrypted at rest, and a wrong key on unlock never resets
-  anything. The web app's WireGuard identity becomes operator-supplied
-  deployment config — see #197
+- [x] Operator-held store key, an age X25519 identity: held only in memory,
+  web app locked on every start, store encrypted at rest, and a wrong key on
+  unlock never resets anything. The web app's WireGuard identity becomes
+  operator-supplied deployment config: DONE; see #197
 - [ ] Encrypted seed, image and snapshot downloads; the CLI decrypts
   straight to the install media — see #198
 - [x] Network addressing from git (private repo) or web app state, exactly

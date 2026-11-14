@@ -29,7 +29,7 @@ as dev and most validate scripts do.
 ├── client.crt              the break-glass cert's public half
 ├── operator-peers          operator devices allowed on the tunnel API
 └── secrets/                0700: every secret file, each 0600
-    └── wireguard.key       the web app's WireGuard identity (#197)
+    └── wireguard.key       the web app's WireGuard identity
 ```
 
 | Entry | Setting | Secret | Mode | Contents |
@@ -38,7 +38,7 @@ as dev and most validate scripts do.
 | `client.crt` | `CLIENT_CERT_PATH` | no | `0644` is fine | The break-glass client cert's **public** half, from `bootstrap gen-cert` (§4). The web app never reads the private key, and it must not be in this directory. Optional: without it the seed and image routes report themselves unconfigured. |
 | `operator-peers` | `WIREGUARD_OPERATOR_PEERS` | no | `0644` is fine | One `<overlay-address>=<base64-public-key>` per line; `#` starts a comment. Only public keys. Optional. |
 | `secrets/` | | yes | `0700` | Everything secret, and nothing else. A new secret goes here with no list to update. |
-| `secrets/wireguard.key` | (reserved, #197) | yes | `0600` | The web app's operator-supplied WireGuard identity (§28). **Reserved:** today's identity is still generated into the store, and #197 loads this file and exports the store's `wireguard_identity` row to it. |
+| `secrets/wireguard.key` | (its own file, no env var) | yes | `0600` | The web app's operator-supplied WireGuard identity (§28): one base64 private key, as `wg genkey` prints it. **Required while `WIREGUARD_ENDPOINT` is set:** a missing or malformed file fails startup, naming it. The web app never generates or stores one, so the tunnel comes up while the store is still locked; back it up yourself. There is no migration from the store's old `wireguard_identity` row (#197): every deployment supplies this file from the start. |
 
 Rules `deployconfig.Load` enforces at startup:
 
@@ -55,8 +55,9 @@ Rules `deployconfig.Load` enforces at startup:
 - **`secrets/` is held to its modes.** If it exists, it and everything under
   it must have no group or other permission bits (`0700` for directories,
   `0600` or stricter for files), or startup fails naming each one. Only
-  permission bits are checked, not ownership. It may be absent: nothing reads
-  it yet, and in TPM mode (#509) there is no identity file at all.
+  permission bits are checked, not ownership. It may be absent when the
+  tunnel is off (`WIREGUARD_ENDPOINT` unset), and in TPM mode (#509) there is
+  no identity file at all.
 - **`BASE_IMAGE_PATH` points outside the directory.** The base image is
   multi-GB, and #243 carries the directory inline in cloud-init `user-data`.
 
@@ -95,7 +96,7 @@ rather than failing later where a setting is first used (#67).
 | `CONFIG_SYNC_INTERVAL` | unset (sync on `POST /sync` only) | `web.env` | Background poll interval, a Go duration such as `5m`. Fails unless a positive duration. |
 | `CONFIG_REPO_PRIVATE` | `false` (git addressing rejected) | `web.env` | Declares the config repo private, so a `kind: Network` in it may carry its addressing (§28, #199). Unset, the repo is assumed public: a sync fails on any Network with a `cidr` in git, naming it. Fails startup unless `true` or `false`. |
 | `NETWORK_ADDRESSING_PATH` | unset (no state addressing) | `web.env` | A file of full `kind: Network` documents addressing the networks git names without a `cidr` (§28, #199), read on every sync. Unset, a name-only Network fails the sync. A path, inside the directory or not. Fails if set and not a regular file, or if it doesn't parse. Interim: the encrypted store, loaded by the CLI, replaces it (#514). |
-| `STORE_PATH` | `:memory:` | `web.env` | The sqlite store's file. The default keeps nothing across a restart; an appliance mounts a volume and sets a path on it. |
+| `STORE_PATH` | `:memory:` | `web.env` | The store's file: one age ciphertext, encrypted to the operator-held store key (§28) and rewritten whole after each change via a temp file and a rename; never plaintext. The default keeps the store in memory, so nothing survives a restart; an appliance mounts a volume and sets a path on it. Either way the web app starts locked: `bootstrap api init` (no store yet) or `unlock` (a store file) before anything else. A plaintext store file from before #197 fails startup: there is no migration. |
 | `CLIENT_CERT_PATH` | unset (seed and image routes off) | `client.crt` file | The break-glass cert's public half (§4). Fails if set and not a regular file. |
 | `BASE_IMAGE_PATH` | unset (server-side image builds off) | `web.env` | The operator-supplied base IncusOS raw image; setting it turns on the image route (§29's server-side default). A path outside the directory. Fails if set and not a regular file. |
 | `FLASHER_TOOL_PATH` | `flasher-tool` from `$PATH`; the image sets `/flasher-tool` | `web.env` | The `flasher-tool` binary the image route runs. Only dev outside the image needs it. |
@@ -121,8 +122,9 @@ probes it.
 - **On disk in plaintext:** only an operator-supplied WireGuard identity,
   `secrets/wireguard.key` (§28). In TPM mode (#509) the identity is generated
   and only ever sealed, so there is no file.
-- **Not in this directory at all:** the store key (operator-held, entered at
-  unlock, §28), and step-ca's intermediate password and kanidm's admin
+- **Not in this directory at all:** the store key, an age X25519 identity
+  the operator holds (`bootstrap api init` generates it, `unlock` supplies it
+  after every restart, §28; the web app keeps it in memory only), and step-ca's intermediate password and kanidm's admin
   credentials (§32), which live only in the encrypted store.
 - **Public, so not under `secrets/`:** `client.crt` and `operator-peers`,
   and everything in `web.env`. A `CONFIG_REPO_URL` with credentials fails
@@ -156,6 +158,6 @@ var here.
 | Network addressing in git (§28) | Rejected: the repo is assumed public | `CONFIG_REPO_PRIVATE` above |
 | Where state addressing comes from (§28) | Unset: no state addressing | `NETWORK_ADDRESSING_PATH` above; later the encrypted store (#514) |
 
-Settings that later issues add (#197's identity, #218's git credentials, #397's
-operator cert list and TLS) each become a row in `deployconfig.Settings` and in
+Settings that later issues add (#218's git credentials, #397's operator cert
+list and TLS) each become a row in `deployconfig.Settings` and in
 [§ Settings](#settings), or a file under `secrets/`.

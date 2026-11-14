@@ -59,6 +59,11 @@ mkdir -p "$ADDR_DIR"
 # The override interpolates these. VALIDATE_REPO_PRIVATE starts as the dev
 # stack's "true"; step 6 blanks it and recreates web to get the default.
 export CERT_DIR ADDR_DIR
+# The web app's WireGuard identity, which it needs with WIREGUARD_ENDPOINT
+# set (#197), and the store key compose_store_init generates.
+WEB_DEPLOY_DIR="$WORK_DIR/web"
+export WEB_DEPLOY_DIR
+STORE_KEY="$WORK_DIR/store.key"
 export VALIDATE_REPO_PRIVATE=true
 OVERRIDE="$(mktemp /tmp/compose-addressing-override.XXXXXX.yml)"
 VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
@@ -72,10 +77,12 @@ services:
   web:
     volumes:
       - ${CERT_DIR}:/cert:ro
+      - ${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
       - ${ADDR_DIR}:/addressing:ro
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
       - NETWORK_ADDRESSING_PATH=/addressing/networks.yaml
       - CONFIG_REPO_PRIVATE=${VALIDATE_REPO_PRIVATE}
 EOF
@@ -154,8 +161,11 @@ addressing state-lan
 
 echo
 echo "== 2. Bring up the stack with the addressing file mounted =="
+check "web app WireGuard identity written" compose_web_identity "$WEB_DEPLOY_DIR"
 check "docker compose up --build succeeds" compose up --build -d
 wait_web_ready "$base_url"
+# The store is locked after every start until init (#197).
+compose_store_init "$STORE_KEY"
 
 echo
 echo "== 3. A mixed fleet syncs, assigns and renders =="
@@ -218,6 +228,8 @@ echo "== 6. Without CONFIG_REPO_PRIVATE, git addressing is rejected =="
 export VALIDATE_REPO_PRIVATE=
 check "recreate web without CONFIG_REPO_PRIVATE" compose up -d web
 wait_web_ready "$base_url"
+# A recreated web app starts a fresh in-memory store, locked until init.
+compose_store_init "$STORE_KEY"
 addressing state-lan
 sync_rejected 409 "git addressing with CONFIG_REPO_PRIVATE unset" 'network "git-lan" is addressed in git, but CONFIG_REPO_PRIVATE is not "true"'
 

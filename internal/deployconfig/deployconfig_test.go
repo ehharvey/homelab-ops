@@ -140,7 +140,7 @@ func TestLoadFileSettings(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearEnv(t)
-			files := map[string]string{WebEnvFile: "WIREGUARD_ENDPOINT=webapp.example.net:51820\n"}
+			files := map[string]string{WebEnvFile: "WIREGUARD_ENDPOINT=webapp.example.net:51820\n", WireGuardKeyFile: key('k')}
 			if tc.files {
 				files[ClientCertFile] = "cert"
 				files[OperatorPeersFile] = peersFile
@@ -321,6 +321,7 @@ func TestLoadRefusesRetiredPortWithoutAListener(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearEnv(t)
+			configDir(t, map[string]string{WireGuardKeyFile: key('k')})
 			t.Setenv("PORT", "8080")
 			t.Setenv("WIREGUARD_ENDPOINT", tc.endpoint)
 			t.Setenv("API_HOST_LISTEN_ADDR", tc.hostAddr)
@@ -451,13 +452,70 @@ func TestDeploymentDocListsEverySetting(t *testing.T) {
 	}
 }
 
-// The committed example directory loads as it stands.
+// The committed example directory loads once its identity is supplied, as
+// its README says. It holds no key itself: an example key would be a real
+// key anyone could read, so as committed it is refused, naming the file.
 func TestExampleWebappLoads(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("DEPLOYMENT_CONFIG_DIR", "../../examples/webapp")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), WireGuardKeyFile) {
+		t.Fatalf("examples/webapp as committed: Load = %v, want an error naming %s", err, WireGuardKeyFile)
+	}
+
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("../../examples/webapp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, SecretsDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, WireGuardKeyFile), []byte(key('k')+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEPLOYMENT_CONFIG_DIR", dir)
 	cfg := mustLoad(t)
 	if cfg.WireGuardEndpoint != "webapp.example.net:51820" || cfg.ConfigRepoURL == "" || cfg.SyncInterval != 5*time.Minute {
 		t.Errorf("examples/webapp loaded as %+v, want its web.env's settings", cfg)
+	}
+}
+
+// With the tunnel on, its identity comes from secrets/wireguard.key (#197):
+// read once, and a missing or malformed file stops startup, naming it.
+func TestLoadReadsTheWireGuardKeyFile(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string // nil: no directory at all
+		want  string            // "" means Load succeeds
+	}{
+		{"the key file", map[string]string{WireGuardKeyFile: key('k') + "\n"}, ""},
+		{"no key file", map[string]string{WebEnvFile: ""}, "secrets/wireguard.key: required with WIREGUARD_ENDPOINT set"},
+		{"a malformed key", map[string]string{WireGuardKeyFile: "not a key"}, "secrets/wireguard.key: required with WIREGUARD_ENDPOINT set"},
+		{"no directory", nil, "secrets/wireguard.key: required with WIREGUARD_ENDPOINT set: the tunnel's identity is read from the deployment config directory's secrets/wireguard.key, and DEPLOYMENT_CONFIG_DIR is unset"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			if tc.files != nil {
+				configDir(t, tc.files)
+			}
+			t.Setenv("WIREGUARD_ENDPOINT", "webapp.example.net:51820")
+			cfg, err := Load()
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Load: %v", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Load = %v, want an error containing %q", err, tc.want)
+			case tc.want == "" && cfg.WireGuardPrivateKey.Base64() != key('k'):
+				t.Errorf("WireGuardPrivateKey = %s, want the file's %s", cfg.WireGuardPrivateKey.Base64(), key('k'))
+			}
+		})
+	}
+
+	// With the tunnel off, the file isn't read, or required.
+	clearEnv(t)
+	configDir(t, map[string]string{WireGuardKeyFile: "not a key"})
+	if cfg := mustLoad(t); cfg.WireGuardPrivateKey != (Config{}).WireGuardPrivateKey {
+		t.Error("WireGuardPrivateKey set with the tunnel off")
 	}
 }
 

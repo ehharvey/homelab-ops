@@ -56,6 +56,11 @@ NODE_KEY="$WORK_DIR/node.key"
 OVERRIDE="$WORK_DIR/compose-override.yml"
 VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 export CERT_DIR
+# The web app's WireGuard identity, which it needs with WIREGUARD_ENDPOINT set
+# (#197), and the store key compose_store_init generates.
+WEB_DEPLOY_DIR="$WORK_DIR/web"
+export WEB_DEPLOY_DIR
+STORE_KEY="$WORK_DIR/store.key"
 
 # The fixture's only instance (dev/git-fixture/fleet.yaml).
 INSTANCE=devnode0
@@ -141,12 +146,15 @@ services:
       - "127.0.0.1:8081:8081"
     volumes:
       - ${CERT_DIR}:/cert:ro
+      - ${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
     environment:
       - API_HOST_LISTEN_ADDR=
       - CLIENT_CERT_PATH=/cert/client.crt
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
       - WIREGUARD_OPERATOR_PEERS=10.100.0.240=${OPERATOR_PUB}
 EOF
+check "web app WireGuard identity written" compose_web_identity "$WEB_DEPLOY_DIR"
 check "docker compose up --build succeeds" compose up --build -d
 wait_web_ready "$HEALTH" 40
 wait_log "tunnel API listener is up on $WEBAPP_ADDR:80" "tunnel API listener (1 operator peers) listening on \"$WEBAPP_ADDR:80\"" 10
@@ -161,6 +169,13 @@ fi
 # startup, which is where an operator reads it too.
 APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0-9+/=]+' | tail -1 | awk '{print $4}')
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+
+echo
+echo "-- the store is locked until init, which the tunnel serves (#197) --"
+expect_route "operator: GET /store/state reads no_store before init" 200 "$OPERATOR_KEY" "$OPERATOR_ADDR" GET /store/state '"state":"no_store"'
+expect_route "operator: GET /status is refused before init" 423 "$OPERATOR_KEY" "$OPERATOR_ADDR" GET /status 'lock state no_store'
+compose_store_init "$STORE_KEY" --private-key-file "$OPERATOR_KEY" --local-addr "$OPERATOR_ADDR" \
+  --server-public-key "$APP_PUB" --endpoint "$WG_ENDPOINT"
 
 echo
 echo "-- no API route answers on the host network --"
@@ -231,12 +246,18 @@ services:
   web:
     volumes:
       - ${CERT_DIR}:/cert:ro
+      - ${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
     environment:
       - CLIENT_CERT_PATH=/cert/client.crt
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
 EOF
 check "docker compose up (host listener) succeeds" compose up -d
 wait_web_ready "$HOST_API" 40
+expect_host "host: GET /store/state reads no_store before init" 200 GET "$HOST_API/store/state" '"state":"no_store"'
+expect_host "host: GET /status is refused before init" 423 GET "$HOST_API/status" 'lock state no_store'
+# The key routes follow the API onto the host listener (#197).
+compose_store_init "$STORE_KEY"
 check_log "startup logs the host-listener exposure warning" 'WARNING: API_HOST_LISTEN_ADDR=":8080" exposes the whole API'
 check_log "the warning names the leaked WireGuard private keys" "receive that node's WireGuard private key"
 

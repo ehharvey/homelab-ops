@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ehharvey/homelab-ops/internal/config"
+	"github.com/ehharvey/homelab-ops/internal/nodeprovision"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -149,5 +150,48 @@ func TestRestoreTunnelPeersNilCredentials(t *testing.T) {
 
 	if len(tunnels.upsertCall) != 1 || tunnels.upsertCall[0].pub != op.PublicKey {
 		t.Errorf("upsertCall = %+v, want only the operator", tunnels.upsertCall)
+	}
+}
+
+// batchingCreds is a fakeCredentialStore that is also a CredentialBatcher,
+// counting its batches and failing their persist with err.
+type batchingCreds struct {
+	fakeCredentialStore
+	batches int
+	err     error
+}
+
+func (b *batchingCreds) BatchCredentials(_ context.Context, f func(nodeprovision.CredentialStore)) error {
+	b.batches++
+	f(&b.fakeCredentialStore)
+	return b.err
+}
+
+// TestRestoreTunnelPeersBatchesTheMints: with a credential store that
+// batches (internal/vault), a restore's mints are one batch, so one write
+// of the store file however many instances it mints for (#197); a batch
+// whose persist fails is returned, so cmd/web retries the restore.
+func TestRestoreTunnelPeersBatchesTheMints(t *testing.T) {
+	st := &fakeStore{instances: []config.Instance{
+		{Name: "node-a", TunnelIP: addr("10.100.0.2")},
+		{Name: "node-b", TunnelIP: addr("10.100.0.3")},
+	}}
+	creds := &batchingCreds{}
+	if err := NewService(nil, st, nil, nil, &fakeTunnelSource{}, creds).RestoreTunnelPeers(context.Background()); err != nil {
+		t.Fatalf("RestoreTunnelPeers: %v", err)
+	}
+	if creds.batches != 1 {
+		t.Errorf("batches = %d, want 1 for both instances", creds.batches)
+	}
+	for _, inst := range st.instances {
+		if _, ok, _ := creds.InstanceCredential(context.Background(), inst.Name); !ok {
+			t.Errorf("no credential minted for %q in the batch", inst.Name)
+		}
+	}
+
+	full := errors.New("no space left on device")
+	failing := &batchingCreds{err: full}
+	if err := NewService(nil, st, nil, nil, &fakeTunnelSource{}, failing).RestoreTunnelPeers(context.Background()); !errors.Is(err, full) {
+		t.Errorf("RestoreTunnelPeers with the batch's persist failing = %v, want %v", err, full)
 	}
 }

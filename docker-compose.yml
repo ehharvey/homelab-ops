@@ -27,7 +27,15 @@ services:
       # WIREGUARD_ENDPOINT deliberately unset here: this dev stack has no
       # real node to tunnel to, so the tunnel stays unconfigured (see
       # newTunnelSource) — scripts/validate/node-tunnel-survives-nat-and-provisions.sh exercises it
-      # against a real booted node instead.
+      # against a real booted node instead. A script that sets it also mounts
+      # a deployment config directory with secrets/wireguard.key, which the
+      # tunnel needs (#197; lib-compose.sh's compose_web_identity).
+      #
+      # STORE_PATH is unset, so the store is in memory, and like every start
+      # it begins locked (#197): nothing but /healthz and the key routes
+      # answers until `bootstrap api --url http://127.0.0.1:8080 init
+      # --key-file <file>`. `make dev` runs that for you, and the compose
+      # validate scripts run it through lib-compose.sh's compose_store_init.
     depends_on:
       - config-repo
 
