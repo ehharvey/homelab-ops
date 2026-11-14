@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-sh lint-docs fmt tidy clean hooks ship lgtm ready wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base
+.PHONY: build test lint lint-sh lint-docs fmt tidy clean hooks ship lgtm ready wt wt-list wt-gc vendor-incusos docker-build dev validate validate-hardware incusos-base appliance-image appliance-check appliance-lock
 
 GO ?= go
 BOOTSTRAP_BIN := bin/bootstrap
@@ -157,4 +157,47 @@ docker-build:
 
 dev:
 	docker compose up --build
+
+# The web app appliance's NixOS image (#243, deploy/nixos/, docs/Deployment.md
+# § The appliance). Nix runs in a pinned nixos/nix container, the way `make
+# lint` runs golangci-lint, so the devcontainer needs no Nix install. The
+# container's /nix is a named volume, so the store and its downloads survive
+# between runs; the volume is named for the Nix version, so a bumped image
+# starts a fresh one. The flake is passed as path:/src/deploy?dir=nixos, so
+# deploy/compose.yaml is inside its source tree. Without a usable /dev/kvm
+# (this devcontainer has none) QEMU falls back to TCG: the image build and the
+# nixosTest still run, only slower. "kvm" is declared as a system feature
+# either way, because the derivations that boot a VM require it.
+#
+#   make appliance-image  bootstrap-output/appliance/homelab-ops-appliance.img
+#   make appliance-check  nix flake check: evaluates the flake, runs the nixosTest
+#   make appliance-lock   nix flake update: re-pins deploy/nixos/flake.lock
+NIX_IMAGE := nixos/nix:2.35.3@sha256:ff480dbb23511aa1c10710aa068ceea5b93fed9bfce5f5379f3a6b07282cbc7b
+NIX_STORE_VOLUME := homelab-ops-nix-2.35.3
+NIX_FLAKE := path:/src/deploy?dir=nixos
+NIX := nix --extra-experimental-features "nix-command flakes" \
+	--option system-features "kvm nixos-test big-parallel benchmark" --option warn-dirty false
+APPLIANCE_OUT := bootstrap-output/appliance
+APPLIANCE_IMG := homelab-ops-appliance.img
+# Recursive (=), so only the appliance recipes that use them run these probes.
+HOST_IDS = $(shell id -u):$(shell id -g)
+KVM_DEVICE = $(shell [ -r /dev/kvm ] && [ -w /dev/kvm ] && echo --device /dev/kvm)
+# $(call nix_run,<deploy mount mode>) — the container, deploy/ mounted at /src/deploy.
+nix_run = docker run --rm $(KVM_DEVICE) -v $(NIX_STORE_VOLUME):/nix -v "$(CURDIR)/deploy:/src/deploy:$(1)"
+
+appliance-image:
+	mkdir -p $(APPLIANCE_OUT)
+	$(call nix_run,ro) -v "$(CURDIR)/$(APPLIANCE_OUT):/out" $(NIX_IMAGE) sh -c '\
+	  $(NIX) build -L --out-link /tmp/result "$(NIX_FLAKE)#raw-efi" && \
+	  cp -L /tmp/result/$(APPLIANCE_IMG) /out/$(APPLIANCE_IMG).tmp && \
+	  chown $(HOST_IDS) /out/$(APPLIANCE_IMG).tmp && chmod 0644 /out/$(APPLIANCE_IMG).tmp && \
+	  mv /out/$(APPLIANCE_IMG).tmp /out/$(APPLIANCE_IMG)'
+	@echo "$(APPLIANCE_OUT)/$(APPLIANCE_IMG)"
+
+appliance-check:
+	$(call nix_run,ro) $(NIX_IMAGE) $(NIX) flake check -L "$(NIX_FLAKE)"
+
+appliance-lock:
+	$(call nix_run,rw) $(NIX_IMAGE) sh -c '\
+	  $(NIX) flake update --flake "$(NIX_FLAKE)" && chown $(HOST_IDS) /src/deploy/nixos/flake.lock'
 

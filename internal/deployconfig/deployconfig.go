@@ -153,11 +153,43 @@ func Load() (Config, error) {
 	v.AutomaticEnv()
 	// An env var set to "" still overrides the file (#241).
 	v.AllowEmptyEnv(true)
-	l := &loader{v: v, read: readHook}
+	l := &loader{v: v, read: readHook, checkPaths: true}
+	return l.load(l.get("DEPLOYMENT_CONFIG_DIR"))
+}
 
-	l.cfg.Dir = l.get("DEPLOYMENT_CONFIG_DIR")
-	if l.cfg.Dir != "" {
+// LoadDir is Load for a directory that is deployed elsewhere, for a tool to
+// check it before shipping it (render-appliance-seed): dir is
+// DEPLOYMENT_CONFIG_DIR, and env stands in for the environment the web app
+// will run in there, overriding web.env as the real environment would; the
+// process's own environment isn't read, and env's DEPLOYMENT_CONFIG_DIR is
+// ignored. It runs every check Load does except the existence of the files
+// that BASE_IMAGE_PATH, NETWORK_ADDRESSING_PATH and CLIENT_CERT_PATH name,
+// which are paths on that host, not this one.
+func LoadDir(dir string, env map[string]string) (Config, error) {
+	if dir == "" {
+		return Config{}, errors.New("no config directory given")
+	}
+	v := viper.New()
+	v.SetConfigType("env")
+	if env == nil {
+		env = map[string]string{}
+	}
+	l := &loader{v: v, read: readHook, env: env}
+	return l.load(dir)
+}
+
+// load reads dir, when it isn't "", and then every setting.
+func (l *loader) load(dir string) (Config, error) {
+	l.cfg.Dir = dir
+	if dir != "" {
 		l.readDir()
+	}
+	// LoadDir's environment goes in after readDir has checked web.env's own
+	// keys, so that check sees only the file's.
+	for name, val := range l.env {
+		if name != "DEPLOYMENT_CONFIG_DIR" {
+			l.v.Set(name, val)
+		}
 	}
 
 	c := &l.cfg
@@ -194,6 +226,12 @@ type loader struct {
 	v    *viper.Viper
 	cfg  Config
 	errs []error
+	// env, when non-nil, is the environment instead of the process's
+	// (LoadDir).
+	env map[string]string
+	// checkPaths has validate stat the files path settings name (Load, not
+	// LoadDir).
+	checkPaths bool
 	// read, when non-nil, is told every setting name Load reads, so a test
 	// can hold the reads to Settings.
 	read func(name string)
@@ -220,6 +258,10 @@ func (l *loader) get(name string) string {
 func (l *loader) envSet(name string) bool {
 	if l.read != nil {
 		l.read(name)
+	}
+	if l.env != nil {
+		_, ok := l.env[name]
+		return ok
 	}
 	_, ok := os.LookupEnv(name)
 	return ok
@@ -428,7 +470,7 @@ func (l *loader) validate() {
 		{"BASE_IMAGE_PATH", c.BaseImagePath},
 		{"NETWORK_ADDRESSING_PATH", c.NetworkAddressingPath},
 	} {
-		if f.path == "" {
+		if f.path == "" || !l.checkPaths {
 			continue
 		}
 		if info, err := os.Stat(f.path); err != nil {
