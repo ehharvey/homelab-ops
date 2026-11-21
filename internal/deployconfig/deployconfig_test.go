@@ -462,3 +462,43 @@ func TestExampleWebappLoads(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// LoadDir checks a directory for another host: its env stands in for that
+// host's environment, the process's is ignored, and the files path settings
+// name aren't looked for here (#243).
+func TestLoadDir(t *testing.T) {
+	clearEnv(t)
+	// The process's environment must not leak in.
+	t.Setenv("WIREGUARD_PORT", "1")
+	dir := configDir(t, map[string]string{
+		WebEnvFile: "WIREGUARD_ENDPOINT=web.example.net:51820\nSTORE_PATH=/from/web.env\n" +
+			"BASE_IMAGE_PATH=/on/the/host/base.img\n",
+	})
+	cfg, err := LoadDir(dir, map[string]string{
+		"STORE_PATH":            "/var/lib/web.db",
+		"DEPLOYMENT_CONFIG_DIR": "/etc/elsewhere",
+	})
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if cfg.Dir != dir || cfg.WireGuardPort != DefaultWireGuardPort || cfg.StorePath != "/var/lib/web.db" ||
+		cfg.BaseImagePath != "/on/the/host/base.img" || cfg.WireGuardEndpoint != "web.example.net:51820" {
+		t.Errorf("LoadDir = %+v", cfg)
+	}
+
+	// web.env's own checks still apply, and env's keys aren't web.env's.
+	dir = configDir(t, map[string]string{WebEnvFile: "CONFIG_REPO_UR=x\nWIREGUARD_OPERATOR_PEERS=y\n"})
+	_, err = LoadDir(dir, map[string]string{"DEPLOYMENT_CONFIG_DIR": "/etc/elsewhere"})
+	for _, want := range []string{"unknown setting CONFIG_REPO_UR", "WIREGUARD_OPERATOR_PEERS is set by the directory's operator-peers file"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("LoadDir = %v, want it to name %q", err, want)
+		}
+	}
+	if err != nil && strings.Contains(err.Error(), "DEPLOYMENT_CONFIG_DIR can only be set") {
+		t.Errorf("LoadDir took env's DEPLOYMENT_CONFIG_DIR for web.env's: %v", err)
+	}
+
+	if _, err := LoadDir(filepath.Join(t.TempDir(), "missing"), nil); err == nil {
+		t.Error("LoadDir accepted a missing directory")
+	}
+}

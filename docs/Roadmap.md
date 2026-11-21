@@ -271,6 +271,13 @@ seams, proven by the existing validate scripts (e.g.
 
 ## Phase 5 — Web app appliance: bootstrap and break-glass
 
+> **NixOS appliance (2026-11-08, #243, `docs/Decisions.md` §29):** the
+> "Cloud-init Debian appliance" item became the NixOS appliance, and the
+> `later` mkosi-built appliance image (#393) was removed from "Deferred —
+> after the Talos main line": NixOS replaces it. The internet VM (#569),
+> appliance CI (#570) and the web app's view of the host OS (#571) were
+> added as their own items.
+
 > **`later` items moved out (2026-11-04, #512):** the mkosi-built appliance
 > image (#393), the web app as a bastion (#399) and pushing store snapshots to
 > off-cluster S3 (#200) are `later` work. They moved to "Deferred — after the
@@ -299,10 +306,19 @@ seams, proven by the existing validate scripts (e.g.
 Appliance (from "Web app deployment", added 2026-10-03, #247, §29):
 
 - [x] Publish the web image to GHCR from `main`: DONE; see #240
-- [ ] Cloud-init Debian appliance: a stock Debian cloud image set up by
-  cloud-init, running the production compose file, with unattended upgrades
-  that reboot only when required. VM and LAN runbooks, and a validate script.
-  First — see #243
+- [x] NixOS appliance: a generic image built from this repo's flake
+  (`deploy/nixos/`), set up at first boot from a NoCloud seed
+  (`bootstrap render-appliance-seed`), running the production compose file
+  (`deploy/compose.yaml`), with `system.autoUpgrade` from `main` that reboots
+  only when the kernel, initrd or modules changed. The laptop runbook, a
+  nixosTest and a validate script: DONE; see #243
+- [ ] Install the NixOS appliance on an internet VM with nixos-anywhere:
+  a disko layout, the config directory through `--extra-files`, and a
+  runbook — see #569
+- [ ] Appliance CI: `nix flake check` on PRs, publishing the generic image,
+  and PRs that bump the NixOS release branch — see #570
+- [ ] The appliance's NixOS release, last upgrade and end of life, shown in
+  the web app — see #571
 - [x] Deployment config contract: one directory, every setting with its
   default, the WireGuard endpoint as a DNS name. It absorbs #67's unified
   config (one place for config, failing fast on missing required values):
@@ -626,9 +642,6 @@ since §31: Phases 6 and 7.)
   Rook-Ceph), since live migration needs shared storage. To file.
 - [ ] *(later)* An own mkosi-built distro replacing Talos, gated on a written
   list of what Talos can't do; Kubernetes bootstrapped with `kubeadm`. To file.
-- [ ] *(later)* mkosi-built web appliance image, sharing a build with §15's
-  helper OS and, later, the own distro's node OS (`docs/Decisions.md` §15);
-  design open — see #393
 - [ ] *(later)* The web app as a bastion (`docs/Decisions.md` §11, §30). A
   decision first — see #399
 - [ ] *(later, optional)* Push encrypted store snapshots to off-cluster S3 —
