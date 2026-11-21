@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/ehharvey/homelab-ops/internal/server"
-	"github.com/ehharvey/homelab-ops/internal/store"
 	"github.com/ehharvey/homelab-ops/internal/wireguard"
 )
 
@@ -119,18 +118,17 @@ func TestListenRejectsABadHostAddress(t *testing.T) {
 
 // TestListenTunnelAdmitsOperatorsAndRefusesNodes drives the default posture
 // through real tunnels: the web app's tunnel (newTunnelSource, with one
-// operator peer that startup's RestoreTunnelPeers registers) serves the API
-// on WebAppAddr, an operator peer reaches it, and a node peer, registered
-// the way a sync registers instances, is refused.
+// operator peer that startup's RegisterOperatorPeers registers, with the
+// store still locked) serves the API on WebAppAddr, an operator peer reaches
+// it, and a node peer, registered the way a sync registers instances, is
+// refused.
 func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 	captureLog(t)
 
-	st, err := store.Open(context.Background(), ":memory:")
+	appPriv, _, err := wireguard.GenerateKeypair()
 	if err != nil {
-		t.Fatalf("store.Open: %v", err)
+		t.Fatalf("GenerateKeypair: %v", err)
 	}
-	defer st.Close() //nolint:errcheck // test cleanup
-
 	opPriv, opPub, err := wireguard.GenerateKeypair()
 	if err != nil {
 		t.Fatalf("GenerateKeypair: %v", err)
@@ -138,13 +136,13 @@ func TestListenTunnelAdmitsOperatorsAndRefusesNodes(t *testing.T) {
 	opAddr := netip.MustParseAddr("10.100.0.240")
 	operators := []wireguard.OperatorPeer{{PublicKey: opPub, Addr: opAddr}}
 
-	ts, err := newTunnelSource(context.Background(), st, "127.0.0.1:51820", 0, operators)
+	ts, err := newTunnelSource(appPriv, "127.0.0.1:51820", 0, operators)
 	if err != nil {
 		t.Fatalf("newTunnelSource: %v", err)
 	}
 	defer ts.Close() //nolint:errcheck // test cleanup
-	if err := server.NewService(nil, st, nil, nil, ts, st).RestoreTunnelPeers(context.Background()); err != nil {
-		t.Fatalf("RestoreTunnelPeers: %v", err)
+	if err := server.NewService(nil, nil, nil, nil, ts, nil).RegisterOperatorPeers(context.Background()); err != nil {
+		t.Fatalf("RegisterOperatorPeers: %v", err)
 	}
 	appPort, err := ts.tun.ListenPort()
 	if err != nil {

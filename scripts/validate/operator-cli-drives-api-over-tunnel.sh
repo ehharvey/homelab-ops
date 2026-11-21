@@ -58,6 +58,11 @@ NODE_KEY="$WORK_DIR/node.key"
 OVERRIDE="$WORK_DIR/compose-override.yml"
 VALIDATE_COMPOSE_OVERRIDE="$OVERRIDE"
 export CERT_DIR
+# The web app's WireGuard identity, which it needs with WIREGUARD_ENDPOINT set
+# (#197), and the store key api init generates.
+WEB_DEPLOY_DIR="$WORK_DIR/web"
+export WEB_DEPLOY_DIR
+STORE_KEY="$WORK_DIR/store.key"
 
 # The fixture's only instance and its MAC (dev/git-fixture/fleet.yaml).
 INSTANCE=devnode0
@@ -163,14 +168,17 @@ services:
       - "127.0.0.1:8081:8081"
     volumes:
       - \${CERT_DIR}:/cert:ro
+      - \${WEB_DEPLOY_DIR}:/etc/homelab-ops/web:ro
 $BASE_IMAGE_MOUNT
     environment:
       - API_HOST_LISTEN_ADDR=
       - CLIENT_CERT_PATH=/cert/client.crt
       - WIREGUARD_ENDPOINT=127.0.0.1:51820
+      - DEPLOYMENT_CONFIG_DIR=/etc/homelab-ops/web
       - WIREGUARD_OPERATOR_PEERS=$OPERATOR_ADDR=\${OPERATOR_PUB}
 $BASE_IMAGE_ENV
 EOF
+check "web app WireGuard identity written" compose_web_identity "$WEB_DEPLOY_DIR"
 check "docker compose up --build succeeds" compose up --build -d
 wait_web_ready "$HEALTH" 40
 wait_log "tunnel API listener is up" "tunnel API listener (1 operator peers)" 10
@@ -179,7 +187,17 @@ APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
 
 echo
-echo "== 3. sync, status, networks, instances reflect the fixture repo =="
+echo "== 3. The store is locked until api init (#197) =="
+expect_ok "api lock-state exits 0 while locked" lock-state
+check_json "api lock-state reads no_store before init" "$CLI_OUT" '.state == "no_store" and .store == "memory"'
+cli status
+expect_refused $? "api status before init exits non-zero with the server's 423" "423 Locked" "lock state no_store"
+expect_ok "api init exits 0" init --key-file "$STORE_KEY"
+check_json "api init leaves the store unlocked" "$CLI_OUT" '.state == "unlocked"'
+check "api init wrote the generated store key" grep -q '^AGE-SECRET-KEY-1' "$STORE_KEY"
+
+echo
+echo "== 4. sync, status, networks, instances reflect the fixture repo =="
 head1=$(fixture_head)
 check "read the fixture repo's HEAD" test -n "$head1"
 
@@ -199,7 +217,7 @@ check_json "api instances lists $INSTANCE with a tunnel address" "$CLI_OUT" \
 node_addr=$(jq -r --arg n "$INSTANCE" '.[] | select(.Name == $n) | .TunnelIP // empty' <<<"$CLI_OUT" 2>/dev/null)
 
 echo
-echo "== 4. seed saves the instance's seed to a private file =="
+echo "== 5. seed saves the instance's seed to a private file =="
 seed_file="$WORK_DIR/$INSTANCE-seed.json"
 expect_ok "api seed $INSTANCE --output <file> exits 0" seed "$INSTANCE" --output "$seed_file"
 check_eq "the seed file is mode 600" 600 "$(stat -c %a "$seed_file" 2>/dev/null)"
@@ -209,7 +227,7 @@ check_json "the seed file holds all four seed documents" "$seed_json" \
 check "the seed's network.yaml carries $INSTANCE's MAC" grep -qF "$INSTANCE_MAC" <<<"$(jq -r '.network_yaml // empty' <<<"$seed_json" 2>/dev/null)"
 
 echo
-echo "== 5. image streams the seeded image to a file =="
+echo "== 6. image streams the seeded image to a file =="
 img_file="$WORK_DIR/$INSTANCE.img"
 if [ "$BASE_IMAGE_READY" -eq 1 ]; then
   expect_ok "api image $INSTANCE --output <file> exits 0" image "$INSTANCE" --output "$img_file"
@@ -238,12 +256,12 @@ else
 fi
 
 echo
-echo "== 6. deploy-agent reaches its handler =="
+echo "== 7. deploy-agent reaches its handler =="
 cli deploy-agent does-not-exist
 expect_refused $? "api deploy-agent of an unknown instance exits non-zero with a 404" "POST /instances/does-not-exist/deploy-agent" "404"
 
 echo
-echo "== 7. A pushed fleet change shows up through the CLI =="
+echo "== 8. A pushed fleet change shows up through the CLI =="
 # A second instance, and no agent App: deploy-agent then has nothing to deploy.
 FLEET2=$(
   cat <<'EOF'
@@ -296,7 +314,7 @@ expect_refused $? "api deploy-agent with no agent App exits non-zero with the se
   "422" "no agent App declared"
 
 echo
-echo "== 8. A failed sync exits non-zero with the server's message =="
+echo "== 9. A failed sync exits non-zero with the server's message =="
 check "push a fleet that doesn't parse" push_fleet "operator-cli" "kind: [this is not a fleet"
 cli sync
 expect_refused $? "api sync of a broken fleet exits non-zero with the server's 502 message" "502" "sync failed"
@@ -304,7 +322,7 @@ cli status
 check_json "api status still reports the last good commit" "$(cat "$WORK_DIR/cli.out")" ".commit == \"$head2\""
 
 echo
-echo "== 9. Keys that aren't an operator's are refused =="
+echo "== 10. Keys that aren't an operator's are refused =="
 node_priv=$(jq -r '.network_yaml // empty' <<<"$seed_json" 2>/dev/null | grep -oE 'private_key: *[A-Za-z0-9+/=]+' | head -1 | awk '{print $2}')
 check "node WireGuard key and overlay address read from the seed and instances" test -n "$node_priv" -a -n "$node_addr"
 printf '%s\n' "$node_priv" >"$NODE_KEY"

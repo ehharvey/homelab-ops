@@ -25,12 +25,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 VALIDATE_PROVES="the background config-sync poller surfaces diff warnings without any POST /sync"
 VALIDATE_GROUP="compose"
-VALIDATE_NEEDS="docker-compose curl jq"
+VALIDATE_NEEDS="docker-compose curl jq go"
 VALIDATE_DURATION="~17s"
 VALIDATE_SUPPORTED_OS="any"
 
 validate_parse_args "$@"
 require_compose
+require_cmd go
 check_prereqs
 cd "$ROOT_DIR" || exit 1
 
@@ -47,9 +48,14 @@ services:
       - CONFIG_SYNC_INTERVAL=2s
 EOF
 
+# The store key compose_store_init generates (#197).
+STORE_KEY_DIR="$(mktemp -d)"
+STORE_KEY="$STORE_KEY_DIR/store.key"
+
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   compose_down
+  rm -rf "$STORE_KEY_DIR"
   rm -f "$OVERRIDE"
 }
 trap cleanup EXIT
@@ -63,6 +69,8 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 check "web is reachable" curl -sf -o /dev/null "$base_url/healthz"
+# The store is locked after every start until init (#197).
+compose_store_init "$STORE_KEY"
 
 echo
 echo "== 2. The first background poll establishes a baseline (no warnings yet) =="
