@@ -361,8 +361,8 @@ Hardening (from "Web app hardening", added 2026-09-28, #201, §28):
   straight to the install media — see #198
 - [x] Network addressing from git (private repo) or web app state, exactly
   one source per network: DONE; see #199
-- [ ] One operator client cert for both Incus and the web app's tunnel API;
-  its custody is #397's to decide (`docs/Decisions.md` §30) — see #397
+- [x] One operator client cert for both Incus and the web app's tunnel API;
+  custody is pass-through (`docs/Decisions.md` §30): DONE; see #397
 
 **Done when:** both former sections' done-whens hold, the laptop appliance
 serves DHCP and DNS from IPAM and holds the signing key, and the operator logs

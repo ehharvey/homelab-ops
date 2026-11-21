@@ -1,9 +1,9 @@
 // Package apiclient is the operator's client for the web app's HTTP API
 // (#196, docs/Decisions.md §28): one method per route the API serves. It
-// speaks plain HTTP over whatever *http.Client it is given; the transport,
-// the operator's own WireGuard peer, is built separately (see Transport), so
-// adding TLS and server-cert pinning (#397) changes the transport, not this
-// file.
+// speaks HTTP over whatever *http.Client it is given; the transport, the
+// operator's own WireGuard peer and the pinning TLS client over it
+// (PinnedHTTPClient, #397), is built separately, so this file knows nothing
+// of either.
 //
 // JSON routes return the server's body as is, so a caller can print it for
 // jq. A non-2xx answer is an *APIError carrying the server's message. The
@@ -31,7 +31,7 @@ const maxJSONBody = 32 << 20
 // maxErrorBody bounds how much of an error answer becomes APIError.Message.
 const maxErrorBody = 4 << 10
 
-// Client calls the web app's API at a base URL, e.g. http://10.100.0.1, the
+// Client calls the web app's API at a base URL, e.g. https://10.100.0.1, the
 // API's address inside the tunnel.
 type Client struct {
 	base *url.URL

@@ -37,9 +37,10 @@ var OverlayCIDR = netip.MustParsePrefix("10.100.0.0/24")
 var WebAppAddr = netip.MustParseAddr("10.100.0.1")
 
 // APIPort is the TCP port the web app serves its HTTP API on, inside the
-// tunnel, at WebAppAddr (#195, docs/Decisions.md §28). Plain HTTP: WireGuard
-// already authenticates and encrypts the path. The port is on the in-process
-// virtual network stack, so binding a privileged number needs no capability.
+// tunnel, at WebAppAddr (#195, docs/Decisions.md §28). It serves TLS and
+// requires a listed operator cert (#397), so clients use https:// on it. The
+// port is on the in-process virtual network stack, so binding a privileged
+// number needs no capability.
 const APIPort uint16 = 80
 
 // mtu is conservative enough to survive being further encapsulated by

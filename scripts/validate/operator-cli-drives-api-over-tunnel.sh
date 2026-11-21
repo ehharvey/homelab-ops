@@ -6,7 +6,11 @@
 #
 # The built bootstrap binary runs on the host and joins the web app's tunnel
 # itself (an in-process userspace peer: no OS WireGuard interface, no root),
-# as the operator peer listed in WIREGUARD_OPERATOR_PEERS. It checks that:
+# as the operator peer listed in WIREGUARD_OPERATOR_PEERS, and talks TLS to
+# the API inside it (#397): it presents the break-glass cert, which the web
+# app trusts as its CLIENT_CERT_PATH, and pins the web app's TLS key to the
+# fingerprint from its startup log (--server-fingerprint, the non-interactive
+# pin). It checks that:
 #   - status, networks, instances and sync reflect the fixture repo
 #     (dev/git-fixture): the synced commit is the repo's HEAD, and a pushed
 #     fleet change shows up in sync's diff, status and instances;
@@ -81,6 +85,8 @@ cli_as() {
   shift 2
   "$BOOTSTRAP_BIN" api "$@" --private-key-file "$key" --local-addr "$addr" \
     --server-public-key "$APP_PUB" --endpoint "$WG_ENDPOINT" \
+    --client-cert "$CERT_DIR/client.crt" --client-key "$CERT_DIR/client.key" \
+    --server-fingerprint "$TLS_PIN" \
     >"$WORK_DIR/cli.out" 2>"$WORK_DIR/cli.err"
 }
 
@@ -177,6 +183,8 @@ wait_log "tunnel API listener is up" "tunnel API listener (1 operator peers)" 10
 
 APP_PUB=$(compose logs web 2>/dev/null | grep -oE 'wireguard public key [A-Za-z0-9+/=]+' | tail -1 | awk '{print $4}')
 check "web app logged its WireGuard public key" test -n "$APP_PUB"
+TLS_PIN=$(web_tls_fingerprint)
+check "web app logged its TLS server key fingerprint" test -n "$TLS_PIN"
 
 echo
 echo "== 3. sync, status, networks, instances reflect the fixture repo =="
@@ -317,6 +325,7 @@ check_log "the web log records the refusal" "refused GET \"/status\" from \"$nod
 
 "$BOOTSTRAP_BIN" api status --private-key-file "$STRANGER_KEY" --local-addr 10.100.0.241 \
   --server-public-key "$APP_PUB" --endpoint "$WG_ENDPOINT" --connect-timeout 8s \
+  --client-cert "$CERT_DIR/client.crt" --client-key "$CERT_DIR/client.key" --server-fingerprint "$TLS_PIN" \
   >"$WORK_DIR/cli.out" 2>"$WORK_DIR/cli.err"
 expect_refused $? "a key the web app doesn't know gets no answer" "no answer from 10.100.0.1:80 within 8s"
 
