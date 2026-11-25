@@ -274,12 +274,18 @@ fi
 seed_resp=$(curl -s -X POST "$base_url/instances/node0/seed")
 check_json "POST /instances/node0/seed returns network_yaml" "$seed_resp" '.network_yaml | length > 0'
 network_yaml=$(echo "$seed_resp" | jq -r '.network_yaml')
+# text_contains <text> <needle> — true when <text> holds <needle> as a fixed
+# string. Server output reaches grep as an argument, never spliced into a
+# bash -c source string: incus.yaml carries "This host's Incus API socket",
+# and an interpolated apostrophe ran the rest of the YAML as commands (#416).
+# shellcheck disable=SC2329 # run by check, which shellcheck can't see through
+text_contains() { printf '%s\n' "$1" | grep -qF -- "$2"; }
 check "network_yaml carries node0's IPAM-assigned address ($ip0/24)" \
-  bash -c "echo '$network_yaml' | grep -q '$ip0/24'"
+  text_contains "$network_yaml" "$ip0/24"
 check "network_yaml carries a default route (0.0.0.0/0)" \
-  bash -c "echo '$network_yaml' | grep -q '0.0.0.0/0'"
+  text_contains "$network_yaml" "0.0.0.0/0"
 check "network_yaml routes the default via the gateway (192.168.1.1)" \
-  bash -c "echo '$network_yaml' | grep -q '192.168.1.1'"
+  text_contains "$network_yaml" "192.168.1.1"
 
 ASSIGNED_IP=$(echo "$network_yaml" | grep -oE '192\.168\.1\.[0-9]{1,3}/24' | head -1 | cut -d/ -f1)
 check "extracted an ASSIGNED_IP from rendered network_yaml" test -n "$ASSIGNED_IP"
@@ -287,7 +293,7 @@ check "extracted an ASSIGNED_IP from rendered network_yaml" test -n "$ASSIGNED_I
 cert_der_b64=$(openssl x509 -in "$CERT_DIR/client.crt" -outform DER | base64 -w0)
 incus_yaml=$(echo "$seed_resp" | jq -r '.incus_yaml')
 check "node0's incus_yaml embeds the operator's break-glass cert" \
-  bash -c "echo '$incus_yaml' | grep -qF '$cert_der_b64'"
+  text_contains "$incus_yaml" "$cert_der_b64"
 
 seed_resp2=$(curl -s -X POST "$base_url/instances/node0/seed")
 incus_yaml2=$(echo "$seed_resp2" | jq -r '.incus_yaml')
@@ -300,7 +306,7 @@ fi
 seed_resp_node1=$(curl -s -X POST "$base_url/instances/node1/seed")
 incus_yaml_node1=$(echo "$seed_resp_node1" | jq -r '.incus_yaml')
 check "node1's incus_yaml embeds the same break-glass cert as node0" \
-  bash -c "echo '$incus_yaml_node1' | grep -qF '$cert_der_b64'"
+  text_contains "$incus_yaml_node1" "$cert_der_b64"
 
 echo
 echo "== 5. Download the web-app-produced image (#39) =="
