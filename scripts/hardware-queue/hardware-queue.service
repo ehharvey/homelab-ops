@@ -1,0 +1,26 @@
+# The validate/hardware queue (#664). Installed into the job's VM by
+# scripts/hardware-queue/provision.sh; see job.sh for what it does.
+[Unit]
+Description=validate/hardware queue: run the hardware validate groups on trusted PR heads (#664)
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+User=hq
+Group=hq
+Environment=HOME=/home/hq
+Environment=PATH=/usr/local/go/bin:/home/hq/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/var/lib/hardware-queue
+ExecStart=/opt/hardware-queue/main/scripts/hardware-queue/job.sh serve
+Restart=always
+RestartSec=30
+# A stop (or setup.sh's restart) ends a run in progress: its head keeps
+# `pending`, which the next pass reruns. job.sh gives a run HQ_KILL_GRACE
+# (120s) after TERM to release the lock, so wait longer than that.
+KillMode=mixed
+TimeoutStopSec=180
+# job.sh exits 143 from its TERM trap: a clean stop, not a failure.
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

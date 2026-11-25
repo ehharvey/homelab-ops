@@ -645,9 +645,12 @@ is the host it runs against and the CI that will drive it.
   instead of a moving `images:alpine/edge` tag, `homelab-dev` deleted, and
   client/server version agreement asserted rather than hoped for: DONE; see
   #131 (folds in #96), `docs/Decisions.md` §21
-- [ ] CI for the validate suite: a hosted runner joining the tailnet and
-  driving throwaway Incus sandboxes on `homelab-host`, with `tofu/ci/`
-  expressing the host state — see #115, `docs/Decisions.md` §20
+- [x] Hardware validation on PRs: a polling queue in a VM on `homelab-host`
+  runs the `incus` and `incus-vm` groups on each trusted PR head, one at a
+  time, and posts `validate/hardware` (#664), under the Incus-server lock
+  (#665); making it a required check is #666. It replaced the hosted runner
+  joining the tailnet (#115, #142, #146, #147, now `later`):
+  DONE; see #664, `docs/Decisions.md` §20
 
 **Done when:** the suite runs unattended in CI against a dev host whose state
 is reproducible from the repo rather than from memory.

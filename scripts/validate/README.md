@@ -80,11 +80,12 @@ has blessed yet. A route that silently gains a precondition produces a `FAIL`,
 not a quietly-tolerated skip, on the day it lands rather than weeks later by
 accident (which is exactly how #107 broke four scripts).
 
-**Nothing runs this automatically yet.** There is no validate workflow in
-`.github/workflows/`; the mechanism above is built and ready, but until it is
-wired up it only protects the runs someone remembers to start by hand. Wiring
-it is tracked separately, and the "runs in CI" column below states intent, not
-current fact.
+**What runs it automatically.** The hardware groups (`incus`, `incus-vm`) run
+on every trusted PR head through [the hardware queue](#the-hardware-queue-664),
+a polling job in a VM on `homelab-host` that posts `validate/hardware`, under
+`--strict --allow-skip incus-cluster`. There is still no validate workflow in
+`.github/workflows/` for the `none` and `compose` groups, so for those the
+"belongs in CI" column below states intent, not current fact.
 
 Tags in use: `base-image`, `ct-image`, `flasher-tool`, `host-os`, `incus-cluster`, `incus-instances`,
 `incus-remote`, `incus-socket`, `opt-in`, `secureboot-tools`, `upstream`. Seven describe a prerequisite the environment
@@ -342,10 +343,10 @@ a failure.
 
 | group | what it needs | belongs in CI |
 |---|---|---|
-| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` and `repo-hygiene-flags-issue-state-drift.sh` need `jq`, `git` (a stub `gh`), `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos), `commit-identity-guard-refuses-other-addresses.sh` only `git` (local repos), `backfill-refuses-non-adjacent-unit.sh` `git`, `jq` (a local repo, no GitHub), `commit-msg-no-closes-checks-sections-only.sh` nothing (stdin), and `secureboot-keys-sign-and-verify-a-test-binary.sh` `openssl`, plus sbsigntool and efitools (skipped, tagged `secureboot-tools`, without them; the devcontainer installs both) | yes |
+| `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` and `repo-hygiene-flags-issue-state-drift.sh` need `jq`, `git` (a stub `gh`), `hardware-queue-runs-trusted-prs-one-at-a-time.sh` `git`, `jq`, `flock`, `setsid`, `timeout`, `make` (local repos, a stub `gh`, `incus`, lock and suite), `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos), `commit-identity-guard-refuses-other-addresses.sh` only `git` (local repos), `backfill-refuses-non-adjacent-unit.sh` `git`, `jq` (a local repo, no GitHub), `commit-msg-no-closes-checks-sections-only.sh` nothing (stdin), and `secureboot-keys-sign-and-verify-a-test-binary.sh` `openssl`, plus sbsigntool and efitools (skipped, tagged `secureboot-tools`, without them; the devcontainer installs both) | yes |
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss`; `cli-builds-install-media-from-downloaded-seed.sh` also `blkid`, and `flasher-tool` for its local-build checks (skipped, tagged `flasher-tool`, without it) | yes |
-| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images); `hardware-lock-admits-one-holder-and-recovers-from-a-dead-one.sh` an Incus remote through the `incus` CLI, `timeout`, `make` | no — needs the host |
-| `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
+| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images); `hardware-lock-admits-one-holder-and-recovers-from-a-dead-one.sh` an Incus remote through the `incus` CLI, `timeout`, `make` | no — needs the host; [the hardware queue](#the-hardware-queue-664) runs it on PRs |
+| `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host; [the hardware queue](#the-hardware-queue-664) runs it on PRs |
 | `github` | `VALIDATE_GITHUB_WRITES=1` for every script, since each writes to the real repository: throwaway `validate-<n>/*` branches and PRs, always closed and deleted by the script, and (`bump-workflow-opens-pin-only-pr.sh`) two dispatches of `bump-incusos.yml`. Without it, and always under CI (`CI` or `GITHUB_ACTIONS` set), each skips (`[opt-in]`, exit 3) before any `gh` call (`require_github_writes`, #311), so a bare `run.sh` writes nothing. Also authenticated `gh` with repo admin (`amended-commit-reships-to-open-pr.sh` and `ship-copies-issue-details-into-commit.sh` open and close a real PR, the latter also reading two closed issues, `FIXTURE_ISSUE` and `OTHER_ISSUE`) | never — opens real PRs, would recurse |
 
 `run.sh` derives these from the scripts themselves rather than a list kept here,
@@ -471,12 +472,13 @@ with a run; go through `run.sh` when someone else might be using the host.
 generation it holds, and `run.sh` runs without taking it. `run.sh` checks that
 the name is the lock's current, unreleased generation, and refuses (exit `2`)
 otherwise, so a stale or mistyped value can't bypass a real holder.
-`lib-hardware-lock.sh hold` sets it for its command. #664's job holds the lock
-across its cleanup sweep and its run with
+`lib-hardware-lock.sh hold` sets it for its command. [The hardware
+queue](#the-hardware-queue-664) holds the lock across its cleanup sweep and its
+run with
 
 ```
-VALIDATE_HARDWARE_LOCK_SHA=<pr sha> ./scripts/validate/lib-hardware-lock.sh hold -- \
-	sh -c 'sweep && ./scripts/validate/run.sh --group incus,incus-vm'
+VALIDATE_HARDWARE_LOCK_SHA=<pr sha> lib-hardware-lock.sh hold -- job.sh _locked …
+	# sweep, make incusos-base, then VALIDATE_OS=incusos run.sh --group incus,incus-vm --strict …
 ```
 
 which exits `2`, running nothing, when someone else holds the lock, the remote
@@ -532,6 +534,146 @@ call timeout at 4s and the stale period at 20s. The lock assumes the server has 
 `homelab-host`, a one-member cluster. Neither covers a cluster of several
 members.
 
+## The hardware queue (#664)
+
+A VM on `homelab-host`, `hardware-queue`, polls GitHub for open PRs into
+`main`, runs the `incus` and `incus-vm` groups on each eligible head **one at
+a time**, and posts the result to that commit as the status
+`validate/hardware`. It pulls work, so nothing reaches into the host from
+outside: no runner, no tailnet hop, no inbound credential
+(`docs/Decisions.md` §20 records why this replaced the hosted-runner route).
+The status is **not required** yet; #666 makes it so.
+
+The code is `scripts/hardware-queue/`: `job.sh` (the queue, a systemd service
+in the VM), `setup.sh` (builds the VM), `provision.sh` (its tools) and
+`config.env` (the defaults). The job runs from a copy of `main` taken when
+the VM was built, never from a PR head.
+
+**Which PRs run.** All of: it targets `main`; it isn't cross-repository; its
+author is on `HQ_AUTHORS`, spelled as `gh pr list` spells it (`ehharvey`,
+`app/dependabot`, `app/github-actions`); and the operator is still the only
+collaborator with write access, checked on `/collaborators` before every run.
+A fork PR or an author off the list never runs and gets no status. A second
+writer means nothing runs and the picked head gets `error`. Bump and
+Dependabot PRs run automatically, by the operator's choice. Nothing else about
+a PR is read: branch names and titles never reach a shell.
+
+**The queue.** GitHub's statuses are its only memory:
+
+- `success` and `failure` on a head are final.
+- `pending` means rerun. A crash or reboot leaves one; **posting `pending`
+  yourself retries a flake.**
+- `error` runs again once it is 30 minutes old (`HQ_ERROR_BACKOFF`). So does a
+  head whose final status couldn't be posted: the job remembers it locally,
+  and `setup.sh` proves the token can write statuses.
+- Only each PR's latest head counts, so a push replaces its queued entry.
+  PRs with auto-merge enabled go first, then by number. A run in progress is
+  never preempted.
+- A push to the PR being run, or closing it, stops the run within a minute,
+  and the old SHA gets `error` "superseded".
+
+**A run.** In a fresh detached worktree of one persistent clone, so the
+IncusOS image cache under the clone is shared:
+
+```
+lib-hardware-lock.sh hold --              # VALIDATE_HARDWARE_LOCK_SHA=<head>
+	sweep                                 # below
+	make incusos-base                     # the PR's pin; older cached versions pruned
+	VALIDATE_OS=incusos ./scripts/validate/run.sh --group incus,incus-vm --strict --allow-skip incus-cluster
+```
+
+Sequential, never `--jobs`, and never the `github` group (the job refuses it,
+and refuses `host-os` on the allow-list). `pending` goes up once the lock is
+held. If a person holds the lock, or Incus is unreachable, nothing runs, no
+status is posted, and the head stays queued. A run is stopped after 2 hours.
+The backend, groups and allow-list are instance config (`HQ_BACKEND`,
+`HQ_GROUPS`, `HQ_ALLOW_SKIP`), so another node-OS backend can reuse the queue.
+`incus-cluster` is allowed because `homelab-host` is a one-member cluster, so
+the targeted create in `incuslocal-round-trips-instances-over-unix-socket.sh`
+can never run there.
+
+| outcome | status | description |
+|---|---|---|
+| `run.sh` exit 0 | `success` | the script count and duration |
+| `run.sh` exit 3 | `success` | the number of allow-listed skips |
+| `run.sh` exit 1 | `failure` | the scripts that failed (a skip not on the allow-list is one) |
+| `run.sh` exit 2, a timeout, a failed sweep or checkout, a second writer | `error` | why; it says nothing about the PR |
+
+**The sweep.** Holding the lock, before each run, the job deletes **every**
+match of the [naming table](#what-the-scripts-name-things-on-the-incus-host-131),
+whatever its age, in the `default` project: instances and custom volumes
+`validate-<slug>[-<role>]-<pid>[-<more>]`, images aliased by such a name (the
+upgrade and failover scripts import their own), and networks `valwan-<pid>`. A PID means
+nothing across runs, and an interrupted run's leftovers hold `home-lan`'s
+fixed addresses. It never touches profiles (so neither the lock's
+`validate-hardware-lock-<n>` nor `incus-socket`), other images (the pinned
+`validate-alpine` and `validate-alpine-vm` have no numeric segment, so a pin's
+name must never gain one), or the job's own VM, whose name the
+job refuses if the pattern would match it. In the VM it also removes every
+container but the `incus-bridge` service's. A sweep that fails is a job fault:
+no run, and `error`. **Accepted cost:** a script you run directly takes no lock
+([above](#the-hardware-lock-665)), so the sweep can delete its instances
+mid-run. Go through `run.sh`, which waits its turn, while the queue is up. To
+sweep by hand, in the VM:
+`lib-hardware-lock.sh hold -- /opt/hardware-queue/main/scripts/hardware-queue/job.sh sweep`.
+
+**Setup.** From a checkout, as the operator (your Incus remote, your own `gh`):
+
+```
+scripts/hardware-queue/setup.sh
+```
+
+It reads `ISSUE664_VALIDATE_BOT_PAT` from the environment or the repository
+root's `.env`, and refuses, naming the file, when that `.env` is tracked or
+not ignored (`git check-ignore -q .env`). It checks that the operator is the
+only writer and that the repository has no deploy keys or pending invitations,
+which the job's own token can't see. It then creates the VM if it's missing
+(`images:debian/13`, `boot.autostart`, on `home-lan` at `192.168.1.253`, outside
+the DHCP range and the scripts' fixed addresses), pushes `origin/main`'s copy
+of the job, installs the tools (`run.sh --describe` for the two groups, plus
+`tofu` and `gh`, which `devcontainer-reaches-host-incus.sh` checks for, and an
+`incus` client of the server's major), gives the VM a client certificate, and
+starts the job. Rerunning it updates all of that; deleting the VM and
+rerunning it rebuilds it. `--no-start` leaves the job stopped; `--code-ref
+<commit>` pushes another commit's job code, to prove a change to the job
+before it merges. The three unix-socket scripts get `VALIDATE_INCUS_SOCKET`
+from the `incus-bridge` compose service, which the job starts in the VM
+against `home-lan`'s gateway (`192.168.1.1:8443`).
+
+**The token.** A fine-grained token for this repository only: Contents read,
+Pull requests read, Commit statuses write. It lives in the VM at
+`/etc/hardware-queue/token` (mode `0400`), is handed to `gh` alone, and is kept
+out of the suite's environment (the run starts under `env -i`) and its logs.
+The job reads its expiry from GitHub's `GitHub-Authentication-Token-Expiration`
+header. Within 30 days of it, the job's log warns and every description ends
+`token expires YYYY-MM-DD`. **To rotate it:** make a new token with the same
+permissions, put it in `.env`, and rerun `setup.sh`.
+
+**The trust model is loose, on purpose.** The VM's Incus certificate has full
+trust: a certificate restricted to a project can't pass the suite, since
+`agent-self-upgrades-blue-green-without-gap.sh` and
+`incuslocal-round-trips-instances-over-unix-socket.sh` use the `default`
+project, `agents-act-one-at-a-time-through-failover.sh` runs on incuslocal, and
+`node-tunnel-survives-nat-and-provisions.sh` creates a network. So PR code has
+admin over the host and its other instances. The suite also has Docker, which
+is root in the VM, so PR code could read the token or change the job, and a
+PR can edit the scripts that judge it. **The boundary is the operator being
+the only writer.** The writer check catches a mistake; it does not defend
+against a hostile writer.
+
+**Operating it.**
+
+```
+incus exec homelab-host:hardware-queue -- journalctl -fu hardware-queue   # the job
+incus exec homelab-host:hardware-queue -- ls -t /var/lib/hardware-queue/logs   # one log per SHA, newest 50 kept
+incus exec homelab-host:hardware-queue -- systemctl stop hardware-queue   # pause it
+```
+
+Overrides go in the VM's `/etc/hardware-queue/config.env`, which `setup.sh`
+creates once and never rewrites; `scripts/hardware-queue/config.env` lists every
+setting. `hardware-queue-runs-trusted-prs-one-at-a-time.sh` proves the queue's
+rules against stubs of `gh`, `incus`, the lock and the suite.
+
 ## The library
 
 | file | contents | sourced by |
@@ -571,8 +713,9 @@ anything left behind can be identified and removed by hand:
 
 | object | pattern | example |
 |---|---|---|
-| instances | `validate-<slug>-<role>-$$` | `validate-tunnel-gw-31337` |
+| instances | `validate-<slug>-<role>-$$` (the PID may be followed by more) | `validate-tunnel-gw-31337`, `validate-upg-31337-pc0-g0` |
 | custom volumes | `validate-<slug>-<purpose>-$$` | `validate-nodeboot-seeded-img-31337` |
+| imported images (aliases) | `validate-<slug>-$$-<role>` | `validate-upg-31337-a` |
 | networks | `valwan-$$` | `valwan-31337` |
 | the hardware lock (a profile, `default` project) | `validate-hardware-lock-<n>` | `validate-hardware-lock-7` |
 
@@ -596,8 +739,11 @@ and two concurrent runs cannot tell each other's objects apart. Cleanup is
 `trap ... EXIT` only, so `kill -9`, a devcontainer rebuild mid-run, or a host
 reboot orphans everything that run created.
 
-A reaper to collect leftovers automatically was considered and declined (#131):
-the convention makes them identifiable by hand, and in practice the suite has
-not been observed to leak. Worth revisiting if that stops being true — Incus
-records `created_at` per instance, so age-based collection over the
-`validate-*` glob is the obvious shape.
+A reaper was declined in #131, and [the hardware queue](#the-hardware-queue-664)
+now sweeps before each run (#664, `docs/Decisions.md` §21): every instance, custom
+volume and image matching the table's first rows and every `valwan-<pid>` network, with
+no age or PID filter, and never a profile. Age-based collection was the shape
+#131 suggested; it was declined because an interrupted run's leftovers are
+recent and hold `home-lan`'s fixed addresses, and the sweep runs only while
+the queue holds the lock. Its cost: a script someone runs directly takes no
+lock, so the sweep can delete its objects mid-run.
