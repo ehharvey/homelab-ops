@@ -723,10 +723,16 @@ The lock is not a leftover: it outlives every run by design, and its `<n>` is
 a generation, not a PID, though the name has the instance pattern's shape. A
 cleanup sweep must leave profiles alone ([the hardware lock](#the-hardware-lock-665)).
 Scripts create other profiles too, and delete them on exit: the lock's proof
-creates `validate-hwlock-proof-$$-<n>`,
-`agent-self-upgrades-blue-green-without-gap.sh` creates `incus-socket` when
-the host lacks one, and `incus-etag-write-guards-lost-updates-not-races.sh`
-creates `validate-etag-prof-$$-<round>`.
+creates `validate-hwlock-proof-$$-<n>`, and
+`incus-etag-write-guards-lost-updates-not-races.sh` creates
+`validate-etag-prof-$$-<round>`.
+`agent-self-upgrades-blue-green-without-gap.sh` creates `incus-socket` per
+run when the host lacks one (marked `user.created-by: validate-upg-$$`), and
+deletes it on exit, after its instances are gone; a run that couldn't delete
+them keeps it and says so in a `WARN:` line. No sweep reclaims it, since the
+sweep never touches a profile: one left behind stays until someone runs
+`incus profile delete homelab-host:incus-socket`, and later runs find it
+present and leave it alone.
 
 Networks break the pattern on purpose: a bridge's name becomes a real
 host-level interface name (`ip link`), which is capped at 15 characters.
