@@ -49,6 +49,12 @@ always outranks "everything that ran, passed".
 `VALIDATE_OS` adds no code: an unknown backend is a `2` and a known one a
 script doesn't support is a `3` ([below](#the-host-os-backend-validate_os-486)).
 
+Neither does the hardware lock. When someone else holds it, `run.sh` starts no
+script and exits `2`, the "declined to run" code, after naming the holder. It
+also exits `2` for a `VALIDATE_HARDWARE_LOCK_NAME` it can't use, or a
+`VALIDATE_HARDWARE_LOCK_HELD` that doesn't name the lock's current generation
+([below](#the-hardware-lock-665)).
+
 ## Skips, tags, and `--strict`
 
 An unmet *soft* prerequisite produces a `SKIP` carrying a reason tag:
@@ -338,7 +344,7 @@ a failure.
 |---|---|---|
 | `none` | Go only; `incusos-base-fetch-rejects-untrusted-or-corrupt.sh` instead needs `curl`, `openssl`, `jq`, `gzip`, `sha256sum` (no network), `ship-squashes-and-rebases-onto-main.sh` only `git` (local repos, a stub `gh`), `finding-hook-records-noticed-bullets.sh` and `file-findings-holds-non-bugs-at-proposed-cap.sh` need `jq`, `flock`, `git` (the latter a stub `gh`), `ready-queue-skips-done-when-without-proof.sh` and `repo-hygiene-flags-issue-state-drift.sh` need `jq`, `git` (a stub `gh`), `worktree-push-runs-its-own-pre-push-hook.sh` needs `git`, `timeout` (local repos), `commit-identity-guard-refuses-other-addresses.sh` only `git` (local repos), `backfill-refuses-non-adjacent-unit.sh` `git`, `jq` (a local repo, no GitHub), `commit-msg-no-closes-checks-sections-only.sh` nothing (stdin), and `secureboot-keys-sign-and-verify-a-test-binary.sh` `openssl`, plus sbsigntool and efitools (skipped, tagged `secureboot-tools`, without them; the devcontainer installs both) | yes |
 | `compose` | Docker, `docker compose`, `jq` (`lib-compose.sh`'s port guard); `compose-refuses-unlisted-host-port.sh` also `python3`, `ss`; `cli-builds-install-media-from-downloaded-seed.sh` also `blkid`, and `flasher-tool` for its local-build checks (skipped, tagged `flasher-tool`, without it) | yes |
-| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images) | no — needs the host |
+| `incus` | an Incus remote **or** a readable/writable Incus unix socket, `jq`; `agent-self-upgrades-blue-green-without-gap.sh` also `go` and `docker` (it builds the agent and fixture images); `hardware-lock-admits-one-holder-and-recovers-from-a-dead-one.sh` an Incus remote through the `incus` CLI, `timeout`, `make` | no — needs the host |
 | `incus-vm` | an Incus remote, the pinned base images, a real VM boot, the IncusOS base image (`make incusos-base`, or `INCUSOS_BASE_IMAGE`) | no — needs the host |
 | `github` | `VALIDATE_GITHUB_WRITES=1` for every script, since each writes to the real repository: throwaway `validate-<n>/*` branches and PRs, always closed and deleted by the script, and (`bump-workflow-opens-pin-only-pr.sh`) two dispatches of `bump-incusos.yml`. Without it, and always under CI (`CI` or `GITHUB_ACTIONS` set), each skips (`[opt-in]`, exit 3) before any `gh` call (`require_github_writes`, #311), so a bare `run.sh` writes nothing. Also authenticated `gh` with repo admin (`amended-commit-reships-to-open-pr.sh` and `ship-copies-issue-details-into-commit.sh` open and close a real PR, the latter also reading two closed issues, `FIXTURE_ISSUE` and `OTHER_ISSUE`) | never — opens real PRs, would recurse |
 
@@ -400,7 +406,8 @@ publishes a host port the list doesn't name, so a script whose override adds
 one fails a check until it's listed (#271). The `incus-vm` group likewise
 shares the `home-lan` bridge, and `app-produces-working-installer-e2e.sh`'s
 header warns against running it concurrently with
-`node-boots-and-trusts-bootstrap-cert.sh` for that reason.
+`node-boots-and-trusts-bootstrap-cert.sh` for that reason. Two separate runs
+of those groups are kept apart by [the hardware lock](#the-hardware-lock-665).
 
 Per-run isolation is tracked separately. Until then `--jobs` is safe only across
 groups that don't contend — and the measured serial cost is low: the whole
@@ -415,13 +422,124 @@ published ports are actually gone. On Compose v5 `down` is already synchronous,
 so the barrier is a no-op there; it exists so the group stays deterministic on
 an older or CI-provided Compose where `down` returns early (#153).
 
+### The hardware lock (#665)
+
+The `incus` and `incus-vm` scripts share one Incus server, and the `incus-vm`
+ones its `home-lan` bridge, so two runs of them must not overlap: a person's
+`make validate-hardware` from a devcontainer, and #664's job from a VM. A
+host-side `flock` reaches neither, so the lock lives on the Incus server
+itself (`lib-hardware-lock.sh`, after `docs/Decisions.md` §25's profile-create
+arbiter).
+
+**Who takes it.** `run.sh` does, when it is about to run scripts (not `--list`
+or `--describe`) and at least one selected `incus`/`incus-vm` script would run
+under `VALIDATE_OS` rather than skip at the gate. That covers
+`make validate-hardware` and any `run.sh --group incus…`. Other groups, and a
+run whose Incus scripts would all skip, neither take it nor contact the
+remote. **A single script run directly does not take it**, so
+`./scripts/validate/node-boots-and-trusts-bootstrap-cert.sh` can still collide
+with a run; go through `run.sh` when someone else might be using the host.
+
+**What `run.sh` does with it.**
+
+- **Free:** it takes the lock, runs, and releases it on exit, including on
+  Ctrl-C, `TERM` or `HUP`, but never while a script still runs: in sequence,
+  once the script in the foreground has ended; with `--jobs` above 1, after
+  sending the running scripts `TERM` and waiting for them.
+- **Held:** it starts no script, names the holder, and exits `2`:
+
+  ```
+  hardware lock: validate-hardware-lock-7 is unreleased; watching its heartbeat (up to 300s)
+  ERROR: hardware lock: held: validate-hardware-lock-7 by vscode@3e60… pid 4242 since 2026-11-25T05:19:58Z, in /workspaces/infra at 7f11806…, running: run.sh --group incus,incus-vm — starting no script (incus profile show homelab-host:validate-hardware-lock-7 --project default)
+  ```
+
+  It first watches the holder's heartbeat, so a refusal takes up to one
+  heartbeat interval plus a poll (a fifth of it): about 36s at the defaults,
+  plus the time the remote takes to answer, since each Incus call is cut off
+  at 20s (`VALIDATE_HARDWARE_LOCK_CALL_TIMEOUT`).
+- **Remote unreachable** (no such remote, a connection failure, or a timeout
+  or reset that persists through two retries) on its first look at the lock:
+  a `NOTE`, and the run goes ahead without the lock. The scripts then report
+  the unreachable remote themselves. Once it has read the lock, losing the
+  remote while it watches a holder is a refusal (exit `2`), since that holder
+  may be live.
+- **Any other Incus error**, such as a certificate restricted to a project
+  other than `default`, which reaches the server but can't see the lock: no
+  script starts, exit `2`.
+
+**A caller that already holds it** sets `VALIDATE_HARDWARE_LOCK_HELD` to the
+generation it holds, and `run.sh` runs without taking it. `run.sh` checks that
+the name is the lock's current, unreleased generation, and refuses (exit `2`)
+otherwise, so a stale or mistyped value can't bypass a real holder.
+`lib-hardware-lock.sh hold` sets it for its command. #664's job holds the lock
+across its cleanup sweep and its run with
+
+```
+VALIDATE_HARDWARE_LOCK_SHA=<pr sha> ./scripts/validate/lib-hardware-lock.sh hold -- \
+	sh -c 'sweep && ./scripts/validate/run.sh --group incus,incus-vm'
+```
+
+which exits `2`, running nothing, when someone else holds the lock, the remote
+can't be reached, or Incus errors; otherwise with its command's code.
+`run.sh` exports `VALIDATE_HARDWARE_LOCK_HELD` to the scripts it starts too.
+
+**Seeing the holder.** The lock is a profile `<base>-<n>` in the `default`
+project; the highest `n` is the current generation:
+
+```
+incus profile list homelab-host: --project default    # validate-hardware-lock-<n>, at most two
+incus profile show homelab-host:validate-hardware-lock-7 --project default
+./scripts/validate/lib-hardware-lock.sh status         # the same, in one line
+```
+
+The holder is in its `user.*` keys: `user.who`, `user.host`, `user.where` (the
+working directory), `user.pid`, `user.since`, `user.sha` (the checkout's
+`HEAD`, or `VALIDATE_HARDWARE_LOCK_SHA`), `user.command`, `user.heartbeat`, and
+`user.released` once released.
+
+**The timeout.** The holder bumps `user.heartbeat` every 30 seconds. A caller
+that sees it stand still for 5 minutes, on its own clock, takes the lock over:
+that is how a SIGKILLed or rebooted holder's lock frees itself. To free it
+sooner by hand, after making sure nothing is running, set
+`user.released=true` on the highest generation
+(`incus profile set homelab-host:validate-hardware-lock-7 user.released=true --project default`).
+Never delete the highest generation.
+
+**How it works.** Each acquire, and each takeover, creates generation
+`highest+1`; Incus's database lets exactly one of several concurrent creators
+of one name win, and the losers' 500 is confirmed by re-reading. The winner
+re-lists, defers to any higher generation, and deletes every generation below
+`n-1`. Release sets `user.released=true`; nothing ever deletes the highest
+generation. Not ETag/`If-Match`, which §25 measured letting several writers
+land. Details are in the header of `lib-hardware-lock.sh`.
+
+**Settings.**
+
+| variable | default | |
+|---|---|---|
+| `VALIDATE_INCUS_REMOTE` | `homelab-host` | the server the lock lives on; `local` on the host itself |
+| `VALIDATE_HARDWARE_LOCK_NAME` | `validate-hardware-lock` | the base name; at most 53 characters, leaving room for a ten-digit generation in Incus's 64-character profile names (else exit `2`) |
+| `VALIDATE_HARDWARE_LOCK_HEARTBEAT` | `30` | seconds between heartbeats |
+| `VALIDATE_HARDWARE_LOCK_STALE` | `300` | seconds of unchanged heartbeat before a takeover; must exceed 2×heartbeat + 4×call timeout (else exit `2`), or a waiter could take over a live holder |
+| `VALIDATE_HARDWARE_LOCK_CALL_TIMEOUT` | `20` | seconds before each Incus call is cut off |
+| `VALIDATE_HARDWARE_LOCK_HELD` | unset | the generation the caller holds (above) |
+| `VALIDATE_HARDWARE_LOCK_SHA` | the checkout's `HEAD` | recorded as `user.sha` |
+
+`hardware-lock-admits-one-holder-and-recovers-from-a-dead-one.sh` proves it
+against the real server on a private lock name, with the heartbeat at 1s, the
+call timeout at 4s and the stale period at 20s. The lock assumes the server has one database member.
+§25's evidence is from an unclustered server; the proof runs against
+`homelab-host`, a one-member cluster. Neither covers a cluster of several
+members.
+
 ## The library
 
 | file | contents | sourced by |
 |---|---|---|
-| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_github_writes` (the `github` group's opt-in, #311), `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, the `VALIDATE_OS` gate (`VALIDATE_KNOWN_OS`, `validate_os_known`), arg parsing, `summary` | all, and `run.sh` |
+| `lib.sh` | counters, `check`/`check_json`/`check_eq`, `json_matches`/`json_shown` (a blank body never matches and shows as `<empty>`, #302), `fail_why` (a helper's failure reason on `check`'s FAIL line), `skip_check`, the prereq DSL, `require_github_writes` (the `github` group's opt-in, #311), `require_docker_credential_helper` (bypasses a hung credential helper, #300), `default_incusos_base_image`/`base_image_skip_reason`, the `VALIDATE_OS` gate (`VALIDATE_KNOWN_OS`, `validate_os_known`, `validate_os_supports`), arg parsing, `summary` | all, and `run.sh` |
 | `lib-compose.sh` | `compose()` (with the published-port guard, #271), `require_compose` (docker compose, jq, the credential-helper probe), `COMPOSE_HOST_PORTS`, `compose_down` (teardown barrier, #153), `wait_web_ready`, `wait_http`/`wait_json`, `check_log`/`wait_log`, `push_fleet` | `compose` |
 | `lib-incus.sh` | `console_log`, `wait_for_console_text`, `incus_exec_bg`, `require_flasher_tool`, the pinned-image aliases, `incus_versions_compatible` | `incus`, `incus-vm` |
+| `lib-hardware-lock.sh` | [the hardware lock](#the-hardware-lock-665): `hwlock_acquire`, `hwlock_release`, `hwlock_check_held`, `hwlock_status`; also a command (`hold [--] <cmd>`, `status`). Separate from `lib-incus.sh` because `run.sh` sources it, the lock has its own remote and project rather than a script's `$REMOTE`/`$PROJECT`, and #664's job runs it | `run.sh`, its proof |
 
 `lib.sh`'s prereq DSL includes `require_incus_image`, which asserts the pinned
 base images exist. It is a hard prerequisite (exit 2), not a skip: a missing
@@ -456,6 +574,16 @@ anything left behind can be identified and removed by hand:
 | instances | `validate-<slug>-<role>-$$` | `validate-tunnel-gw-31337` |
 | custom volumes | `validate-<slug>-<purpose>-$$` | `validate-nodeboot-seeded-img-31337` |
 | networks | `valwan-$$` | `valwan-31337` |
+| the hardware lock (a profile, `default` project) | `validate-hardware-lock-<n>` | `validate-hardware-lock-7` |
+
+The lock is not a leftover: it outlives every run by design, and its `<n>` is
+a generation, not a PID, though the name has the instance pattern's shape. A
+cleanup sweep must leave profiles alone ([the hardware lock](#the-hardware-lock-665)).
+Scripts create other profiles too, and delete them on exit: the lock's proof
+creates `validate-hwlock-proof-$$-<n>`,
+`agent-self-upgrades-blue-green-without-gap.sh` creates `incus-socket` when
+the host lacks one, and `incus-etag-write-guards-lost-updates-not-races.sh`
+creates `validate-etag-prof-$$-<round>`.
 
 Networks break the pattern on purpose: a bridge's name becomes a real
 host-level interface name (`ip link`), which is capped at 15 characters.
