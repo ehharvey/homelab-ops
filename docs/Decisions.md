@@ -1013,7 +1013,7 @@ proxy         →  routing, health-checked against the DB layer  (seconds)
   prerequisites, then "why this isn't buildable yet", now apply only to the
   parked Incus runtime.
 
-## 20. The validation suite: bash, tailnet CI, and no OVN (#115, #127)
+## 20. The validation suite: bash, a polling hardware queue, and no OVN (#115, #127, #664)
 
 #115 established that nothing runs `scripts/validate-*.sh`, and that two of
 them had been silently broken for weeks after #107 gated the seed and image
@@ -1082,29 +1082,40 @@ becomes worth reopening if the suite is ever split into small, genuinely
 *independent* checks, since that is the shape its model and its parallelism
 assume.
 
-**2. Hosted runner + Tailscale to the Incus host, not a self-hosted runner.**
-The security objection to self-hosted is real but not decisive on its own:
-fork PRs cannot fire `push` on the base repo, and `workflow_dispatch` requires
-write access. What decides it is operational. The workstation is not always
-on, so a job targeting it queues amber until GitHub's 24-hour timeout — checks
-that hang until someone boots a desktop train you to ignore checks, which is
-the same disease this suite already suffers from, one layer up. And the runner
-*is* the developer's machine: `app-produces-working-installer-e2e.sh` already warns against
-running concurrently with `node-boots-and-trusts-bootstrap-cert.sh` (both drive the live `home-lan`
-bridge, and #5 hardcodes the address IPAM hands node1), while #91 avoided
-per-network NAT because it would tune the shared host's netfilter state. A
-GitHub-dispatched job cannot take a lock against a human; a host-side script
-under `flock` can.
+**2. The hardware groups pull their work: a queue in a VM on the Incus host,
+not a runner (#664).** A persistent VM on `homelab-host` polls GitHub for open
+PRs into `main`, runs the `incus` and `incus-vm` groups on each eligible head
+one at a time, and posts the result as the commit status `validate/hardware`
+(`scripts/validate/README.md` § "The hardware queue"). The host reaches out,
+so there is no tailnet hop and no inbound credential, and GitHub holds nothing
+that reaches the host.
 
-Inverting the direction keeps untrusted code on GitHub's disposable VM and
-makes the host reachable only through a credential GitHub **withholds from
-fork PRs entirely**. The SSH target is a persistent `ci-orchestrator` Incus
-container holding a project-restricted TLS cert, which launches throwaway VM
-sandboxes and deletes them — so nothing CI-related lives on the desktop
-filesystem, and the whole apparatus is one deletable container. A VM sandbox
-rather than a nesting container because any container engine inside an Incus
-container needs `security.nesting=true` (podman included), whereas a VM has
-its own kernel and runs stock Docker with no privilege grant.
+What decides the shape is the same operational fact that ruled out a
+self-hosted runner: the machine is shared with people. `app-produces-working-installer-e2e.sh`
+warns against running concurrently with `node-boots-and-trusts-bootstrap-cert.sh`
+(both drive the live `home-lan` bridge, and #5 hardcodes the address IPAM hands
+node1), and #91 avoided per-network NAT because it would tune the shared
+host's netfilter state. A GitHub-dispatched job cannot take a lock against a
+human; the queue does, through #665's lock on the Incus server itself (§25),
+around a sweep of interrupted runs' leftovers (§21) and the run. And because
+the queue isn't a GitHub job, an offline host doesn't leave a job queued amber
+until GitHub's 24-hour timeout: the status simply arrives when the host runs
+it. Whether it blocks merges is #666's call.
+
+Untrusted code is kept off the host by eligibility, not by where it runs: a
+PR runs only if it targets `main`, isn't cross-repository, its author is on an
+allowlist (the operator and the Dependabot and GitHub Actions apps), and the
+operator is still the only collaborator with write access. Fork PRs never run.
+The VM's Incus certificate has **full trust**, because a project-restricted one
+can't pass the suite: some scripts use the `default` project, run on
+incuslocal, or create networks. So PR code has admin over the host, and the
+boundary is the operator being the only writer; the job's writer check
+catches mistakes, not a hostile writer. That posture is the operator's choice,
+recorded in #664.
+
+A VM rather than a nesting container because any container engine inside an
+Incus container needs `security.nesting=true` (podman included), whereas a VM
+has its own kernel and runs stock Docker with no privilege grant.
 
 **3. No OVN.** The strongest case for it was network ACLs keeping CI sandboxes
 off the real LAN — a legitimate goal, since `home-lan` is `ipv4.nat: "true"`
@@ -1127,7 +1138,23 @@ homelabs at once. Unique bridge names per run do not need it; identical
 subnets per run do. It also flips if the bridge-ACL control cannot be made to
 hold, since that protection is *structural* (the ACL and its network live in a
 project the CI cert cannot reach) rather than enforced by a dedicated
-"may not edit ACLs" restriction, which does not appear to exist.
+"may not edit ACLs" restriction, which does not appear to exist. Since #664
+the queue's certificate has full trust, so no ACL holds against PR code
+there; the structural protection applies only to a restricted certificate.
+
+### History
+
+- **2026-11-19, #664 (operator decision, in the issue's comments):** answer 2
+  was a hosted GitHub runner that joined the tailnet and shelled into a
+  persistent `ci-orchestrator` Incus container holding a project-restricted
+  TLS certificate, which launched throwaway VM sandboxes (#142, #146, #147).
+  It kept untrusted code on GitHub's disposable VM and made the host reachable
+  only through a credential GitHub withholds from fork PRs. It was never
+  built. The polling queue replaced it for hardware validation: no tailnet
+  credential in GitHub, no inbound path, and a lock it can take against a
+  person, at the cost of a full-trust certificate and a trust boundary that is
+  the sole writer rather than the runner's sandbox. #142, #146 and #147 stay
+  open as `later`.
 
 ## 21. The dev Incus host: btrfs, pinned base images, one project (#131, #96)
 
@@ -1246,14 +1273,29 @@ Dockerfile to a 7.x line.
 
 ### What was deliberately not done
 
-**No reaper.** Script-created objects follow `validate-<slug>-<role>-$$` for
-instances and volumes, and `valwan-$$` for networks (short because bridge names
-become real `ip link` interfaces, capped at 15 characters). That convention is
-now written down in `scripts/validate/README.md`, which is what #131 asked
-for. A reaper to collect leftovers automatically was considered and declined —
-the convention makes leftovers identifiable by hand, and the suite showed no
-evidence of actually leaking. Revisit if leftovers start accumulating in
-practice.
+**No reaper for runs by hand; the hardware queue sweeps (#664).**
+Script-created objects follow `validate-<slug>-<role>-$$` for instances and
+volumes, and `valwan-$$` for networks (short because bridge names become real
+`ip link` interfaces, capped at 15 characters). That convention is written
+down in `scripts/validate/README.md`, which is what #131 asked for. #131
+declined a reaper: the convention made leftovers identifiable by hand, and the
+suite showed no evidence of leaking. The hardware queue (§20) changed that,
+since one interrupted run (a reboot, a superseded PR) must not fail the next:
+holding #665's lock, before every run, it deletes **every** instance and custom
+volume matching the first pattern and every `valwan-<pid>` network in the
+`default` project, with no age or PID filter (operator decision, 2026-11-25).
+A PID means nothing across runs, and an interrupted run's leftovers hold
+`home-lan`'s fixed addresses, so an age filter would keep exactly what blocks
+the next run. It never touches profiles (the lock's `validate-hardware-lock-<n>`
+has the instance pattern's shape, and `incus-socket` is shared), any image that
+has an alias *not* shaped `validate-<slug>-<pid>-<role>` (so the pinned
+`validate-alpine`/`validate-alpine-vm` images stay), or the queue's own VM. It
+does delete an image whose aliases all have that shape: the scripts import
+their own. A
+sweep that fails is a job fault: no run, and `error`. **Accepted cost:** a
+script a person runs directly takes no lock, so the sweep can delete its
+objects mid-run; going through `run.sh`, which takes the lock, avoids it. A run
+by hand outside the queue still has no reaper.
 
 **No `tofu/ci/`.** #131 asked for the resulting state to be expressed in
 OpenTofu. Deferred to #115, which is the issue that actually stands up

@@ -8,6 +8,11 @@ __pycache__/
 .devcontainer/host-setup/.trust-token
 .devcontainer/host-setup/.client-fingerprint
 
+# Local secrets, e.g. the validate/hardware queue's token
+# (scripts/hardware-queue/setup.sh reads it and refuses to run unless this
+# file is ignored and untracked, #664).
+/.env
+
 # Go build artifacts
 bin/
 # `go build ./cmd/<name>` with no -o drops the binary in the repo root rather
