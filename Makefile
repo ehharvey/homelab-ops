@@ -137,7 +137,8 @@ validate:
 # Needs the Incus remote, home-lan, flasher-tool and the IncusOS base image.
 # INCUSOS_BASE_IMAGE defaults to the pinned version `make incusos-base` cached;
 # export it to use another image. Serial by necessity: these share the home-lan
-# bridge.
+# bridge. run.sh takes the hardware lock on the Incus server first, and exits 2
+# naming the holder if another run has it (#665, scripts/validate/README.md).
 validate-hardware:
 	./scripts/validate/run.sh --group incus,incus-vm
 

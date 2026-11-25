@@ -628,14 +628,24 @@ validate_os_known() {
 	return 2
 }
 
+# validate_os_supports <supported> — 0 when a script declaring <supported> (its
+# VALIDATE_SUPPORTED_OS, the --describe "os:" field) runs under VALIDATE_OS
+# rather than skipping as a whole. The one copy of that rule: the gate below
+# uses it, and so does run.sh, to decide whether a run needs the hardware lock
+# (#665).
+validate_os_supports() {
+	case " $1 " in
+	*" any "* | *" $VALIDATE_OS "*) return 0 ;;
+	esac
+	return 1
+}
+
 # _validate_os_gate — after the flags are parsed, so --strict and --allow-skip
 # govern the skip: a script that doesn't support the backend under test skips
 # as a whole, before any work, and exits through summary (3, or 1 under
 # --strict unless host-os is allowed).
 _validate_os_gate() {
-	case " $VALIDATE_SUPPORTED_OS " in
-	*" any "* | *" $VALIDATE_OS "*) return 0 ;;
-	esac
+	validate_os_supports "$VALIDATE_SUPPORTED_OS" && return 0
 	skip_check "$(basename "${BASH_SOURCE[-1]}") on VALIDATE_OS=$VALIDATE_OS" host-os \
 		"the script supports only: $VALIDATE_SUPPORTED_OS"
 	summary
