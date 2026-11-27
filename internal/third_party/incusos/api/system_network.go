@@ -1,4 +1,4 @@
-// Vendored from github.com/lxc/incus-os @ 95d29ace0fd42d0e42e69919ed44cc1eb3dd8191
+// Vendored from github.com/lxc/incus-os @ 9b650146373bb869b6a7afbd9ab7c1c9ab29b2c9
 // (incus-osd/api/system_network.go), Apache-2.0 license — see third_party/incus-os/COPYING.
 // Unmodified.
 // Regenerate via scripts/vendor-incusos.sh; do not hand-edit beyond what
@@ -68,6 +68,7 @@ type SystemNetworkInterface struct {
 	FirewallRules     []SystemNetworkFirewallRule `json:"firewall_rules,omitempty"      yaml:"firewall_rules,omitempty"`
 	Hwaddr            string                      `json:"hwaddr"                        yaml:"hwaddr"`
 	LLDP              bool                        `json:"lldp,omitempty"                yaml:"lldp,omitempty"`
+	LLDPReceiveOnly   bool                        `json:"lldp_receive_only,omitempty"   yaml:"lldp_receive_only,omitempty"`
 	MTU               int                         `json:"mtu,omitempty"                 yaml:"mtu,omitempty"`
 	Name              string                      `json:"name"                          yaml:"name"`
 	RequiredForOnline string                      `json:"required_for_online,omitempty" yaml:"required_for_online,omitempty"`
@@ -85,6 +86,7 @@ type SystemNetworkBond struct {
 	FirewallRules     []SystemNetworkFirewallRule `json:"firewall_rules,omitempty"      yaml:"firewall_rules,omitempty"`
 	Hwaddr            string                      `json:"hwaddr,omitempty"              yaml:"hwaddr,omitempty"`
 	LLDP              bool                        `json:"lldp,omitempty"                yaml:"lldp,omitempty"`
+	LLDPReceiveOnly   bool                        `json:"lldp_receive_only,omitempty"   yaml:"lldp_receive_only,omitempty"`
 	Members           []string                    `json:"members,omitempty"             yaml:"members,omitempty"`
 	Mode              string                      `json:"mode"                          yaml:"mode"`
 	MTU               int                         `json:"mtu,omitempty"                 yaml:"mtu,omitempty"`
@@ -329,10 +331,13 @@ type SystemNetworkInterfaceStats struct {
 
 // SystemNetworkLLDPState holds information about the LLDP state.
 type SystemNetworkLLDPState struct {
-	ChassisID string `json:"chassis_id"     yaml:"chassis_id"`
-	Name      string `json:"name"           yaml:"name"`
-	PortID    string `json:"port_id"        yaml:"port_id"`
-	Port      string `json:"port,omitempty" yaml:"port,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	ChassisID    string   `json:"chassis_id"             yaml:"chassis_id"`
+	Description  string   `json:"description,omitempty"  yaml:"description,omitempty"`
+	Name         string   `json:"name"                   yaml:"name"`
+	PortID       string   `json:"port_id"                yaml:"port_id"`
+	Port         string   `json:"port,omitempty"         yaml:"port,omitempty"`
+	VLAN         int      `json:"vlan,omitempty"         yaml:"vlan,omitempty"`
 }
 
 // SystemNetworkLACPState holds information about a bond's LACP state.
